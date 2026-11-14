@@ -1360,6 +1360,23 @@ Measured 2026-11-13 (`tests/scripts/probe_section_fillet.py`).
 
 ---
 
+## 49. A distance or angle mate can land on the side you didn't mean
+
+`IAssemblyDoc::AddMate5` puts a distance or angle mate on a side of its own choosing.
+A 1 mm distance mate put a bar on the far side even after it had been nudged to the
+near one.
+
+- To flip it, take the newest mate under the `MateGroup` (it is appended last) and
+  its `GetDefinition()` (`IDistanceMateFeatureData` or `IAngleMateFeatureData`).
+  Toggle `FlipDimension`, then `ModifyDefinition(data, model, null component)` and
+  rebuild.
+- `add_mate` does this with `flip: true`. Measured: the same 5 mm mate, made with and
+  without `flip`, put the component 10 mm apart.
+
+Reported 2026-11-13 by the Cellvis DishRack build; measured the same day.
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests
