@@ -1347,6 +1347,76 @@ def _assembly_mate_count(adapter: Any, model: Any) -> int | None:
     return 0
 
 
+def _newest_mate(adapter: Any, model: Any) -> Any:
+    """The last mate under the assembly's ``MateGroup`` (the one just added).
+
+    Mates are appended in tree order; a mate folder is entered one level
+    deep, as in :func:`_count_mates`.
+
+    Returns:
+        Any: The mate's ``IFeature``, or None when there is none.
+    """
+    feature = adapter._attempt(lambda: model.FirstFeature(), default=None)
+    guard = 0
+    while feature is not None and guard < 10000:
+        guard += 1
+        adapter._attempt(
+            lambda f=feature: _sw_type_info.flag_members(f, *_FEATURE_WALK_MEMBERS),
+            default=0,
+        )
+        if adapter._attempt(lambda f=feature: f.GetTypeName2(), default="") == (
+            "MateGroup"
+        ):
+            newest = None
+            for child in _sub_features(adapter, feature):
+                kind = str(
+                    adapter._attempt(lambda c=child: c.GetTypeName2(), default="") or ""
+                )
+                members = (
+                    _sub_features(adapter, child)
+                    if kind.endswith("Folder")
+                    else [child]
+                )
+                for mate in members:
+                    mate_kind = str(
+                        adapter._attempt(lambda m=mate: m.GetTypeName2(), default="")
+                        or ""
+                    )
+                    if mate_kind.startswith("Mate"):
+                        newest = mate
+            return newest
+        feature = adapter._attempt(lambda f=feature: f.GetNextFeature(), default=None)
+    return None
+
+
+def _flip_mate(adapter: Any, model: Any, mate: Any) -> bool:
+    """Flip a distance or angle mate to the other side (``FlipDimension``).
+
+    ``IDistanceMateFeatureData`` and ``IAngleMateFeatureData`` both have
+    ``FlipDimension``; the definition is put back with ``ModifyDefinition``
+    (a Cellvis script flipped a distance mate this way on SolidWorks 2026).
+
+    Returns:
+        bool: Whether SolidWorks took the flip.
+    """
+    from .features import _null_callout
+
+    adapter._attempt(
+        lambda: _sw_type_info.flag_members(mate, "GetDefinition", "ModifyDefinition"),
+        default=0,
+    )
+    data = adapter._attempt(lambda: mate.GetDefinition(), default=None)
+    current = adapter._attempt(lambda: bool(data.FlipDimension), default=None)
+    if data is None or current is None:
+        return False
+    data.FlipDimension = not current
+    return bool(
+        adapter._attempt(
+            lambda: mate.ModifyDefinition(data, model, _null_callout()), default=False
+        )
+    )
+
+
 def _confirmation_or(result: AdapterResult[Any]) -> AdapterResult[Any]:
     """Turn a save that needs the user's confirmation into its error result."""
     if result.is_success and isinstance(result.data, saving.NeedsConfirmation):
@@ -2977,6 +3047,7 @@ class SolidWorksIOMixin:
         angle: float = 0.0,
         face_a: list[float] | None = None,
         face_b: list[float] | None = None,
+        flip: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mate two components together.
 
@@ -3004,6 +3075,8 @@ class SolidWorksIOMixin:
                 first component, in its part coordinates; used instead of
                 ``entity_a``.
             face_b (list[float] | None): The same for the second component.
+            flip (bool): Put a distance or angle mate's component on the
+                other side (the mate's ``FlipDimension``).
 
         Returns:
             AdapterResult[dict[str, Any]]: The mate created, plus the bounding
@@ -3123,6 +3196,14 @@ class SolidWorksIOMixin:
                     "can actually satisfy this mate type."
                 )
 
+            flipped = None
+            if mate_key in ("distance", "angle"):
+                flipped = False
+                if flip:
+                    newest = _newest_mate(adapter, model)
+                    flipped = newest is not None and _flip_mate(adapter, model, newest)
+                    adapter._attempt(lambda: model.EditRebuild3(), default=None)
+
             transforms_after = _component_transforms(adapter, assembly)
             moved = sorted(
                 name
@@ -3143,6 +3224,7 @@ class SolidWorksIOMixin:
                 ],
                 "distance": distance or None,
                 "angle": angle or None,
+                "flipped": flipped,
                 "moved_components": moved,
                 "geometry_moved": bool(moved) if comparable else None,
             }

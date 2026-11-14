@@ -1966,6 +1966,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         angle: float = 0.0,
         face_a: list[float] | None = None,
         face_b: list[float] | None = None,
+        flip: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Add mate through circuit breaker.
 
@@ -1983,6 +1984,8 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             face_a (list[float] | None): A point on a face of the first
                 component, in its part coordinates (mm), instead of entity_a.
             face_b (list[float] | None): The same for the second component.
+            flip (bool): Put a distance or angle mate's component on the
+                other side (the mate's ``FlipDimension``).
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -2000,6 +2003,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 angle,
                 face_a,
                 face_b,
+                flip,
             ),
             input_dict={
                 "component_a": component_a,
@@ -2012,6 +2016,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "angle": angle,
                 "face_a": face_a,
                 "face_b": face_b,
+                "flip": flip,
             },
         )
 

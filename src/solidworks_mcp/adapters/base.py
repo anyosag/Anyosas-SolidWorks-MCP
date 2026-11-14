@@ -1633,6 +1633,7 @@ class SolidWorksAdapter(ABC):
         angle: float = 0.0,
         face_a: list[float] | None = None,
         face_b: list[float] | None = None,
+        flip: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mate two components together in the active assembly.
 
@@ -1654,6 +1655,8 @@ class SolidWorksAdapter(ABC):
                 component, in its part coordinates (mm), used instead of
                 ``entity_a``.
             face_b (list[float] | None): The same for the second component.
+            flip (bool): Put a distance or angle mate's component on the
+                other side (the mate's ``FlipDimension``).
 
         Returns:
             AdapterResult[dict[str, Any]]: Mate details, or error.

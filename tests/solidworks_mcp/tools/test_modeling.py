@@ -955,6 +955,53 @@ class TestAssemblyTools:
         assert "already satisfied" in result["message"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("flipped", "warns"), [(True, False), (False, True)])
+    async def test_a_flip_that_does_not_take_is_a_warning(
+        self, mcp_server, mock_adapter, mock_config, flipped, warns
+    ):
+        """The Cellvis +X bar: a distance mate on the side SolidWorks picked."""
+        await register_modeling_tools(mcp_server, mock_adapter, mock_config)
+        mock_adapter.add_mate = AsyncMock(
+            return_value=AdapterResult(
+                status=AdapterResultStatus.SUCCESS,
+                data={"components": ["bar-1", "bar-2"], "flipped": flipped},
+            )
+        )
+        tool_func = next(
+            t.fn for t in await mcp_server.list_tools() if t.name == "add_mate"
+        )
+
+        result = await tool_func(
+            AddMateInput(
+                component_a="bar-1",
+                component_b="bar-2",
+                mate_type="distance",
+                distance=1.0,
+                flip=True,
+            )
+        )
+
+        assert result["status"] == "success"
+        assert ("warning" in result and "did not flip" in result["warning"]) is warns
+        assert mock_adapter.add_mate.await_args.args[-1] is True
+
+    @pytest.mark.asyncio
+    async def test_flip_is_for_distance_and_angle_mates(
+        self, mcp_server, mock_adapter, mock_config
+    ):
+        await register_modeling_tools(mcp_server, mock_adapter, mock_config)
+        tool_func = next(
+            t.fn for t in await mcp_server.list_tools() if t.name == "add_mate"
+        )
+
+        result = await tool_func(
+            {"component_a": "a-1", "component_b": "b-1", "flip": True}
+        )
+
+        assert result["error_type"] == "invalid_input"
+        assert "flip is for distance and angle mates only" in result["message"]
+
+    @pytest.mark.asyncio
     async def test_list_components_success_and_reflects_inserts(
         self, mcp_server, mock_adapter, mock_config
     ):

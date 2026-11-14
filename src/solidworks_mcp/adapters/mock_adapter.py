@@ -4261,6 +4261,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         angle: float = 0.0,
         face_a: list[float] | None = None,
         face_b: list[float] | None = None,
+        flip: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock mating two components in the active assembly.
 
@@ -4279,6 +4280,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             face_a (list[float] | None): A point on a face of the first
                 component (part coordinates, mm), used instead of entity_a.
             face_b (list[float] | None): The same for the second component.
+            flip (bool): Put a distance or angle mate's component on the
+                other side (the mate's ``FlipDimension``).
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -4321,6 +4324,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 ],
                 "distance": distance or None,
                 "angle": angle or None,
+                "flipped": bool(flip) if mate_type in ("distance", "angle") else None,
                 # The real adapter fills these by comparing every component's
                 # Transform2 before and after the mate. The mock has no
                 # geometry to move, so it reports "not determinable" rather

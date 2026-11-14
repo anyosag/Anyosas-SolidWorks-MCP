@@ -4091,6 +4091,103 @@ class TestAssemblyAndDrawingSuccessPaths:
         assert result.data["mate_type"] == "coincident"
         assert result.data["moved_components"] == ["part-2"]
         assert result.data["geometry_moved"] is True
+        assert result.data["flipped"] is None  # not a distance or angle mate
+
+    @staticmethod
+    def _distance_mate(monkeypatch, *, takes: bool = True, readable: bool = True):
+        """An assembly whose mates folder holds an older mate and the new one."""
+        adapter = TestAssemblyAndDrawingSuccessPaths._document(monkeypatch, 2)
+        monkeypatch.setattr(
+            _io_module, "_dynamic", SimpleNamespace(Dispatch=lambda obj: obj)
+        )
+        feature = SimpleNamespace(Select2=lambda append, mark: True)
+        model = adapter.currentModel
+        model.GetComponents.return_value = [
+            SimpleNamespace(Name2="bar-1", FeatureByName=lambda e: feature),
+            SimpleNamespace(Name2="bar-2", FeatureByName=lambda e: feature),
+        ]
+        model.SelectionManager.GetSelectedObjectCount2.return_value = 2
+        model.AddMate5.return_value = SimpleNamespace()
+        monkeypatch.setattr(_io_module, "_byref_int", lambda: SimpleNamespace(value=1))
+        monkeypatch.setattr(_io_module, "_component_transforms", lambda _a, _asm: {})
+        data = SimpleNamespace(FlipDimension=False) if readable else None
+        modified: list[Any] = []
+
+        def mate(name: str, kind: str, nxt: Any = None) -> SimpleNamespace:
+            return SimpleNamespace(
+                Name=name,
+                GetTypeName2=lambda: kind,
+                GetNextSubFeature=lambda: nxt,
+                GetFirstSubFeature=lambda: None,
+                GetDefinition=lambda: data,
+                ModifyDefinition=lambda d, doc, comp: modified.append(d) or takes,
+            )
+
+        newest = mate("Distance2", "MateDistanceDim")
+        folder = SimpleNamespace(
+            GetTypeName2=lambda: "FtrFolder",
+            GetNextSubFeature=lambda: newest,
+            GetFirstSubFeature=lambda: mate("Coincident1", "MateCoincident"),
+        )
+        group = SimpleNamespace(
+            GetTypeName2=lambda: "MateGroup",
+            GetFirstSubFeature=lambda: folder,
+            GetNextFeature=lambda: None,
+        )
+        origin = SimpleNamespace(
+            GetTypeName2=lambda: "OriginProfileFeature", GetNextFeature=lambda: group
+        )
+        model.FirstFeature = lambda: origin
+        return adapter, data, modified
+
+    @pytest.mark.asyncio
+    async def test_a_distance_mate_is_flipped_to_the_other_side(
+        self, monkeypatch
+    ) -> None:
+        adapter, data, modified = self._distance_mate(monkeypatch)
+
+        result = await adapter.add_mate(
+            "bar-1", "bar-2", mate_type="distance", distance=1.0, flip=True
+        )
+
+        assert result.is_success, result.error
+        assert result.data["flipped"] is True
+        assert data.FlipDimension is True
+        assert modified == [data]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("flip", "takes", "readable", "flipped"),
+        [
+            (False, True, True, False),
+            (True, False, True, False),
+            (True, True, False, False),
+        ],
+        ids=["not asked", "refused", "no definition"],
+    )
+    async def test_a_distance_mate_not_flipped_says_so(
+        self, monkeypatch, flip, takes, readable, flipped
+    ) -> None:
+        adapter, _data, _modified = self._distance_mate(
+            monkeypatch, takes=takes, readable=readable
+        )
+
+        result = await adapter.add_mate(
+            "bar-1", "bar-2", mate_type="distance", distance=1.0, flip=flip
+        )
+
+        assert result.data["flipped"] is flipped
+
+    @pytest.mark.asyncio
+    async def test_no_mates_folder_means_nothing_to_flip(self, monkeypatch) -> None:
+        adapter, _data, _modified = self._distance_mate(monkeypatch)
+        adapter.currentModel.FirstFeature = lambda: None
+
+        result = await adapter.add_mate(
+            "bar-1", "bar-2", mate_type="angle", angle=30.0, flip=True
+        )
+
+        assert result.data["flipped"] is False
 
     @staticmethod
     def _face_mate(monkeypatch, handle: Any, found: bool = True) -> PyWin32Adapter:

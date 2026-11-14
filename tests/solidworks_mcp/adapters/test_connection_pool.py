@@ -892,6 +892,7 @@ class TestConnectionPoolAdapterExtras:
                 angle=0.0,
                 face_a=None,
                 face_b=None,
+                flip=False,
             ):
                 return _ok("mate")
 

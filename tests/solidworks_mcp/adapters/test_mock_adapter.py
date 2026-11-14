@@ -1134,6 +1134,21 @@ async def test_mock_add_mate_reports_the_mate() -> None:
     assert result.is_success
     assert result.data["components"] == ["part-1", "part-2"]
     assert result.data["mate_type"] == "concentric"
+    assert result.data["flipped"] is None
+
+
+@pytest.mark.asyncio
+async def test_mock_add_mate_flips_a_distance_mate() -> None:
+    adapter = MockSolidWorksAdapter({})
+    await adapter.connect()
+
+    flipped = await adapter.add_mate(
+        "bar-1", "bar-2", mate_type="distance", distance=1.0, flip=True
+    )
+    kept = await adapter.add_mate("bar-1", "bar-2", mate_type="angle", angle=30.0)
+
+    assert flipped.data["flipped"] is True
+    assert kept.data["flipped"] is False
 
 
 @pytest.mark.asyncio

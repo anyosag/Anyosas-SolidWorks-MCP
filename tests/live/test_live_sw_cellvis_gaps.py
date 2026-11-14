@@ -520,3 +520,45 @@ async def test_a_chamfer_moved_to_other_edges_by_a_rule(scratch) -> None:
     assert moved["status"] == "success", moved
     assert (moved["data"]["edges_before"], moved["data"]["edges_after"]) == (1, 4)
     assert rebuilt["status"] == "success", rebuilt
+
+
+# ---- add_mate flip ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_flipped_distance_mate_lands_on_the_other_side(
+    scratch, tmp_path: Path
+) -> None:
+    """The Cellvis +X bar: the same 5 mm mate, without and with flip."""
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    part = await _block_part(scratch, tools, tmp_path / "cg_flip.SLDPRT")
+    mate = {
+        "component_a": "cg_flip-1",
+        "component_b": "cg_flip-2",
+        "entity_a": "Front Plane",
+        "entity_b": "Front Plane",
+        "mate_type": "distance",
+        "distance": 5.0,
+    }
+    replies, depths = [], []
+    for flip, name in ((False, "cg_flip_a.SLDASM"), (True, "cg_flip_b.SLDASM")):
+        assert (await adapter.create_assembly()).is_success
+        scratch.written_files.append(str(tmp_path / name))
+        for x in (0, 50):
+            placed = await tools["insert_component"]({"file_path": part, "x": x})
+            assert placed["status"] == "success", placed
+        replies.append(await tools["add_mate"]({**mate, "flip": flip}))
+        depths.append(_boxes_mm(adapter)["cg_flip-2"][2])
+
+    evidence(
+        "a 5 mm distance mate, then the same mate flipped",
+        {"replies": replies, "block_2_min_z_mm": depths},
+    )
+    plain, flipped = replies
+    assert plain["status"] == flipped["status"] == "success", replies
+    assert (plain["mate"]["flipped"], flipped["mate"]["flipped"]) == (False, True)
+    assert "warning" not in flipped or "did not flip" not in flipped["warning"]
+    # Block 1 is z 0..6: one side puts block 2's Front Plane 5 mm before it,
+    # the other 5 mm behind; the two sides are 10 mm apart.
+    assert abs(depths[0] - depths[1]) == pytest.approx(10.0, abs=1e-3)

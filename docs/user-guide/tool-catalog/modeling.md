@@ -428,6 +428,7 @@ Mate two components of the active assembly: coincident, concentric, parallel, pe
 | `alignment` | `str` | — | `aligned` | aligned, anti_aligned or closest |
 | `distance` | `float` | — | `0.0` | Distance in millimetres, for a distance mate |
 | `angle` | `float` | — | `0.0` | Angle in degrees, for an angle mate |
+| `flip` | `bool` | — | `False` | For a distance or angle mate: put component_b on the other side of the distance or angle (SolidWorks picks a side, not always the one you meant) |
 
 **Sample call:**
 

@@ -1194,10 +1194,20 @@ class AddMateInput(CompatInput):
         default=0.0, description="Distance in millimetres, for a distance mate"
     )
     angle: float = Field(default=0.0, description="Angle in degrees, for an angle mate")
+    flip: bool = Field(
+        default=False,
+        description=(
+            "For a distance or angle mate: put component_b on the other side of "
+            "the distance or angle (SolidWorks picks a side, not always the one "
+            "you meant)"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if not self.component_a.strip() or not self.component_b.strip():
             raise ValueError("component_a and component_b are required")
+        if self.flip and self.mate_type.strip().lower() not in ("distance", "angle"):
+            raise ValueError("flip is for distance and angle mates only")
         for side in ("a", "b"):
             entity, face = (
                 getattr(self, f"entity_{side}"),
@@ -2352,9 +2362,12 @@ async def register_modeling_tools(
         Each side is a named reference plane or axis (`entity_a`, e.g. "Front Plane"),
         or a face given by a point on it (`face_a`, mm, in that part's own coordinates):
         a pin's round face and a hole's face make a concentric mate. Get instance names
-        from `list_components`. Needs: an open assembly with both components. Changes:
-        adds a mate and may move components. Returns: `mate` with `mate_type`,
-        `components`, `entities`, `geometry_moved` and `moved_components`.
+        from `list_components`. A distance or angle mate can land on the side you
+        didn't mean: `flip: true` puts it on the other. Needs: an open assembly with
+        both components. Changes: adds a mate and may move components. Returns: `mate`
+        with `mate_type`, `components`, `entities`, `flipped` (distance and angle
+        mates), `geometry_moved` and `moved_components`; a `warning` when a flip
+        didn't take.
 
         Args:
             input_data: The mate. `component_a` and `component_b` are required;
@@ -2377,6 +2390,7 @@ async def register_modeling_tools(
             input_data.angle,
             input_data.face_a,
             input_data.face_b,
+            input_data.flip,
         )
         require_success(result, context="Failed to add mate")
         data = result.data if isinstance(result.data, dict) else {}
@@ -2389,12 +2403,19 @@ async def register_modeling_tools(
         # saying so plainly beats leaving the caller to infer it.
         if data.get("geometry_moved") is False:
             message += " (no component moved - the constraint was already satisfied)"
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": message,
             "mate": data,
             "execution_time": result.execution_time,
         }
+        if input_data.flip and data.get("flipped") is False:
+            reply["warning"] = (
+                "The mate was added, but SolidWorks did not flip it: the component "
+                "is on the side SolidWorks chose. Check its position, then delete the "
+                "mate and add it again, or flip it in SolidWorks."
+            )
+        return reply
 
     @mcp.tool()
     async def set_component_state(input_data: SetComponentStateInput) -> dict[str, Any]:

@@ -1782,6 +1782,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         angle: float = 0.0,
         face_a: list[float] | None = None,
         face_b: list[float] | None = None,
+        flip: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Add mate using pool.
 
@@ -1799,6 +1800,8 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             face_a (list[float] | None): A point on a face of the first
                 component, in its part coordinates (mm), instead of entity_a.
             face_b (list[float] | None): The same for the second component.
+            flip (bool): Put a distance or angle mate's component on the
+                other side (the mate's ``FlipDimension``).
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -1816,6 +1819,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
                 angle,
                 face_a,
                 face_b,
+                flip,
             ),
         )
 
