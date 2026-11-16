@@ -355,6 +355,7 @@ class World:
         self.from_body_needs_no_check = False
         self.from_body_fails = False
         self.move_fails = False
+        self.rename_moved = False
         self.delete_fails = False
         self.split_fails = False
         #: Indent: None makes no feature; "cut" cuts the grown tools; "nothing"
@@ -453,9 +454,14 @@ class World:
             return [round(v, 9) for v in out]
 
         made = 0
+        moved = [b for b in bodies if not copy]
         for body in bodies:
             if not copy:
                 body.box = placed(body.box, 1)
+                if self.rename_moved:
+                    # SolidWorks 2026: a moved body takes the feature's name.
+                    suffix = f"[{moved.index(body) + 1}]" if len(moved) > 1 else ""
+                    body.Name = f"{feature.Name}{suffix}"
                 continue
             for k in range(1, copies + 1):
                 made += 1

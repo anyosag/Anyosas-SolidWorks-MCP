@@ -211,6 +211,7 @@ def test_a_move_shifts_the_bodies(part: World) -> None:
     assert out["moved"] == [
         {
             "name": "C",
+            "name_now": "C",
             "center_before_mm": [35.0, 5.0, 5.0],
             "center_after_mm": [35.0, 10.0, 5.0],
             "center_shift_mm": [0.0, 5.0, 0.0],
@@ -278,12 +279,50 @@ def test_no_move_feature_is_an_error(part: World) -> None:
         )
 
 
+def test_a_moved_body_renamed_after_the_feature_is_followed(part: World) -> None:
+    # SolidWorks 2026 renames a moved body after the Move/Copy feature.
+    part.rename_moved = True
+
+    out = bd.move_bodies(
+        Harness(part), part.model, ["A"], [10, 0, 0], 0.0, "z", None, False, 1
+    )
+
+    assert out["moved"][0]["name_now"] == "Body-Move/Copy1"
+    assert out["moved"][0]["center_shift_mm"] == [10.0, 0.0, 0.0]
+    assert out["new_bodies"] == []
+
+
+def test_a_shift_then_a_turn_follows_the_renamed_bodies(part: World) -> None:
+    part.rename_moved = True
+
+    out = bd.move_bodies(
+        Harness(part), part.model, ["A", "C"], [0, 0, 10], 90, "y", None, False, 1
+    )
+
+    assert out["features"] == ["Body-Move/Copy1", "Body-Move/Copy2"]
+    now = {m["name"]: m["name_now"] for m in out["moved"]}
+    assert set(now.values()) == {"Body-Move/Copy2[1]", "Body-Move/Copy2[2]"}
+    # Each is matched by where it lies, not by order.
+    for name, renamed in now.items():
+        assert out["moved"][[m["name"] for m in out["moved"]].index(name)][
+            "center_after_mm"
+        ] == pytest.approx(bd.box_center(part.body(renamed).box))
+
+
+def test_a_renamed_body_with_no_box_takes_the_first_new_name() -> None:
+    assert bd.match_renamed({"A": None}, {"X": [0, 0, 0, 1, 1, 1]}) == {"A": "X"}
+    assert bd.match_renamed({"A": [0, 0, 0, 1, 1, 1]}, {}) == {}
+    assert bd.match_renamed(
+        {"A": [0, 0, 0, 2, 2, 2]}, {"X": None, "Y": [0, 0, 0, 2, 2, 2]}
+    ) == {"A": "Y"}
+
+
 def test_a_moved_body_that_vanished_reports_only_its_name(part: World) -> None:
-    def move_and_rename(bodies: list[Any], *_args: Any) -> Any:
-        bodies[0].Name = "Renamed"
+    def move_and_lose(bodies: list[Any], *_args: Any) -> Any:
+        part.bodies.remove(bodies[0])
         return part.feature("Body-Move/Copy")
 
-    part.move = move_and_rename  # type: ignore[method-assign]
+    part.move = move_and_lose  # type: ignore[method-assign]
 
     out = bd.move_bodies(
         Harness(part), part.model, ["A"], [1, 0, 0], 0, "z", None, False, 1

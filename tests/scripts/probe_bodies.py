@@ -72,6 +72,7 @@ Usage (SolidWorks running, nothing else driving it, the user's OK)::
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import sys
 import time
@@ -105,8 +106,21 @@ async def _tools(adapter: PyWin32Adapter) -> dict[str, Any]:
     return {t.name: t.fn for t in await mcp.list_tools()}
 
 
+async def _invoke(tools: dict[str, Any], name: str, args: dict[str, Any]) -> Any:
+    """Call a tool; one with no input model (``exit_sketch``) takes keywords only."""
+    fn = tools[name]
+    positional = [
+        p
+        for p in inspect.signature(fn).parameters.values()
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    if not positional:
+        return await fn(**args)
+    return await fn(args)
+
+
 async def _ok(tools: dict[str, Any], name: str, args: dict[str, Any]) -> Any:
-    reply = await tools[name](args)
+    reply = await _invoke(tools, name, args)
     assert reply["status"] == "success", (name, reply)
     return reply
 
@@ -130,7 +144,7 @@ async def _lid(adapter: PyWin32Adapter, tools: dict[str, Any], path: Path) -> No
     """The lid and its two labels, saved to ``path``."""
     assert (await adapter.create_part()).is_success
     await _block(tools, "Top", [(-20, -20, 20, 20)], 10)
-    await _ok(tools, "create_reference_plane", {"reference": "Top", "offset": 2})
+    await _ok(tools, "create_reference_plane", {"reference": "Top Plane", "offset": 2})
     await _block(tools, "Plane1", [(-12, -3, -2, 3), (2, -3, 12, 3)], 1, merge=False)
     assert (await adapter.save_file(str(path))).is_success
 
@@ -430,12 +444,12 @@ def step_grow(adapter: PyWin32Adapter) -> dict[str, Any]:
     out["combine"] = {"feature": bd.feature_name(adapter, combine), "form": form}
     made.append(combine)
     model.EditRebuild3()
-    out["lid_volume_after_mm3"] = bd.volume_mm3(
-        adapter, _bodies(adapter)["Boss-Extrude1"]
-    )
-    out["residual_mm3"] = bd.intersect_mm3(
-        adapter, _bodies(adapter)[label], _bodies(adapter)["Boss-Extrude1"]
-    )
+    # The main body of a combine takes the feature's name (the read above).
+    after = _bodies(adapter)
+    lid_after = out["combine"]["feature"]
+    out["bodies_after_subtract"] = list(after)
+    out["lid_volume_after_mm3"] = bd.volume_mm3(adapter, after[lid_after])
+    out["residual_mm3"] = bd.intersect_mm3(adapter, after[label], after[lid_after])
     out["folder"] = bd.make_folder(adapter, model, made, "Negative of probe")
     _undo_to(adapter, made)
     return out
@@ -470,13 +484,48 @@ async def step_tools(
 
     async def call(key: str, name: str, args: dict[str, Any]) -> Any:
         started = time.perf_counter()
-        reply = await tools[name](args)
+        reply = await _invoke(tools, name, args)
         reply["probe_seconds"] = round(time.perf_counter() - started, 2)
         out[key] = reply
         return reply
 
     listed = await call("list_bodies", "list_bodies", {})
-    labels = [b["name"] for b in listed["data"]["bodies"]][1:]
+    # GetBodies2's order changes between runs: the lid is the big one.
+    by_volume = sorted(
+        listed["data"]["bodies"], key=lambda b: -(b.get("volume_mm3") or 0.0)
+    )
+    lid_name = by_volume[0]["name"]
+    labels = [b["name"] for b in by_volume[1:]]
+    moved = await call(
+        "move_copy_body",
+        "move_copy_body",
+        {
+            "bodies": [labels[0]],
+            "translate_mm": [0, 0, 5],
+            "rotate_deg": 90,
+            "axis": "y",
+        },
+    )
+    now = {
+        m["name"]: m.get("name_now") for m in (moved.get("data") or {}).get("moved", [])
+    }
+    labels = [now.get(n) or n for n in labels]
+    await call(
+        "move_copy_body_back",
+        "move_copy_body",
+        {"bodies": [labels[0]], "rotate_deg": -90, "axis": "y"},
+    )
+    back = (out["move_copy_body_back"].get("data") or {}).get("moved", [])
+    if back and back[0].get("name_now"):
+        labels[0] = back[0]["name_now"]
+    await call(
+        "move_copy_body_down",
+        "move_copy_body",
+        {"bodies": [labels[0]], "translate_mm": [0, 0, -5]},
+    )
+    down = (out["move_copy_body_down"].get("data") or {}).get("moved", [])
+    if down and down[0].get("name_now"):
+        labels[0] = down[0]["name_now"]
     await call(
         "insert_part",
         "insert_part",
@@ -491,10 +540,12 @@ async def step_tools(
         await call(
             "make_mating_negative",
             "make_mating_negative",
-            {"target": "Boss-Extrude1", "tools": labels, "clearance_mm": 0.15},
+            {"target": lid_name, "tools": labels, "clearance_mm": 0.15},
         )
         await call("delete_keep_body", "delete_keep_body", {"bodies": labels})
-    await call("split_body", "split_body", {"plane": "Right", "body": "Boss-Extrude1"})
+    negative = (out.get("make_mating_negative") or {}).get("data") or {}
+    lid_body = negative.get("result_body") or lid_name
+    await call("split_body", "split_body", {"plane": "Right", "body": lid_body})
     pieces = [
         p["name"] for p in (out["split_body"].get("data") or {}).get("pieces", [])
     ]

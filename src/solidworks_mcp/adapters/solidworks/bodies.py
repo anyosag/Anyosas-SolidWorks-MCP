@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ..base import AdapterResult, AdapterResultStatus
@@ -787,6 +787,58 @@ def _move_feature(
     return feature_name(adapter, feature)
 
 
+def match_renamed(
+    expected: Mapping[str, Box | None], fresh: Mapping[str, Box | None]
+) -> dict[str, str]:
+    """Pair bodies a feature renamed with their new names.
+
+    Each body in ``expected`` (its box where the feature should have put it)
+    takes the name in ``fresh`` whose box centre is nearest, each name once.
+    """
+    out: dict[str, str] = {}
+    free = dict(fresh)
+    for old, box in expected.items():
+        if not free:
+            break
+        if box is None:
+            name = next(iter(free))
+        else:
+            centre = box_center(box)
+            name = min(
+                free,
+                key=lambda n: (
+                    math.dist(centre, box_center(free[n])) if free[n] else math.inf
+                ),
+            )
+        out[old] = name
+        del free[name]
+    return out
+
+
+def _names_now(
+    adapter: Any,
+    model: Any,
+    current: Mapping[str, str],
+    expected: Mapping[str, Box | None],
+    step_before: Sequence[str],
+) -> dict[str, str]:
+    """Each moved body's name after a move feature (original name -> name now).
+
+    SolidWorks 2026 renames a body a feature changes after the feature: a
+    moved ``Boss-Extrude2[1]`` comes back as ``Body-Move/Copy1`` (probe,
+    2026-11-16), so a name that is gone is matched to a new one by where the
+    body should be now.
+    """
+    after = solid_bodies(adapter, model)
+    present = {n for n, _b in after}
+    out = {o: n for o, n in current.items() if n in present}
+    lost = {o: expected.get(o) for o in current if o not in out}
+    if lost:
+        fresh = {n: _box_m(adapter, b) for n, b in after if n not in step_before}
+        out.update(match_renamed(lost, fresh))
+    return out
+
+
 def move_bodies(
     adapter: Any,
     model: Any,
@@ -801,12 +853,14 @@ def move_bodies(
     """Move or copy bodies: a translation, then a turn about an axis.
 
     With both, the translation (and copy) is one feature and the turn a
-    second, applied to what the first made (the copies, for a copy).
+    second, applied to what the first made (the copies, for a copy). A moved
+    body is renamed after the feature that moved it; ``moved`` gives each
+    one's ``name_now``.
 
     Returns:
         dict[str, Any]: ``features``, ``copy``, ``bodies``, ``new_bodies``
-        (the copies' facts), ``moved`` (each moved body's box centre before
-        and after, and the shift) and ``bodies_after``.
+        (the copies' facts), ``moved`` (each moved body's name now and box
+        centre before and after, and the shift) and ``bodies_after``.
     """
     translate_m = [float(v) / 1000.0 for v in translate_mm] if translate_mm else None
     if translate_m is not None and not any(translate_m):
@@ -815,7 +869,9 @@ def move_bodies(
         raise InvalidRequest("give translate_mm or rotate_deg; nothing would move.")
     found = find_bodies(adapter, model, names)
     before = body_names(adapter, model)
-    centers = {n: _box_m(adapter, found[n]) for n in names}
+    boxes = {n: _box_m(adapter, found[n]) for n in names}
+    expected: dict[str, Box | None] = dict(boxes)
+    current = {n: n for n in names}
     features: list[str | None] = []
     targets = list(names)
     if translate_m is not None:
@@ -833,14 +889,22 @@ def move_bodies(
         _rebuild(adapter, model)
         if copy:
             targets = [n for n in body_names(adapter, model) if n not in before]
+        else:
+            expected = {
+                n: translate_box(b, translate_m) if b else None
+                for n, b in expected.items()
+            }
+            current = _names_now(adapter, model, current, expected, before)
+            targets = [current[n] for n in names if n in current]
     if rotate_deg:
         about = [float(v) / 1000.0 for v in (rotate_about_mm or (0.0, 0.0, 0.0))]
-        current = find_bodies(adapter, model, targets)
+        step_before = body_names(adapter, model)
+        now = find_bodies(adapter, model, targets)
         features.append(
             _move_feature(
                 adapter,
                 model,
-                [(n, current[n]) for n in targets],
+                [(n, now[n]) for n in targets],
                 None,
                 (about, rotation_angles(axis, rotate_deg)),
                 copy and translate_m is None,
@@ -848,17 +912,28 @@ def move_bodies(
             )
         )
         _rebuild(adapter, model)
+        if not copy:
+            expected = {
+                n: rotate_box(b, axis, rotate_deg, about) if b else None
+                for n, b in expected.items()
+            }
+            current = _names_now(adapter, model, current, expected, step_before)
     after = solid_bodies(adapter, model)
     by_name = dict(after)
     new = [n for n, _b in after if n not in before]
     moved = []
     if not copy:
+        new = [n for n in new if n not in current.values()]
         for n in names:
-            was = centers.get(n)
-            now = _box_m(adapter, by_name[n]) if n in by_name else None
+            was = boxes.get(n)
+            name_now = current.get(n)
+            body_now = by_name.get(name_now) if name_now else None
+            box_now = _box_m(adapter, body_now) if body_now is not None else None
             entry: dict[str, Any] = {"name": n}
-            if was and now:
-                c0, c1 = box_center(was), box_center(now)
+            if name_now:
+                entry["name_now"] = name_now
+            if was and box_now:
+                c0, c1 = box_center(was), box_center(box_now)
                 entry["center_before_mm"] = _mm(c0)
                 entry["center_after_mm"] = _mm(c1)
                 entry["center_shift_mm"] = _mm([c1[k] - c0[k] for k in range(3)])

@@ -447,10 +447,11 @@ async def register_bodies_tools(
 
         Use it to merge bodies (`add`), cut one body's shape out of another
         (`subtract`: the `tools` come out of `main`), or keep only their overlap
-        (`common`). The tool bodies are consumed. To cut a shape with a clearance
-        around it, use `make_mating_negative`. Needs: an open part holding the named
-        bodies (`list_bodies`). Changes: adds a Combine feature. Returns: `data`
-        with `feature`, `result` (the resulting bodies' names, volumes and boxes),
+        (`common`). The tool bodies are consumed, and the result takes the feature's
+        name (Combine1): use the `result` names afterwards. To cut a shape with a
+        clearance around it, use `make_mating_negative`. Needs: an open part holding
+        the named bodies (`list_bodies`). Changes: adds a Combine feature. Returns:
+        `data` with `feature`, `result` (the resulting bodies' names, volumes and boxes),
         `main_volume_before_mm3`, `result_volume_mm3`, `bodies_before` and
         `bodies_after`.
 
@@ -482,12 +483,13 @@ async def register_bodies_tools(
 
         Use it to place bodies inside one part, e.g. after `insert_part`, or to
         repeat a body (`copy`, `copies`). A shift and a turn make two Move/Copy Body
-        features, the shift first. For a component of an assembly, use
+        features, the shift first. A moved body takes the feature's name
+        (Body-Move/Copy1). For a component of an assembly, use
         `set_component_transform`. Needs: an open part holding the named bodies.
         Changes: adds one or two Move/Copy Body features. Returns: `data` with
         `features`, `new_bodies` (the copies' names, volumes and boxes), `moved`
-        (each moved body's box centre before and after, and the shift) and
-        `bodies_after`.
+        (each moved body's `name_now`, box centre before and after, and the shift)
+        and `bodies_after`.
 
         Args:
             input_data: The bodies and the move. `bodies` and `translate_mm` (mm)

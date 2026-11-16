@@ -4507,6 +4507,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             moved.append(
                 {
                     "name": name,
+                    "name_now": name,
                     "center_before_mm": [round(v, 4) + 0.0 for v in was],
                     "center_after_mm": [round(v, 4) + 0.0 for v in now],
                     "center_shift_mm": [
