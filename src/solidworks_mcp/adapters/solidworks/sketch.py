@@ -2621,11 +2621,21 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
     when either SW or the adapter thinks a sketch is in edit mode.
     Adapter-side state is always cleared on success.
 
+    A sketch ``edit_sketch`` opened on a part with no unsaved changes, and
+    left as it was (``feature_editing.unchanged_since_opened``), is exited
+    with ``InsertSketch(False)``: nothing changed, so nothing is rebuilt.
+    Such a round trip made only to read the geometry marked the Lid part
+    modified. The result's ``metadata`` then says ``unchanged`` and the
+    document's ``is_dirty`` afterwards: ``IModelDoc2.SetSaveFlag`` only
+    sets the flag, so a flag SolidWorks set can't be cleared.
+
     Args:
         adapter: A ``PyWin32Adapter`` with a non-``None`` ``currentModel``.
 
     Returns:
-        AdapterResult[None]: On success, ``status`` is ``SUCCESS``.
+        AdapterResult[None]: On success, ``status`` is ``SUCCESS``, with
+        ``metadata`` ``{"unchanged": True, "rebuilt": False, "is_dirty": ...}``
+        after a read-only round trip.
         When neither SW nor the adapter has an active sketch,
         ``status`` is ``WARNING`` (already-exited is not a failure).
         When ``currentModel`` is ``None``, also returns ``WARNING`` so
@@ -2650,7 +2660,11 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
             error="No active sketch to exit",
         )
 
+    round_trip: dict[str, Any] = {}
+
     def _exit_operation() -> str:
+        from .feature_editing import save_flag, unchanged_since_opened
+
         # ``GetActiveSketch2`` is a real zero-arg method on IModelDoc2.
         # Without flagging, pywin32 late binding resolves it as a property
         # and SW returns ``Member not found`` — the same root cause as
@@ -2668,7 +2682,11 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
         # warn.  Using ``data`` to signal "no_op" lets callers tell the
         # difference between "I exited a sketch" and "nothing was open".
         if sw_active is None and adapter_active is None:
+            adapter._opened_sketch = None
             return "no_active_sketch"
+
+        # Read before leaving: still in edit mode, as edit_sketch found it?
+        unchanged = unchanged_since_opened(adapter, adapter.currentSketch or sw_active)
 
         # Prefer the adapter's SketchManager handle when available (it was
         # captured at create_sketch time on the executor thread, so it's
@@ -2682,10 +2700,17 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
         # Hand the document back with SolidWorks' default (inference on) for
         # interactive sketching; create_sketch turned AddToDB on.
         adapter._attempt(lambda: setattr(sketch_manager, "AddToDB", False))
-        sketch_manager.InsertSketch(True)
+        # InsertSketch(UpdateEditRebuild): rebuild only when something changed.
+        sketch_manager.InsertSketch(not unchanged)
         adapter.currentSketch = None
         adapter.currentSketchManager = None
         adapter._reset_sketch_entity_registry()
+        if unchanged:
+            round_trip.update(
+                unchanged=True,
+                rebuilt=False,
+                is_dirty=save_flag(adapter, adapter.currentModel),
+            )
         return "exited"
 
     result = cast(
@@ -2706,7 +2731,12 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
     if result.is_success:
         return cast(
             AdapterResult[None],
-            AdapterResult(status=AdapterResultStatus.SUCCESS, data=None),
+            AdapterResult(
+                status=AdapterResultStatus.SUCCESS,
+                data=None,
+                execution_time=result.execution_time,
+                metadata=dict(round_trip) or None,
+            ),
         )
     return cast(AdapterResult[None], result)
 

@@ -168,3 +168,32 @@ async def test_a_feature_is_not_a_sketch(part: Any) -> None:
     result = await adapter.edit_sketch(boss.data.name)
 
     assert result.error == f"{boss.data.name!r} is a Feature, not a sketch."
+
+
+# ---- a sketch opened only to read it --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("metadata", "unchanged", "warned"),
+    [
+        ({"unchanged": True, "rebuilt": False, "is_dirty": False}, True, False),
+        ({"unchanged": True, "rebuilt": False, "is_dirty": True}, True, True),
+        (None, False, False),
+    ],
+    ids=["clean", "marked-modified", "edited"],
+)
+async def test_exit_says_when_the_sketch_was_left_as_it_was(
+    part: Any, metadata: dict[str, Any] | None, unchanged: bool, warned: bool
+) -> None:
+    adapter, tools = part
+    adapter.exit_sketch = AsyncMock(  # type: ignore[method-assign]
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data=None, metadata=metadata
+        )
+    )
+
+    reply = await tools["exit_sketch"]()
+
+    assert reply["status"] == "success"
+    assert reply.get("sketch_unchanged", False) is unchanged
+    assert ("marked the part modified" in reply.get("warning", "")) is warned

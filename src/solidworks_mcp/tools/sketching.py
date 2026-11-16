@@ -854,7 +854,8 @@ async def register_sketching_tools(
         to the `sketch_name` `create_sketch` was given. Returns: a message, plus, after
         a `sketch_name`, `sketch` with `name` (the name in the feature tree, which later
         tools take as `sketch_name`) and a `warning` when the name couldn't be given
-        (another feature has it).
+        (another feature has it). After an `edit_sketch` that changed nothing it
+        rebuilds nothing and says `sketch_unchanged`.
         """
         result = await adapter.exit_sketch()
 
@@ -864,6 +865,16 @@ async def register_sketching_tools(
             "message": "Exited sketch editing mode",
             "execution_time": result.execution_time,
         }
+        round_trip = getattr(result, "metadata", None) or {}
+        if round_trip.get("unchanged"):
+            # An edit_sketch only read: left without a rebuild.
+            reply["sketch_unchanged"] = True
+            if round_trip.get("is_dirty"):
+                reply["warning"] = (
+                    "Nothing in the sketch changed, but SolidWorks marked the part "
+                    "modified when the sketch was opened; the API can't clear that "
+                    "mark. The geometry is as it was."
+                )
         if names_on_exit:
             current, wanted = names_on_exit.popitem()
             renamed = await adapter.rename_feature(current, wanted)
@@ -1035,7 +1046,8 @@ async def register_sketching_tools(
         tools or `add_outlines`, then `exit_sketch`, which rebuilds the features that
         use it. Needs: an open part with the sketch. Changes: opens the sketch for
         editing. Returns: `sketch` with `name` and `segments` (each with `id`, `type`,
-        and `start_mm`, `end_mm` or `center_mm` in sketch coordinates).
+        and `start_mm`, `end_mm` or `center_mm` in sketch coordinates; a text has
+        `text`, `height_mm`, `font` and `position_mm` instead).
 
         Args:
             input_data: The sketch. `name` is required.

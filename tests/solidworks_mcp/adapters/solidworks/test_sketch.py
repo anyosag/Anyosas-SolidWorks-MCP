@@ -1315,6 +1315,73 @@ def test_select_sketch_entities_failures(entity: object, fragment: str) -> None:
         sketch._select_sketch_entities(adapter, ["E_1"], mark=1)
 
 
+def _opened_for_reading(dirty_after: bool) -> tuple[_FakeSketchAdapter, Mock]:
+    """A sketch edit_sketch opened on a clean part, left as it was found."""
+    from solidworks_mcp.adapters.solidworks import feature_editing
+
+    line = SimpleNamespace(
+        GetType=lambda: 0,
+        GetStartPoint2=lambda: SimpleNamespace(X=0.0, Y=0.0),
+        GetEndPoint2=lambda: SimpleNamespace(X=0.02, Y=0.0),
+        ConstructionGeometry=False,
+    )
+    open_sketch = SimpleNamespace(GetSketchSegments=lambda: (line,))
+    adapter = _FakeSketchAdapter()
+    manager = SimpleNamespace(InsertSketch=Mock())
+    adapter.currentSketchManager = manager
+    adapter.currentSketch = open_sketch
+    adapter._last_sketch_name = "Sketch2"
+    adapter.currentModel = SimpleNamespace(
+        GetActiveSketch2=lambda: open_sketch, GetSaveFlag=lambda: dirty_after
+    )
+    adapter._opened_sketch = {
+        "name": "Sketch2",
+        "was_dirty": False,
+        "segments": [
+            info for _s, info in feature_editing.describe_segments(adapter, open_sketch)
+        ],
+    }
+    return adapter, manager.InsertSketch
+
+
+@pytest.mark.parametrize("dirty_after", [False, True])
+def test_a_sketch_opened_only_to_read_it_is_left_without_a_rebuild(
+    dirty_after: bool,
+) -> None:
+    """edit_sketch + exit_sketch to read geometry marked the Lid part modified."""
+    adapter, insert_sketch = _opened_for_reading(dirty_after)
+
+    result = sketch._exit_sketch_impl(adapter)
+
+    assert result.status == AdapterResultStatus.SUCCESS
+    insert_sketch.assert_called_once_with(False)
+    assert result.metadata == {
+        "unchanged": True,
+        "rebuilt": False,
+        "is_dirty": dirty_after,
+    }
+    assert adapter._opened_sketch is None
+
+
+def test_a_sketch_that_changed_is_rebuilt_on_exit() -> None:
+    adapter, insert_sketch = _opened_for_reading(False)
+    adapter._opened_sketch["segments"][0]["end_mm"] = [25.0, 0.0]
+
+    result = sketch._exit_sketch_impl(adapter)
+
+    insert_sketch.assert_called_once_with(True)
+    assert result.metadata is None
+
+
+def test_a_stale_record_is_dropped_when_no_sketch_is_open() -> None:
+    adapter = _FakeSketchAdapter()
+    adapter.currentModel = SimpleNamespace(GetActiveSketch2=lambda: None)
+    adapter._opened_sketch = {"name": "Sketch2", "was_dirty": False, "segments": []}
+
+    assert sketch._exit_sketch_impl(adapter).status == AdapterResultStatus.WARNING
+    assert adapter._opened_sketch is None
+
+
 def test_exit_sketch_reports_insert_sketch_failure() -> None:
     adapter = _FakeSketchAdapter()
 

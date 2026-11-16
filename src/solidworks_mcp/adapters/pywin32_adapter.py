@@ -858,6 +858,7 @@ class _ComSessionCoordinator:
         adapter.currentSketch = None
         adapter.currentSketchManager = None
         adapter._last_sketch_name = None
+        adapter._opened_sketch = None
         adapter._reset_sketch_entity_registry()
         adapter._last_active_document = None
         adapter._active_document_seen = False
@@ -2298,6 +2299,8 @@ class PyWin32Adapter(
         self.currentSketch: Any | None = None
         self.currentSketchManager: Any | None = None
         self._last_sketch_name: str | None = None
+        # The sketch edit_sketch opened, as it found it (feature_editing).
+        self._opened_sketch: dict[str, Any] | None = None
         self._sketch_count: int = 0  # incremented each time a sketch is created
         self._sketch_entities: dict[str, Any] = {}
         # Cached (center_x_mm, center_y_mm) for entities whose center can't be
