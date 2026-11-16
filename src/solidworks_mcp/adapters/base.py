@@ -1786,6 +1786,186 @@ class SolidWorksAdapter(ABC):
             error="save_body_as_part is not implemented by this adapter",
         )
 
+    async def list_bodies(
+        self, visible_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the solid bodies of the active part.
+
+        Args:
+            visible_only (bool): Only the visible bodies.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``bodies`` (name, volume, box, face count)
+            and ``count``, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_bodies is not implemented by this adapter",
+        )
+
+    async def insert_part(
+        self,
+        file_path: str,
+        configuration: str | None = None,
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        break_link: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert another part's solid bodies into the active part.
+
+        Args:
+            file_path (str): The ``.sldprt`` to insert.
+            configuration (str | None): Its configuration; the active one when None.
+            translate_mm (list[float] | None): Move the new bodies by this (mm).
+            rotate_deg (float): Then turn them by this about ``axis``.
+            axis (str): ``x``, ``y`` or ``z``.
+            rotate_about_mm (list[float] | None): A point on the axis (mm).
+            break_link (bool): Break the link to the inserted file.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: the feature, ``bodies_added`` and their
+            facts, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="insert_part is not implemented by this adapter",
+        )
+
+    async def combine_bodies(
+        self, operation: str, main: str, tools: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Combine solid bodies of the active part: add, subtract or common.
+
+        Args:
+            operation (str): ``add``, ``subtract`` or ``common``.
+            main (str): The main body.
+            tools (list[str]): The tool bodies.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: the feature, the result bodies and volumes,
+            or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="combine_bodies is not implemented by this adapter",
+        )
+
+    async def move_copy_body(
+        self,
+        bodies: list[str],
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        copy: bool = False,
+        copies: int = 1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or copy solid bodies of the active part.
+
+        Args:
+            bodies (list[str]): The bodies.
+            translate_mm (list[float] | None): The shift (mm).
+            rotate_deg (float): The turn about ``axis``.
+            axis (str): ``x``, ``y`` or ``z``.
+            rotate_about_mm (list[float] | None): A point on the axis (mm).
+            copy (bool): Copy instead of moving.
+            copies (int): How many copies.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: the features, the copies and the moved
+            bodies' shift, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="move_copy_body is not implemented by this adapter",
+        )
+
+    async def delete_keep_body(
+        self, bodies: list[str], keep: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete solid bodies of the active part, or keep only them.
+
+        Args:
+            bodies (list[str]): The bodies.
+            keep (bool): Keep these and delete the rest.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: the feature and the bodies removed, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_keep_body is not implemented by this adapter",
+        )
+
+    async def split_body(
+        self,
+        plane: str | None = None,
+        sketch: str | None = None,
+        body: str | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Split solid bodies of the active part along a plane or a sketch.
+
+        Args:
+            plane (str | None): The plane to split along.
+            sketch (str | None): Or the sketch.
+            body (str | None): Only this body.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: the feature and the pieces, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="split_body is not implemented by this adapter",
+        )
+
+    async def body_clearance(
+        self, body_a: str, body_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the minimum distance between two solid bodies of the active part.
+
+        Args:
+            body_a (str): One body.
+            body_b (str): Another.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``clearance_mm``, ``touching``,
+            ``overlap_mm3`` and where, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="body_clearance is not implemented by this adapter",
+        )
+
+    async def make_mating_negative(
+        self,
+        target: str,
+        tools: list[str],
+        clearance_mm: float,
+        directions: int = 32,
+        axis: str = "y",
+        method: str = "auto",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut tool bodies, grown by a clearance, out of a target body.
+
+        Args:
+            target (str): The body to cut.
+            tools (list[str]): The bodies whose negative is cut.
+            clearance_mm (float): The gap left around them (mm).
+            directions (int): Directions the copies are shifted in.
+            axis (str): The axis the directions ring.
+            method (str): ``auto``, ``indent`` or ``shifted_copies``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: the volume removed and the residual overlap,
+            or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="make_mating_negative is not implemented by this adapter",
+        )
+
     async def check_interference(
         self, params: Any = None
     ) -> AdapterResult[dict[str, Any]]:

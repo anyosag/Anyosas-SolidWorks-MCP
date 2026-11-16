@@ -1670,6 +1670,113 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.save_body_as_part(body_name, file_path),
         )
 
+    async def list_bodies(
+        self, visible_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the active part's solid bodies using pool."""
+        return await self._execute_with_pool(
+            "list_bodies",
+            lambda adapter: adapter.list_bodies(visible_only),
+        )
+
+    async def insert_part(
+        self,
+        file_path: str,
+        configuration: str | None = None,
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        break_link: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert a part's bodies into the active part using pool."""
+        return await self._execute_with_pool(
+            "insert_part",
+            lambda adapter: adapter.insert_part(
+                file_path,
+                configuration,
+                translate_mm,
+                rotate_deg,
+                axis,
+                rotate_about_mm,
+                break_link,
+            ),
+        )
+
+    async def combine_bodies(
+        self, operation: str, main: str, tools: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Combine bodies of the active part using pool."""
+        return await self._execute_with_pool(
+            "combine_bodies",
+            lambda adapter: adapter.combine_bodies(operation, main, tools),
+        )
+
+    async def move_copy_body(
+        self,
+        bodies: list[str],
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        copy: bool = False,
+        copies: int = 1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or copy bodies of the active part using pool."""
+        return await self._execute_with_pool(
+            "move_copy_body",
+            lambda adapter: adapter.move_copy_body(
+                bodies, translate_mm, rotate_deg, axis, rotate_about_mm, copy, copies
+            ),
+        )
+
+    async def delete_keep_body(
+        self, bodies: list[str], keep: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete bodies, or keep only them, using pool."""
+        return await self._execute_with_pool(
+            "delete_keep_body",
+            lambda adapter: adapter.delete_keep_body(bodies, keep),
+        )
+
+    async def split_body(
+        self,
+        plane: str | None = None,
+        sketch: str | None = None,
+        body: str | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Split bodies along a plane or sketch using pool."""
+        return await self._execute_with_pool(
+            "split_body",
+            lambda adapter: adapter.split_body(plane, sketch, body),
+        )
+
+    async def body_clearance(
+        self, body_a: str, body_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the gap between two bodies using pool."""
+        return await self._execute_with_pool(
+            "body_clearance",
+            lambda adapter: adapter.body_clearance(body_a, body_b),
+        )
+
+    async def make_mating_negative(
+        self,
+        target: str,
+        tools: list[str],
+        clearance_mm: float,
+        directions: int = 32,
+        axis: str = "y",
+        method: str = "auto",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut a mating negative with clearance using pool."""
+        return await self._execute_with_pool(
+            "make_mating_negative",
+            lambda adapter: adapter.make_mating_negative(
+                target, tools, clearance_mm, directions, axis, method
+            ),
+        )
+
     async def check_interference(
         self, params: Any = None
     ) -> AdapterResult[dict[str, Any]]:

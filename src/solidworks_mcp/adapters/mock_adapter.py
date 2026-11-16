@@ -278,6 +278,16 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # in its own coordinates, mm, as tests set it (None: no solid body);
         # its place in the assembly is in _component_transforms.
         self.component_boxes_mm: dict[str, list[float] | None] = {}
+        # Canned multibody geometry (list_bodies and the body tools): each
+        # part's solid bodies as boxes (mm), by document path. A part the mock
+        # hasn't seen starts with part_bodies_mm; insert_part brings
+        # inserted_part_bodies_mm[<file stem>] (a 10 mm cube when unset).
+        self.part_bodies_mm: dict[str, list[float]] = {
+            "Boss-Extrude1": [0.0, 0.0, 0.0, 40.0, 10.0, 40.0]
+        }
+        self.inserted_part_bodies_mm: dict[str, dict[str, list[float]]] = {}
+        self._part_bodies: dict[str, dict[str, dict[str, Any]]] = {}
+        self._body_features: dict[str, int] = {}
 
         # Configurable simulation delays (in seconds)
         self._delays = {
@@ -3788,6 +3798,618 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "solid_bodies": [body_name],
             },
             execution_time=self._delays["model_operation"],
+        )
+
+    # ---- Multibody parts (list_bodies and the body tools) ----------------------
+    #
+    # The mock has no geometry engine: each solid body is its box (mm), with
+    # its own volume, so a subtract can lower the volume while the box stays.
+
+    def _bodies_refusal(self, operation: str) -> AdapterResult[dict[str, Any]] | None:
+        """The real adapter's refusals: no model, or not a part."""
+        from .solidworks.bodies import not_a_part_message
+
+        model = self._current_model
+        if model is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if model.type != "Part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=not_a_part_message(operation, model.type.lower()),
+            )
+        return None
+
+    @staticmethod
+    def _mock_body(box: list[float], volume: float | None = None) -> dict[str, Any]:
+        """One mock body: its box (mm), volume (mm3), face count, visibility."""
+        from .solidworks.bodies import box_volume
+
+        return {
+            "box": [float(v) for v in box],
+            "volume": box_volume(box) if volume is None else float(volume),
+            "faces": 6,
+            "visible": True,
+        }
+
+    def _mock_bodies(self) -> dict[str, dict[str, Any]]:
+        """The active part's bodies; a part first seen gets ``part_bodies_mm``."""
+        key = self._current_model.path if self._current_model else ""
+        if key not in self._part_bodies:
+            self._part_bodies[key] = {
+                name: self._mock_body(box) for name, box in self.part_bodies_mm.items()
+            }
+        return self._part_bodies[key]
+
+    @staticmethod
+    def _mock_facts(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``list_bodies``' facts for a mock body, in the real reply's shape."""
+        from .solidworks.bodies import box_area, box_center
+
+        box = body["box"]
+        return {
+            "name": name,
+            "volume_mm3": round(body["volume"], 4) + 0.0,
+            "surface_area_mm2": round(box_area(box), 4) + 0.0,
+            "center_of_mass_mm": [round(v, 4) + 0.0 for v in box_center(box)],
+            "box_mm": [round(v, 4) + 0.0 for v in box],
+            "size_mm": [round(box[k + 3] - box[k], 4) + 0.0 for k in range(3)],
+            "face_count": body["faces"],
+            "visible": body["visible"],
+        }
+
+    def _mock_missing(self, names: list[str]) -> AdapterResult[dict[str, Any]] | None:
+        """The not-found error for bodies the part doesn't hold."""
+        from .solidworks.bodies import missing_bodies_message
+
+        bodies = self._mock_bodies()
+        missing = [n for n in names if n not in bodies]
+        if missing:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=missing_bodies_message(missing, list(bodies)),
+            )
+        return None
+
+    def _mock_feature(self, stem: str) -> str:
+        """The next feature name of a kind, e.g. ``Combine2``."""
+        self._body_features[stem] = self._body_features.get(stem, 0) + 1
+        self._feature_tree_count += 1
+        return f"{stem}{self._body_features[stem]}"
+
+    @staticmethod
+    def _mock_invalid(message: str) -> AdapterResult[dict[str, Any]]:
+        from .solidworks.clearance import InvalidRequest
+
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR, error=str(InvalidRequest(message))
+        )
+
+    @staticmethod
+    def _mock_moved(
+        box: list[float],
+        translate_mm: list[float] | None,
+        rotate_deg: float,
+        axis: str,
+        rotate_about_mm: list[float] | None,
+    ) -> list[float]:
+        """A box moved by ``translate_mm``, then turned about ``axis``."""
+        from .solidworks.bodies import rotate_box, translate_box
+
+        moved = translate_box(box, translate_mm) if translate_mm else list(box)
+        if rotate_deg:
+            moved = rotate_box(moved, axis, rotate_deg, rotate_about_mm or [0, 0, 0])
+        return [round(v, 9) + 0.0 for v in moved]
+
+    async def list_bodies(
+        self, visible_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock listing the active part's solid bodies (each a box).
+
+        Args:
+            visible_only (bool): Only the visible bodies.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``bodies`` and ``count``.
+        """
+        refused = self._bodies_refusal("list_bodies")
+        if refused is not None:
+            return refused
+        await asyncio.sleep(self._delays["model_operation"])
+        bodies = [
+            self._mock_facts(name, body)
+            for name, body in self._mock_bodies().items()
+            if body["visible"] or not visible_only
+        ]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"bodies": bodies, "count": len(bodies)},
+            execution_time=self._delays["model_operation"],
+        )
+
+    async def insert_part(
+        self,
+        file_path: str,
+        configuration: str | None = None,
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        break_link: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock inserting a part's bodies into the active part.
+
+        The file must exist, as for the real adapter. Its bodies are
+        ``inserted_part_bodies_mm[<file stem>]`` (name to box, mm), or one
+        10 mm cube named ``<stem>-1``, moved as asked.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        import os as _os
+
+        refused = self._bodies_refusal("insert_part")
+        if refused is not None:
+            return refused
+        path = _os.path.abspath(str(file_path))
+        if not path.lower().endswith(".sldprt"):
+            return self._mock_invalid(f"{path} is not a part file (.sldprt).")
+        if not _os.path.isfile(path):
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=f"Part file not found: {path}"
+            )
+        await asyncio.sleep(self._delays["feature_operation"])
+        stem = _os.path.splitext(_os.path.basename(path))[0]
+        bodies = self._mock_bodies()
+        given = self.inserted_part_bodies_mm.get(stem) or {
+            f"{stem}-1": [0.0, 0.0, 0.0, 10.0, 10.0, 10.0]
+        }
+        added = []
+        for name, box in given.items():
+            unique, count = name, 1
+            while unique in bodies:
+                count += 1
+                unique = f"{name}[{count}]"
+            bodies[unique] = self._mock_body(
+                self._mock_moved(
+                    list(box), translate_mm, rotate_deg, axis, rotate_about_mm
+                )
+            )
+            added.append(unique)
+        feature = self._mock_feature(f"{stem}-")
+        moves = (
+            [self._mock_feature("Body-Move/Copy")]
+            if (translate_mm and any(translate_mm)) or rotate_deg
+            else []
+        )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": feature,
+                "file_path": path,
+                "configuration": configuration,
+                "bodies_added": added,
+                "bodies": [self._mock_facts(n, bodies[n]) for n in added],
+                "move_features": moves,
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def combine_bodies(
+        self, operation: str, main: str, tools: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock combining bodies, each a box.
+
+        An add's box is the box around them all; a subtract takes the boxes'
+        overlap off the main body's volume; a common keeps the box they all
+        share, refused when there is none.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.bodies import box_overlap, overlap_volume, union_box
+
+        refused = self._bodies_refusal("combine_bodies")
+        if refused is not None:
+            return refused
+        if main in tools or len(set(tools)) != len(tools):
+            return self._mock_invalid(
+                "give the main body once and each tool once, the main body not "
+                "among the tools."
+            )
+        refused = self._mock_missing([main, *tools])
+        if refused is not None:
+            return refused
+        await asyncio.sleep(self._delays["feature_operation"])
+        bodies = self._mock_bodies()
+        before = list(bodies)
+        target = bodies[main]
+        volume_before = target["volume"]
+        if operation == "common":
+            shared: list[float] | None = target["box"]
+            for tool in tools:
+                shared = box_overlap(shared, bodies[tool]["box"]) if shared else None
+            if shared is None:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        f"SolidWorks made no Combine (common) feature from {main} "
+                        f"and {', '.join(tools)}: the bodies don't overlap."
+                    ),
+                )
+            bodies[main] = self._mock_body(shared)
+        else:
+            box, volume = list(target["box"]), target["volume"]
+            for tool in tools:
+                other = bodies[tool]
+                shared_volume = min(
+                    overlap_volume(target["box"], other["box"]), other["volume"]
+                )
+                if operation == "add":
+                    box = union_box(box, other["box"])
+                    volume += other["volume"] - shared_volume
+                else:
+                    volume -= shared_volume
+            bodies[main] = self._mock_body(box, max(0.0, volume))
+            bodies[main]["faces"] = target["faces"] + 6 * len(tools)
+        for tool in tools:
+            del bodies[tool]
+        mark = 1 if operation == "subtract" else 2
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": self._mock_feature("Combine"),
+                "operation": operation,
+                "main": main,
+                "tools": list(tools),
+                "form": f"preselected (main body at mark {mark})",
+                "bodies_before": before,
+                "bodies_after": list(bodies),
+                "result": [self._mock_facts(main, bodies[main])],
+                "main_volume_before_mm3": round(volume_before, 4) + 0.0,
+                "result_volume_mm3": round(bodies[main]["volume"], 4) + 0.0,
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def move_copy_body(
+        self,
+        bodies: list[str],
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        copy: bool = False,
+        copies: int = 1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving or copying bodies: their boxes move.
+
+        Copy ``k`` of a body is moved ``k`` times the translation (or turned
+        ``k`` times the angle, with no translation), as SolidWorks spaces
+        copies.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.bodies import box_center
+
+        refused = self._bodies_refusal("move_copy_body")
+        if refused is not None:
+            return refused
+        moving = bool(translate_mm and any(translate_mm))
+        if not moving and not rotate_deg:
+            return self._mock_invalid(
+                "give translate_mm or rotate_deg; nothing would move."
+            )
+        refused = self._mock_missing(list(bodies))
+        if refused is not None:
+            return refused
+        await asyncio.sleep(self._delays["feature_operation"])
+        store = self._mock_bodies()
+        features = [self._mock_feature("Body-Move/Copy")]
+        if moving and rotate_deg:
+            features.append(self._mock_feature("Body-Move/Copy"))
+        new, moved = [], []
+        for name in bodies:
+            source = store[name]
+            if copy:
+                for k in range(1, copies + 1):
+                    shift = [k * float(v) for v in translate_mm] if moving else None
+                    turn = rotate_deg if moving else k * rotate_deg
+                    copy_name = f"{features[0]}[{len(new) + 1}]"
+                    store[copy_name] = self._mock_body(
+                        self._mock_moved(
+                            source["box"], shift, turn, axis, rotate_about_mm
+                        ),
+                        source["volume"],
+                    )
+                    new.append(copy_name)
+                continue
+            was = box_center(source["box"])
+            source["box"] = self._mock_moved(
+                source["box"],
+                translate_mm if moving else None,
+                rotate_deg,
+                axis,
+                rotate_about_mm,
+            )
+            now = box_center(source["box"])
+            moved.append(
+                {
+                    "name": name,
+                    "center_before_mm": [round(v, 4) + 0.0 for v in was],
+                    "center_after_mm": [round(v, 4) + 0.0 for v in now],
+                    "center_shift_mm": [
+                        round(now[k] - was[k], 4) + 0.0 for k in range(3)
+                    ],
+                }
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "features": features,
+                "copy": bool(copy),
+                "bodies": list(bodies),
+                "new_bodies": [self._mock_facts(n, store[n]) for n in new],
+                "moved": moved,
+                "bodies_after": list(store),
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def delete_keep_body(
+        self, bodies: list[str], keep: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a Body-Delete/Keep feature.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        refused = self._bodies_refusal("delete_keep_body")
+        if refused is not None:
+            return refused
+        refused = self._mock_missing(list(bodies))
+        if refused is not None:
+            return refused
+        store = self._mock_bodies()
+        before = list(store)
+        if keep and set(bodies) >= set(before):
+            return self._mock_invalid(
+                "keeping every solid body deletes nothing; name the bodies to keep."
+            )
+        await asyncio.sleep(self._delays["feature_operation"])
+        removed = [n for n in before if (n not in bodies) == keep]
+        for name in removed:
+            del store[name]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": self._mock_feature("Body-Delete/Keep"),
+                "keep": bool(keep),
+                "bodies": list(bodies),
+                "removed": removed,
+                "expected_removed": list(removed),
+                "bodies_after": list(store),
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def split_body(
+        self,
+        plane: str | None = None,
+        sketch: str | None = None,
+        body: str | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a Split feature: each box cut in two.
+
+        A default plane cuts at 0 across its normal (Front: z, Top: y,
+        Right: x); a plane made with ``create_reference_plane`` or a sketch
+        cuts each box in half across its longest side.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.bodies import AXES, box_volume, split_box
+        from .solidworks.sketch import plane_candidates_for
+
+        refused = self._bodies_refusal("split_body")
+        if refused is not None:
+            return refused
+        normals = {"front": AXES["z"], "top": AXES["y"], "right": AXES["x"]}
+        key, candidates = plane_candidates_for(plane) if plane else (None, [])
+        if plane and key is None and plane not in self._reference_planes:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=f"Plane not found: {plane}"
+            )
+        if sketch and sketch not in self._sketches:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=f"Sketch not found: {sketch}"
+            )
+        if body:
+            refused = self._mock_missing([body])
+            if refused is not None:
+                return refused
+        store = self._mock_bodies()
+        before = list(store)
+        tool = candidates[0] if key else (plane or sketch or "")
+        await asyncio.sleep(self._delays["feature_operation"])
+        cuts = {}
+        for name in [body] if body else before:
+            box = store[name]["box"]
+            if key is not None:
+                axis = normals[key]
+                at = 0.0
+            else:
+                sizes = [box[k + 3] - box[k] for k in range(3)]
+                axis = sizes.index(max(sizes))
+                at = (box[axis] + box[axis + 3]) / 2.0
+            halves = split_box(box, axis, at)
+            if halves is not None:
+                cuts[name] = halves
+        if not cuts:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"{tool} splits no body (PreSplitBody2 gave none); it must cut "
+                    "through a solid body."
+                ),
+            )
+        feature = self._mock_feature("Split")
+        pieces = []
+        for name, halves in cuts.items():
+            whole = store.pop(name)
+            # A subtracted body keeps its box, so share its own volume out.
+            total = sum(box_volume(h) for h in halves)
+            for half in halves:
+                piece = f"{feature}[{len(pieces) + 1}]"
+                share = box_volume(half) / total
+                store[piece] = self._mock_body(half, whole["volume"] * share)
+                pieces.append(piece)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": feature,
+                "tool": tool,
+                "body": body,
+                "pieces": [self._mock_facts(n, store[n]) for n in pieces],
+                "bodies_before": before,
+                "bodies_after": list(store),
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def body_clearance(
+        self, body_a: str, body_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock the gap between two bodies: the distance between their boxes.
+
+        Overlapping boxes are touching, with their shared volume as
+        ``overlap_mm3``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.bodies import OVERLAP_MM3, nearest_points, overlap_volume
+        from .solidworks.clearance import TOUCHING_MM, box_distance
+
+        refused = self._bodies_refusal("body_clearance")
+        if refused is not None:
+            return refused
+        if body_a == body_b:
+            return self._mock_invalid(
+                f"body_a and body_b are both {body_a!r}; give two different bodies."
+            )
+        refused = self._mock_missing([body_a, body_b])
+        if refused is not None:
+            return refused
+        await asyncio.sleep(self._delays["model_operation"])
+        store = self._mock_bodies()
+        a, b = store[body_a]["box"], store[body_b]["box"]
+        overlap = overlap_volume(a, b)
+        reply: dict[str, Any] = {"body_a": body_a, "body_b": body_b}
+        if overlap > OVERLAP_MM3:
+            reply.update(
+                clearance_mm=0.0,
+                touching=True,
+                overlap_mm3=round(overlap, 6) + 0.0,
+                point_a_mm=None,
+                point_b_mm=None,
+                face_a=None,
+                face_b=None,
+                pairs_checked=0,
+                pairs_total=0,
+            )
+        else:
+            clearance = box_distance(a, b)
+            touching = clearance <= TOUCHING_MM
+            point_a, point_b = nearest_points(a, b)
+            reply.update(
+                clearance_mm=0.0 if touching else round(clearance, 6),
+                touching=touching,
+                overlap_mm3=0.0,
+                point_a_mm=[round(v, 4) + 0.0 for v in point_a],
+                point_b_mm=[round(v, 4) + 0.0 for v in point_b],
+                face_a={"kind": "plane", "box_mm": [round(v, 4) for v in a]},
+                face_b={"kind": "plane", "box_mm": [round(v, 4) for v in b]},
+                pairs_checked=1,
+                pairs_total=36,
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=reply,
+            execution_time=self._delays["model_operation"],
+        )
+
+    async def make_mating_negative(
+        self,
+        target: str,
+        tools: list[str],
+        clearance_mm: float,
+        directions: int = 32,
+        axis: str = "y",
+        method: str = "auto",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock cutting the tools, grown by the clearance, out of the target.
+
+        The volume removed is each tool's box, grown by the clearance,
+        overlapping the target's box; nothing of the tools is left in it.
+        ``auto`` reports the shifted copies the session needed.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.bodies import folder_name, grow_box, overlap_volume
+
+        refused = self._bodies_refusal("make_mating_negative")
+        if refused is not None:
+            return refused
+        if target in tools or len(set(tools)) != len(tools):
+            return self._mock_invalid(
+                "give the target once and each tool once, the target not among "
+                "the tools."
+            )
+        refused = self._mock_missing([target, *tools])
+        if refused is not None:
+            return refused
+        await asyncio.sleep(self._delays["feature_operation"])
+        store = self._mock_bodies()
+        body = store[target]
+        before = body["volume"]
+        removed = min(
+            before,
+            sum(
+                overlap_volume(body["box"], grow_box(store[t]["box"], clearance_mm))
+                for t in tools
+            ),
+        )
+        body["volume"] = before - removed
+        indent = method == "indent"
+        if indent:
+            features = [self._mock_feature("Indent")]
+        else:
+            features = [self._mock_feature("Imported") for _t in tools]
+            features.append(self._mock_feature("Combine"))
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "method": "indent" if indent else "shifted_copies",
+                "target": target,
+                "result_body": target,
+                "tools": list(tools),
+                "clearance_mm": float(clearance_mm),
+                "directions": int(directions),
+                "axis": axis,
+                "copies_per_tool": 0 if indent else 2 * int(directions) + 3,
+                "volume_before_mm3": round(before, 6) + 0.0,
+                "volume_after_mm3": round(body["volume"], 6) + 0.0,
+                "volume_removed_mm3": round(removed, 6) + 0.0,
+                "residual_overlap_mm3": 0.0,
+                "features": features,
+                "folder": None if indent else folder_name(tools),
+                "attempts": [],
+            },
+            execution_time=self._delays["feature_operation"],
         )
 
     async def check_interference(

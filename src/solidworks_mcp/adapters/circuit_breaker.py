@@ -1845,6 +1845,144 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"body_name": body_name, "file_path": file_path},
         )
 
+    async def list_bodies(
+        self, visible_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the active part's solid bodies through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "list_bodies",
+            lambda: self.adapter.list_bodies(visible_only),
+            input_dict={"visible_only": visible_only},
+        )
+
+    async def insert_part(
+        self,
+        file_path: str,
+        configuration: str | None = None,
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        break_link: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert a part's bodies into the active part through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "insert_part",
+            lambda: self.adapter.insert_part(
+                file_path,
+                configuration,
+                translate_mm,
+                rotate_deg,
+                axis,
+                rotate_about_mm,
+                break_link,
+            ),
+            input_dict={
+                "file_path": file_path,
+                "configuration": configuration,
+                "translate_mm": translate_mm,
+                "rotate_deg": rotate_deg,
+                "axis": axis,
+                "rotate_about_mm": rotate_about_mm,
+                "break_link": break_link,
+            },
+        )
+
+    async def combine_bodies(
+        self, operation: str, main: str, tools: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Combine bodies of the active part through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "combine_bodies",
+            lambda: self.adapter.combine_bodies(operation, main, tools),
+            input_dict={"operation": operation, "main": main, "tools": tools},
+        )
+
+    async def move_copy_body(
+        self,
+        bodies: list[str],
+        translate_mm: list[float] | None = None,
+        rotate_deg: float = 0.0,
+        axis: str = "z",
+        rotate_about_mm: list[float] | None = None,
+        copy: bool = False,
+        copies: int = 1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or copy bodies of the active part through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "move_copy_body",
+            lambda: self.adapter.move_copy_body(
+                bodies, translate_mm, rotate_deg, axis, rotate_about_mm, copy, copies
+            ),
+            input_dict={
+                "bodies": bodies,
+                "translate_mm": translate_mm,
+                "rotate_deg": rotate_deg,
+                "axis": axis,
+                "rotate_about_mm": rotate_about_mm,
+                "copy": copy,
+                "copies": copies,
+            },
+        )
+
+    async def delete_keep_body(
+        self, bodies: list[str], keep: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete bodies, or keep only them, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "delete_keep_body",
+            lambda: self.adapter.delete_keep_body(bodies, keep),
+            input_dict={"bodies": bodies, "keep": keep},
+        )
+
+    async def split_body(
+        self,
+        plane: str | None = None,
+        sketch: str | None = None,
+        body: str | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Split bodies along a plane or sketch through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "split_body",
+            lambda: self.adapter.split_body(plane, sketch, body),
+            input_dict={"plane": plane, "sketch": sketch, "body": body},
+        )
+
+    async def body_clearance(
+        self, body_a: str, body_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the gap between two bodies through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "body_clearance",
+            lambda: self.adapter.body_clearance(body_a, body_b),
+            input_dict={"body_a": body_a, "body_b": body_b},
+        )
+
+    async def make_mating_negative(
+        self,
+        target: str,
+        tools: list[str],
+        clearance_mm: float,
+        directions: int = 32,
+        axis: str = "y",
+        method: str = "auto",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut a mating negative with clearance through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "make_mating_negative",
+            lambda: self.adapter.make_mating_negative(
+                target, tools, clearance_mm, directions, axis, method
+            ),
+            input_dict={
+                "target": target,
+                "tools": tools,
+                "clearance_mm": clearance_mm,
+                "directions": directions,
+                "axis": axis,
+                "method": method,
+            },
+        )
+
     async def check_interference(
         self, params: Any = None
     ) -> AdapterResult[dict[str, Any]]:
