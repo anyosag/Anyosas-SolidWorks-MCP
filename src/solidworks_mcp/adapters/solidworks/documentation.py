@@ -331,6 +331,149 @@ def _sequence(raw: Any) -> list[Any]:
     return [raw]
 
 
+#: Members the dimension walk calls on each feature (flagging only these is
+#: far cheaper than the whole ``IFeature`` interface on every fresh dispatch).
+_DIMENSION_WALK_MEMBERS = (
+    "GetNextFeature",
+    "GetFirstSubFeature",
+    "GetNextSubFeature",
+    "GetFirstDisplayDimension",
+    "GetNextDisplayDimension",
+)
+
+#: How deep under a top-level feature the walk looks (a feature's sketch is
+#: one level down, a folder's features one more).
+_SUB_FEATURE_DEPTH = 2
+
+#: A runaway guard on every chain the walk follows.
+_WALK_LIMIT = 20000
+
+
+#: What a member call that raised gives :func:`_read_member`.
+_FAILED = object()
+
+
+def _read_member(adapter: Any, obj: Any, name: str) -> Any:
+    """A zero-argument member, called as a method or read as a property.
+
+    Unflagged, late binding reads ``FirstFeature`` as a property and hands
+    back the feature: a dispatch, itself callable, whose call fails. The
+    walk then ended before it began and listed nothing. Such a dispatch is
+    returned as it is; a method that raised gives ``None``.
+    """
+    member = adapter._attempt(lambda: getattr(obj, name), default=None)
+    if not callable(member):
+        return member
+    called = adapter._attempt(member, default=_FAILED)
+    if called is not _FAILED:
+        return called
+    return member if hasattr(member, "_oleobj_") else None
+
+
+def _feature_name(adapter: Any, feature: Any) -> str:
+    """A feature's tree name; empty when it can't be read."""
+    return str(adapter._attempt(lambda: feature.Name, default="") or "")
+
+
+def _top_level_features(adapter: Any, model: Any) -> list[Any]:
+    """The model's top-level features in tree order.
+
+    ``FirstFeature`` / ``GetNextFeature``, and, when that walk comes up
+    short of ``IFeatureManager.GetFeatureCount(True)``, the rest by
+    ``FeatureByPositionReverse`` (zero-based from the end): on some
+    installs ``GetNextFeature`` stops at the system folders, before every
+    sketch and body feature (see ``_list_document_features`` in
+    ``pywin32_adapter``). A name seen twice is listed once.
+    """
+    _flag(adapter, model, "FirstFeature", "FeatureByPositionReverse")
+    features: list[Any] = []
+    names: set[str] = set()
+
+    def _add(feature: Any) -> bool:
+        _flag(adapter, feature, *_DIMENSION_WALK_MEMBERS)
+        name = _feature_name(adapter, feature)
+        if name and name in names:
+            return False
+        names.add(name)
+        features.append(feature)
+        return True
+
+    feature = _read_member(adapter, model, "FirstFeature")
+    while feature is not None and len(features) < _WALK_LIMIT and _add(feature):
+        feature = adapter._attempt(lambda f=feature: f.GetNextFeature(), default=None)
+    manager = adapter._attempt(lambda: model.FeatureManager, default=None)
+    count = adapter._attempt(lambda: int(manager.GetFeatureCount(True) or 0), default=0)
+    if count and len(features) < count:
+        for position in range(min(count, _WALK_LIMIT) - 1, -1, -1):
+            found = adapter._attempt(
+                lambda p=position: model.FeatureByPositionReverse(p), default=None
+            )
+            if found is not None:
+                _add(found)
+    return features
+
+
+def _sub_features(adapter: Any, feature: Any) -> list[Any]:
+    """A feature's sub-features (an extrude's sketch, a folder's features)."""
+    subs: list[Any] = []
+    sub = adapter._attempt(lambda: feature.GetFirstSubFeature(), default=None)
+    while sub is not None and len(subs) < _WALK_LIMIT:
+        _flag(adapter, sub, *_DIMENSION_WALK_MEMBERS)
+        subs.append(sub)
+        sub = adapter._attempt(lambda s=sub: s.GetNextSubFeature(), default=None)
+    return subs
+
+
+def _dimension_features(adapter: Any, model: Any) -> list[tuple[Any, str]]:
+    """Every feature whose dimensions are listed, with its name, in tree order.
+
+    The top-level features (:func:`_top_level_features`), each followed by
+    its sub-features to :data:`_SUB_FEATURE_DEPTH`: a sketch an extrude
+    absorbed sits under it, and its dimensions (``D1@Sketch1``) are its own.
+    A part made of Instant3D ("ICE") extrudes listed no dimensions at all.
+
+    Raises:
+        RuntimeError: When the tree can't be read at all (no feature).
+    """
+    top = _top_level_features(adapter, model)
+    if not top:
+        raise RuntimeError(
+            "Could not read the feature tree (FirstFeature returned nothing), so "
+            "no dimensions could be listed"
+        )
+    out: list[tuple[Any, str]] = []
+    seen: set[str] = set()
+
+    def _visit(feature: Any, depth: int) -> None:
+        name = _feature_name(adapter, feature)
+        if name and name in seen:
+            return
+        seen.add(name)
+        out.append((feature, name))
+        if depth < _SUB_FEATURE_DEPTH:
+            for sub in _sub_features(adapter, feature):
+                _visit(sub, depth + 1)
+
+    for feature in top:
+        _visit(feature, 0)
+    return out
+
+
+def _feature_dimensions(adapter: Any, feature: Any) -> list[Any]:
+    """The ``IDimension`` of each display dimension on one feature."""
+    dims: list[Any] = []
+    display = adapter._attempt(lambda: feature.GetFirstDisplayDimension(), default=None)
+    while display is not None and len(dims) < _WALK_LIMIT:
+        disp = _sw_type_info.flagged(display, "IDisplayDimension")
+        dim = adapter._attempt(lambda d=disp: d.GetDimension2(0), default=None)
+        if dim is not None:
+            dims.append(_sw_type_info.flagged(dim, "IDimension"))
+        display = adapter._attempt(
+            lambda d=display: feature.GetNextDisplayDimension(d), default=None
+        )
+    return dims
+
+
 #: ``IMeasure`` properties ``measure_entities`` reports, and their keys.
 #: SolidWorks answers ``-1`` for one that doesn't apply to the selection.
 _MEASURE_PROPERTIES = (
@@ -492,10 +635,14 @@ class SolidWorksDocumentationMixin:
     ) -> AdapterResult[list[dict[str, Any]]]:
         """List every dimension in the active part or assembly.
 
-        Walks ``IModelDoc2::FirstFeature`` / ``IFeature::GetNextFeature`` and
-        each feature's ``GetFirstDisplayDimension`` chain. ``full_name`` (e.g.
+        Walks the feature tree (:func:`_dimension_features`: the top-level
+        features, completed by ``FeatureByPositionReverse`` when
+        ``GetNextFeature`` stops short, and each one's sub-features, where an
+        absorbed sketch's dimensions live) and each feature's
+        ``GetFirstDisplayDimension`` chain. ``full_name`` (e.g.
         ``"D1@Sketch1"``) is the name ``set_dimension`` accepts, so the pair
         gives edit-by-name access to every driving parameter in the model.
+        A dimension reached twice is listed once.
 
         Args:
             feature_name: Only list dimensions of this feature (case-insensitive).
@@ -514,52 +661,34 @@ class SolidWorksDocumentationMixin:
         def _list() -> list[dict[str, Any]]:
             model = self.currentModel
             dims: list[dict[str, Any]] = []
-            feature = self._attempt(lambda: model.FirstFeature(), default=None)
-            guard_count = 0
-            while feature is not None and guard_count < 20000:
-                guard_count += 1
-                feat = _sw_type_info.flagged(feature, "IFeature")
-                name = str(self._attempt(lambda f=feat: f.Name, default="") or "")
-                if not target or name.lower() == target:
-                    display = self._attempt(
-                        lambda f=feat: f.GetFirstDisplayDimension(), default=None
+            listed: set[str] = set()
+            for feat, name in _dimension_features(self, model):
+                if target and name.lower() != target:
+                    continue
+                for dim in _feature_dimensions(self, feat):
+                    kind, unit, _factor = dimension_kind(self, dim)
+                    full_name = _strip_document_suffix(
+                        self._attempt(lambda d=dim: d.FullName, default=None)
                     )
-                    while display is not None:
-                        disp = _sw_type_info.flagged(display, "IDisplayDimension")
-                        dim = self._attempt(
-                            lambda d=disp: d.GetDimension2(0), default=None
-                        )
-                        if dim is not None:
-                            dim = _sw_type_info.flagged(dim, "IDimension")
-                            kind, unit, _factor = dimension_kind(self, dim)
-                            dims.append(
-                                {
-                                    "full_name": _strip_document_suffix(
-                                        self._attempt(
-                                            lambda d=dim: d.FullName, default=None
-                                        )
-                                    ),
-                                    "feature": name,
-                                    "value": self._attempt(
-                                        lambda d=dim: d.Value, default=None
-                                    ),
-                                    "system_value": self._attempt(
-                                        lambda d=dim: d.SystemValue, default=None
-                                    ),
-                                    "kind": kind,
-                                    "units": unit,
-                                    "read_only": bool(
-                                        self._attempt(
-                                            lambda d=dim: d.ReadOnly, default=False
-                                        )
-                                    ),
-                                }
-                            )
-                        display = self._attempt(
-                            lambda f=feat, d=display: f.GetNextDisplayDimension(d),
-                            default=None,
-                        )
-                feature = self._attempt(lambda f=feat: f.GetNextFeature(), default=None)
+                    if full_name is not None and full_name in listed:
+                        continue
+                    if full_name is not None:
+                        listed.add(full_name)
+                    dims.append(
+                        {
+                            "full_name": full_name,
+                            "feature": name,
+                            "value": self._attempt(lambda d=dim: d.Value, default=None),
+                            "system_value": self._attempt(
+                                lambda d=dim: d.SystemValue, default=None
+                            ),
+                            "kind": kind,
+                            "units": unit,
+                            "read_only": bool(
+                                self._attempt(lambda d=dim: d.ReadOnly, default=False)
+                            ),
+                        }
+                    )
             if target and not dims:
                 raise LookupError(
                     f"No dimensions found on feature {feature_name!r}; list "

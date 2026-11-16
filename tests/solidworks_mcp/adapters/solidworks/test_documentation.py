@@ -314,6 +314,156 @@ async def test_list_model_dimensions_unknown_feature_is_not_found() -> None:
     assert "No dimensions found on feature 'Fillet9'" in result.error
 
 
+# ---- the Lid: Instant3D extrudes whose sketches sit under them -------------------
+
+
+class _TreeFeature(_Feature):
+    """A feature with sub-features (``GetFirstSubFeature`` / ``GetNextSubFeature``)."""
+
+    def __init__(self, name: str, dims: list[Any], subs: list[Any] = ()) -> None:
+        super().__init__(name, dims)
+        self._subs = list(subs)
+        self._parent: _TreeFeature | None = None
+        for sub in self._subs:
+            sub._parent = self
+
+    def GetFirstSubFeature(self):  # noqa: N802 - COM name
+        return self._subs[0] if self._subs else None
+
+    def GetNextSubFeature(self):  # noqa: N802 - COM name
+        siblings = self._parent._subs if self._parent else []
+        index = siblings.index(self) + 1
+        return siblings[index] if index < len(siblings) else None
+
+
+def _chain(features: list[_Feature]) -> list[_Feature]:
+    for first, second in zip(features, features[1:], strict=False):
+        first._next = second
+    return features
+
+
+def _lid(top: list[_Feature], count: int = 0, by_position: Any = None) -> Any:
+    _chain(top)
+    model = SimpleNamespace(
+        GetType=lambda: 1,
+        FirstFeature=lambda: top[0] if top else None,
+        FeatureManager=SimpleNamespace(GetFeatureCount=lambda _top: count),
+    )
+    if by_position is not None:
+        model.FeatureByPositionReverse = by_position
+    return model
+
+
+def _boss(n: int) -> _TreeFeature:
+    """An "ICE" Boss-Extrude whose depth is its own and whose sketch is under it."""
+    sketch = _TreeFeature(f"Sketch{n}", [_dim(f"D1@Sketch{n}@Lid.Part", 91.6)])
+    return _TreeFeature(
+        f"Boss-Extrude{n}", [_dim(f"D1@Boss-Extrude{n}@Lid.Part", 1.0)], [sketch]
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_absorbed_sketchs_dimensions_are_listed_after_its_feature() -> None:
+    top = [_TreeFeature("Origin", []), _boss(2), _boss(3)]
+
+    result = await _Harness(_lid(top)).list_model_dimensions()
+
+    assert result.is_success, result.error
+    assert [(d["feature"], d["full_name"]) for d in result.data] == [
+        ("Boss-Extrude2", "D1@Boss-Extrude2"),
+        ("Sketch2", "D1@Sketch2"),
+        ("Boss-Extrude3", "D1@Boss-Extrude3"),
+        ("Sketch3", "D1@Sketch3"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_absorbed_sketch_can_be_asked_for_by_name() -> None:
+    result = await _Harness(_lid([_boss(2)])).list_model_dimensions("sketch2")
+
+    assert [d["full_name"] for d in result.data] == ["D1@Sketch2"]
+
+
+@pytest.mark.asyncio
+async def test_a_walk_that_stops_at_the_folders_is_completed_by_position() -> None:
+    """GetNextFeature can stop at the system folders before any body feature."""
+    folder = _TreeFeature("Comments", [])
+    later = [folder, _boss(2), _boss(3)]
+    # Zero-based from the end; one position reads nothing.
+    by_position = [None, *reversed(later)]
+    model = _lid([folder], count=4, by_position=lambda position: by_position[position])
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == [
+        "D1@Boss-Extrude2",
+        "D1@Sketch2",
+        "D1@Boss-Extrude3",
+        "D1@Sketch3",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_reached_twice_is_listed_once() -> None:
+    """A sketch both on the top level and under its feature is visited once,
+    and a dimension two features report is listed once."""
+    boss = _boss(2)
+    sketch = boss._subs[0]
+    shared = _TreeFeature("Fillet1", [_dim("D1@Boss-Extrude2@Lid.Part", 1.0)])
+    model = _lid([sketch, boss, shared])
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == [
+        "D1@Sketch2",
+        "D1@Boss-Extrude2",
+    ]
+
+
+class _PropertyFeature(_TreeFeature):
+    """What an unflagged ``model.FirstFeature`` reads as: the feature itself,
+    a dispatch whose call fails."""
+
+    _oleobj_ = object()
+
+    def __call__(self) -> None:
+        raise RuntimeError("Member not found")
+
+
+@pytest.mark.asyncio
+async def test_first_feature_read_as_a_property_still_starts_the_walk() -> None:
+    first = _PropertyFeature("Origin", [])
+    boss = _boss(2)
+    first._next = boss
+    model = SimpleNamespace(GetType=lambda: 1, FirstFeature=first)
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == ["D1@Boss-Extrude2", "D1@Sketch2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [lambda: None, _raise, None])
+async def test_a_tree_that_cannot_be_read_is_an_error(first: Any) -> None:
+    """It used to answer an empty list, as if the part had no dimensions."""
+    model = SimpleNamespace(GetType=lambda: 1, FirstFeature=first)
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert result.is_error
+    assert "Could not read the feature tree" in result.error
+
+
+@pytest.mark.asyncio
+async def test_a_feature_tree_that_loops_ends() -> None:
+    boss = _boss(2)
+    boss._next = boss  # GetNextFeature handing back the same feature
+
+    result = await _Harness(_lid([boss])).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == ["D1@Boss-Extrude2", "D1@Sketch2"]
+
+
 # ---- measure_entities ---------------------------------------------------------
 
 
