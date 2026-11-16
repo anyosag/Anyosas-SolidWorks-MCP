@@ -677,11 +677,11 @@ def _create_extrusion_impl(
                     adapter.constants["swEndCondBlind"],
                     normalized.depth / 1000.0,
                     0.0,
+                    bool(normalized.draft_angle),  # Dchk1: a draft only when on
                     False,
                     False,
                     False,
-                    False,
-                    normalized.draft_angle * 3.14159 / 180.0,
+                    math.radians(normalized.draft_angle),
                     0.0,
                     False,
                     False,
@@ -706,7 +706,7 @@ def _create_extrusion_impl(
                     normalized.depth / 1000.0,
                     0.0,
                     False,
-                    normalized.draft_angle * 3.14159 / 180.0,
+                    math.radians(normalized.draft_angle),
                     0.0,
                     False,
                     False,
@@ -731,11 +731,11 @@ def _create_extrusion_impl(
                     adapter.constants["swEndCondBlind"],
                     normalized.depth / 1000.0,
                     0.0,
+                    bool(normalized.draft_angle),  # Dchk1: a draft only when on
                     False,
                     False,
                     False,
-                    False,
-                    normalized.draft_angle * 3.14159 / 180.0,
+                    math.radians(normalized.draft_angle),
                     0.0,
                     False,
                     False,
@@ -757,11 +757,11 @@ def _create_extrusion_impl(
                     adapter.constants["swEndCondBlind"],
                     normalized.depth / 1000.0,
                     0.0,
+                    bool(normalized.draft_angle),  # Dchk1: a draft only when on
                     False,
                     False,
                     False,
-                    False,
-                    normalized.draft_angle * 3.14159 / 180.0,
+                    math.radians(normalized.draft_angle),
                     0.0,
                     False,
                     False,
@@ -1821,11 +1821,11 @@ def _create_cut_extrude_impl(
                 t2,  # T2
                 depth_m,  # D1
                 0.0,  # D2
+                bool(normalized.draft_angle),  # Dchk1: a draft only when on
                 False,
                 False,
-                False,
-                False,  # Dchk1/2, Ddir1/2
-                normalized.draft_angle * 3.14159 / 180.0,  # Dang1
+                False,  # Dchk2, Ddir1/2
+                math.radians(normalized.draft_angle),  # Dang1
                 0.0,  # Dang2
                 False,
                 False,

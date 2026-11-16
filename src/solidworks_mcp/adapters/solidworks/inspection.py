@@ -155,8 +155,13 @@ def _thin(adapter: Any, data: Any, values: dict[str, Any]) -> None:
         )
 
 
-def read_extrude(adapter: Any, data: Any) -> dict[str, Any]:
-    """An extrude's or cut's ``IExtrudeFeatureData2``, in mm and degrees."""
+def read_extrude(adapter: Any, data: Any, cut: bool | None = None) -> dict[str, Any]:
+    """An extrude's or cut's ``IExtrudeFeatureData2``, in mm and degrees.
+
+    ``cut`` comes from the feature's type ("Extrusion" or "Cut"):
+    ``IsBossFeature`` read False on a boss extrude (SolidWorks 2026 SP4.1
+    probe, 2026-11-16), so it is asked only when the type doesn't say.
+    """
     both = _flag_value(_attempt(adapter, lambda: data.BothDirections))
     values: dict[str, Any] = {
         "direction1": _extrude_direction(adapter, data, True),
@@ -168,7 +173,9 @@ def read_extrude(adapter: Any, data: Any) -> dict[str, Any]:
     if both:
         values["direction2"] = _extrude_direction(adapter, data, False)
     _thin(adapter, data, values)
-    boss = _attempt(adapter, lambda: data.IsBossFeature())
+    boss = (
+        not cut if cut is not None else _attempt(adapter, lambda: data.IsBossFeature())
+    )
     if boss is not None:
         values["cut"] = not boss
         if boss:
@@ -303,8 +310,8 @@ def read_circular_pattern(adapter: Any, data: Any) -> dict[str, Any]:
 
 #: ``feature_kind`` -> the reader of its definition.
 READERS: dict[str, Callable[[Any, Any], dict[str, Any]]] = {
-    "Extrusion": read_extrude,
-    "Cut": read_extrude,
+    "Extrusion": lambda adapter, data: read_extrude(adapter, data, cut=False),
+    "Cut": lambda adapter, data: read_extrude(adapter, data, cut=True),
     "ICE": read_extrude,
     "Revolution": read_revolve,
     "RevCut": read_revolve,

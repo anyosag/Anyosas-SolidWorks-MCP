@@ -174,6 +174,15 @@ def test_a_cut_reads_its_side_and_one_without_a_boss_flag_says_nothing() -> None
     assert "cut" not in unknown and "merge" not in unknown
 
 
+def test_the_feature_type_decides_boss_or_cut_over_is_boss_feature() -> None:
+    # SolidWorks 2026 SP4.1 read IsBossFeature False on a boss extrude.
+    boss = ins.READERS["Extrusion"](_Adapter(), _Extrude(boss=False, both=False))
+    cut = ins.READERS["Cut"](_Adapter(), _Extrude(boss=True, both=False))
+
+    assert boss["cut"] is False and boss["merge"] is True
+    assert cut["cut"] is True and cut["flip_side_to_cut"] is True
+
+
 def test_a_revolve_reads_its_angles() -> None:
     def data(kind: int) -> Any:
         return SimpleNamespace(

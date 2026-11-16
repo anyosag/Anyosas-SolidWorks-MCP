@@ -3092,6 +3092,43 @@ def test_solid_extrusion_honours_mid_plane(params: ExtrusionParameters) -> None:
     assert result.data.parameters["end_condition"] == "MidPlane"
 
 
+@pytest.mark.parametrize(("draft", "on"), [(3.0, True), (0.0, False)])
+def test_a_draft_angle_turns_the_draft_on(draft: float, on: bool) -> None:
+    """Dchk1 was always False, so SolidWorks ignored the angle (probe, 2026-11-16)."""
+    calls: list[tuple] = []
+    adapter = _extrusion_adapter(
+        FeatureExtrusion3=lambda *a: calls.append(a) or SimpleNamespace(Name="Boss1")
+    )
+
+    result = features._create_extrusion_impl(
+        adapter, ExtrusionParameters(depth=10.0, draft_angle=draft)
+    )
+
+    assert result.is_success, result.error
+    assert calls[0][7] is on  # Dchk1
+    assert calls[0][11] == pytest.approx(math.radians(draft), abs=1e-5)  # Dang1
+
+
+def test_a_cut_with_a_draft_angle_turns_the_draft_on() -> None:
+    adapter = _FakeFeatureAdapter()
+    calls: list[tuple] = []
+    adapter.currentModel = SimpleNamespace(
+        FeatureManager=SimpleNamespace(
+            FeatureCut4=lambda *a: calls.append(a) or SimpleNamespace(Name="Cut1"),
+        ),
+        ClearSelection2=lambda *_args: True,
+        FirstFeature=_fake_sketch_feature("Sketch7"),
+        Extension=SimpleNamespace(SelectByID2=lambda *_args, **_kwargs: True),
+    )
+
+    result = features._create_cut_extrude_impl(
+        adapter, ExtrusionParameters(depth=4.0, sketch_name="Sketch7", draft_angle=2.0)
+    )
+
+    assert result.is_success, result.error
+    assert calls[0][7] is True  # Dchk1
+
+
 def test_legacy_solid_extrusion_also_honours_mid_plane() -> None:
     calls: list[tuple] = []
 
