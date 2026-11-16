@@ -1424,6 +1424,37 @@ def _confirmation_or(result: AdapterResult[Any]) -> AdapterResult[Any]:
     return result
 
 
+def _dialog_of(result: AdapterResult[Any]) -> dict[str, Any] | None:
+    """The dialog an operation's ``solidworks_dialog`` error carries, if any.
+
+    ``PyWin32Adapter._dialog_result`` puts what the watchdog saw under
+    ``data["dialog"]`` (``DialogInfo.to_dict``).
+    """
+    data = result.data if result.is_error else None
+    dialog = data.get("dialog") if isinstance(data, dict) else None
+    return dialog if isinstance(dialog, dict) else None
+
+
+def _opened_after(dialog: dict[str, Any]) -> dict[str, Any]:
+    """The ``warning`` and ``dialog`` of a document that opened despite a dialog."""
+    title = str(dialog.get("title") or "").strip()
+    text = " ".join(str(t) for t in dialog.get("texts") or [] if t).strip()
+    quoted = ": ".join(part for part in (f"'{title}'" if title else "", text) if part)
+    if dialog.get("handed_to_user"):
+        outcome = "could not cancel it and brought SolidWorks up to answer it"
+    else:
+        outcome = "cancelled it"
+    return {
+        "warning": (
+            f"SolidWorks showed a dialog while opening the file "
+            f"({quoted or 'no text'}); the server {outcome}, and the document "
+            "is open. Check that it opened as expected (an assembly's "
+            "lightweight parts, for one)."
+        ),
+        "dialog": dialog,
+    }
+
+
 class SolidWorksIOMixin:
     """Expose model open/save/create/configuration methods through a mixin."""
 
@@ -1566,6 +1597,13 @@ class SolidWorksIOMixin:
     async def open_model(self, file_path: str) -> AdapterResult[SolidWorksModel]:
         """Open a SolidWorks model file and set it as active on the adapter.
 
+        A dialog SolidWorks shows while opening is cancelled by the watchdog,
+        and the call then reads as ``solidworks_dialog``. When the document
+        is open all the same (an assembly whose SOLIDWORKS CAM dialog about
+        lightweight parts was cancelled had opened with its four parts), it
+        is described as usual and the reply's ``metadata`` carries a
+        ``warning`` quoting the dialog, and the ``dialog``.
+
         Args:
             file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
 
@@ -1577,37 +1615,22 @@ class SolidWorksIOMixin:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
             )
+        resolved_path = os.path.abspath(file_path)
 
-        def _open() -> SolidWorksModel:
-            """Open the model document."""
-            resolved_path = os.path.abspath(file_path)
+        def _kind() -> tuple[Any, str]:
+            """The document's ``swDocumentTypes_e`` and type name, by extension."""
             file_path_lower = resolved_path.lower()
             if file_path_lower.endswith(".sldprt"):
-                doc_type = adapter.constants["swDocPART"]
-                model_type = "Part"
-            elif file_path_lower.endswith(".sldasm"):
-                doc_type = adapter.constants["swDocASSEMBLY"]
-                model_type = "Assembly"
-            elif file_path_lower.endswith(".slddrw"):
-                doc_type = adapter.constants["swDocDRAWING"]
-                model_type = "Drawing"
-            else:
-                raise ValueError(f"Unsupported file type: {resolved_path}")
+                return adapter.constants["swDocPART"], "Part"
+            if file_path_lower.endswith(".sldasm"):
+                return adapter.constants["swDocASSEMBLY"], "Assembly"
+            if file_path_lower.endswith(".slddrw"):
+                return adapter.constants["swDocDRAWING"], "Drawing"
+            raise ValueError(f"Unsupported file type: {resolved_path}")
 
+        def _describe(model: Any, doc_type: Any, model_type: str) -> SolidWorksModel:
+            """Make the opened document the active model and describe it."""
             app = adapter.swApp
-            variant_ctor = getattr(getattr(win32com, "client", None), "VARIANT", None)
-            vt_byref = int(getattr(pythoncom, "VT_BYREF", 0))
-            vt_i4 = int(getattr(pythoncom, "VT_I4", 0))
-            if callable(variant_ctor):
-                errors = variant_ctor(vt_byref | vt_i4, 0)
-                warnings = variant_ctor(vt_byref | vt_i4, 0)
-            else:
-                errors = 0
-                warnings = 0
-            model = app.OpenDoc6(resolved_path, doc_type, 1, "", errors, warnings)
-            if not model:
-                raise Exception(f"Failed to open model: {resolved_path}")
-
             adapter._attempt(
                 lambda: _sw_type_info.flag_doc(model, int(doc_type)), default=0
             )
@@ -1650,10 +1673,53 @@ class SolidWorksIOMixin:
                 },
             )
 
-        return cast(
+        def _open() -> SolidWorksModel:
+            """Open the model document."""
+            doc_type, model_type = _kind()
+            app = adapter.swApp
+            variant_ctor = getattr(getattr(win32com, "client", None), "VARIANT", None)
+            vt_byref = int(getattr(pythoncom, "VT_BYREF", 0))
+            vt_i4 = int(getattr(pythoncom, "VT_I4", 0))
+            if callable(variant_ctor):
+                errors = variant_ctor(vt_byref | vt_i4, 0)
+                warnings = variant_ctor(vt_byref | vt_i4, 0)
+            else:
+                errors = 0
+                warnings = 0
+            model = app.OpenDoc6(resolved_path, doc_type, 1, "", errors, warnings)
+            if not model:
+                raise Exception(f"Failed to open model: {resolved_path}")
+            return _describe(model, doc_type, model_type)
+
+        def _open_anyway() -> SolidWorksModel:
+            """Describe the document if it is open now, after a dialog."""
+            doc_type, model_type = _kind()
+            app = adapter.swApp
+            model = adapter._attempt(lambda: app.GetOpenDocumentByName(resolved_path))
+            open_path = adapter._attempt(
+                lambda: adapter._get_attr_or_call(model, "GetPathName"), default=""
+            )
+            if model is None or os.path.normcase(
+                os.path.abspath(str(open_path or ""))
+            ) != os.path.normcase(resolved_path):
+                raise LookupError(f"{resolved_path} is not open")
+            return _describe(model, doc_type, model_type)
+
+        result = cast(
             AdapterResult[SolidWorksModel],
             adapter._handle_com_operation("open_model", _open),
         )
+        dialog = _dialog_of(result)
+        if dialog is None:
+            return result
+        opened = cast(
+            AdapterResult[SolidWorksModel],
+            adapter._handle_com_operation("open_model", _open_anyway),
+        )
+        if not opened.is_success:
+            return result
+        opened.metadata = {**(opened.metadata or {}), **_opened_after(dialog)}
+        return opened
 
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False

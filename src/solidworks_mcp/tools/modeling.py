@@ -1657,7 +1657,9 @@ async def register_modeling_tools(
         Use it to start work on an existing file. To switch to a document that is
         already open, use `activate_document`. Needs: the file on disk (a vault file
         must be checked out). Changes: opens the document; nothing is written. Returns:
-        `model` with `title`, `type`, `path` and `configuration`.
+        `model` with `title`, `type`, `path` and `configuration`, and a `warning`
+        quoting a dialog SolidWorks showed (and the server cancelled) when the file
+        opened anyway.
 
         Args:
             input_data: The file. `file_path` (.sldprt, .sldasm or .slddrw) is
@@ -1675,7 +1677,7 @@ async def register_modeling_tools(
         model_type = _result_value(model, "type", default="Part")
         path = _result_value(model, "path", "file_path", default=input_data.file_path)
         configuration = _result_value(model, "configuration", default="Default")
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Opened {model_type}: {title}",
             "model": {
@@ -1687,6 +1689,12 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        # A dialog SolidWorks showed while opening, cancelled; the file opened.
+        metadata = getattr(result, "metadata", None)
+        warning = metadata.get("warning") if isinstance(metadata, dict) else None
+        if isinstance(warning, str) and warning:
+            reply["warning"] = warning
+        return reply
 
     @mcp.tool()
     async def create_part(input_data: CreatePartInput) -> dict[str, Any]:

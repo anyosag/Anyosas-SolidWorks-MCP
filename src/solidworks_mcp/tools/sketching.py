@@ -865,7 +865,8 @@ async def register_sketching_tools(
             "message": "Exited sketch editing mode",
             "execution_time": result.execution_time,
         }
-        round_trip = getattr(result, "metadata", None) or {}
+        metadata = getattr(result, "metadata", None)
+        round_trip = metadata if isinstance(metadata, dict) else {}
         if round_trip.get("unchanged"):
             # An edit_sketch only read: left without a rebuild.
             reply["sketch_unchanged"] = True
