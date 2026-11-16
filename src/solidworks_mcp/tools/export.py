@@ -10,10 +10,11 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
-from ..utils import stl_mesh
+from ..utils import export_check, stl_mesh
 from .input_compat import CompatInput
 from .modeling import DisplayType
 from .tool_boundary import (
+    ToolOperationError,
     UnsupportedOperationError,
     normalize_input,
     require_capability,
@@ -316,6 +317,34 @@ def _file_input(input_data: Any, format_type: str) -> Any:
     return input_data.model_copy(update={"format_type": format_type})
 
 
+def _file_check(
+    file_path: str | None, format_name: str, execution_time: float | None
+) -> dict[str, Any]:
+    """Read back the file an export wrote; raise when it isn't a good one.
+
+    Args:
+        file_path: The file the export wrote.
+        format_name: The tool's own format, for an extension
+            :mod:`export_check` doesn't know.
+        execution_time: The export's timing, for the error.
+
+    Returns:
+        dict[str, Any]: :func:`export_check.check_export`'s result.
+
+    Raises:
+        ToolOperationError: The file is missing, empty or not its format
+            (``export_invalid``), with the check as ``data.file_check``.
+    """
+    check = export_check.check_export(file_path or "", format_name)
+    if not export_check.passed(check):
+        raise ToolOperationError(
+            export_check.failure_message(check),
+            execution_time,
+            {"file_check": check},
+        )
+    return check
+
+
 async def _stl_mesh_check(
     adapter: Any, file_path: str, units: str | None, document_type: Any
 ) -> dict[str, Any]:
@@ -388,7 +417,10 @@ async def register_export_tools(
         exchange format. SolidWorks picks the format from the file's extension, so end
         `file_path` in .step or .stp. Needs: an open, active part or assembly. Changes:
         writes the file, creating its folder and replacing a file already there; the
-        open document is unchanged. Returns: `export` with `file_path` and `format`.
+        open document is unchanged. Returns: `export` with `file_path` and `format`,
+        and `file_check` (the file read back: `exists`, `size_bytes`, `format_ok`,
+        `schema`). A file that is missing, empty, not STEP or cut short is an
+        `export_invalid` error.
 
         Args:
             input_data: The export. `file_path` (ending in .step or .stp) is required;
@@ -407,11 +439,13 @@ async def register_export_tools(
             result = await adapter.export_file(file_path, "step")
 
         require_success(result, context="Failed to export STEP")
+        file_check = _file_check(file_path, "STEP", result.execution_time)
         if hasattr(adapter, "export_step"):
             return {
                 "status": "success",
                 "message": f"Exported to STEP format: {file_path}",
                 "data": result.data,
+                "file_check": file_check,
                 "execution_time": result.execution_time,
             }
         return {
@@ -422,6 +456,7 @@ async def register_export_tools(
                 "format": "STEP",
                 "size_estimate": "Unknown",  # Would get actual file size
             },
+            "file_check": file_check,
             "execution_time": result.execution_time,
         }
 
@@ -433,7 +468,9 @@ async def register_export_tools(
         picks the format from the file's extension, so end `file_path` in .igs or .iges.
         Needs: an open, active part or assembly. Changes: writes the file, creating its
         folder and replacing a file already there; the open document is unchanged.
-        Returns: `export` with `file_path` and `format`.
+        Returns: `export` with `file_path` and `format`, and `file_check` (the file
+        read back: `exists`, `size_bytes`, `format_ok`). A file that is missing,
+        empty, not IGES or cut short is an `export_invalid` error.
 
         Args:
             input_data: The export. `file_path` (ending in .igs or .iges) is required;
@@ -450,11 +487,13 @@ async def register_export_tools(
             result = await adapter.export_file(input_data.file_path, "iges")
 
         require_success(result, context="Failed to export IGES")
+        file_check = _file_check(input_data.file_path, "IGES", result.execution_time)
         if hasattr(adapter, "export_iges"):
             return {
                 "status": "success",
                 "message": f"Exported to IGES format: {input_data.file_path}",
                 "data": result.data,
+                "file_check": file_check,
                 "execution_time": result.execution_time,
             }
         return {
@@ -465,6 +504,7 @@ async def register_export_tools(
                 "format": "IGES",
                 "size_estimate": "Unknown",
             },
+            "file_check": file_check,
             "execution_time": result.execution_time,
         }
 
@@ -561,7 +601,9 @@ async def register_export_tools(
         so end `file_path` in .pdf. Needs: an open, active drawing (a part or assembly
         gives a PDF of the view). Changes: writes the file, creating its folder and
         replacing a file already there; the open document is unchanged. Returns:
-        `export` with `file_path` and `format`.
+        `export` with `file_path` and `format`, and `file_check` (the file read back:
+        `exists`, `size_bytes`, `format_ok`, `version`). A file that is missing,
+        empty, not PDF or cut short is an `export_invalid` error.
 
         Args:
             input_data: The export. `file_path` (ending in .pdf) is required;
@@ -578,11 +620,13 @@ async def register_export_tools(
             result = await adapter.export_file(input_data.file_path, "pdf")
 
         require_success(result, context="Failed to export PDF")
+        file_check = _file_check(input_data.file_path, "PDF", result.execution_time)
         if hasattr(adapter, "export_pdf"):
             return {
                 "status": "success",
                 "message": f"Exported to PDF format: {input_data.file_path}",
                 "data": result.data,
+                "file_check": file_check,
                 "execution_time": result.execution_time,
             }
         return {
@@ -594,6 +638,7 @@ async def register_export_tools(
                 "use_case": "Documentation and sharing",
                 "size_estimate": "Unknown",
             },
+            "file_check": file_check,
             "execution_time": result.execution_time,
         }
 
@@ -602,13 +647,15 @@ async def register_export_tools(
         """Export the active document to DWG, like File > Save As with the DWG type.
 
         Use it to hand a drawing to AutoCAD users. SolidWorks picks the format from the
-        file's extension, so end `file_path` in .dwg. Needs: an open, active drawing.
-        Changes: writes the file, creating its folder and replacing a file already
-        there; the open document is unchanged. Returns: `export` with `file_path` and
-        `format`.
+        file's extension, so end `file_path` in .dwg (or .dxf for DXF). Needs: an open,
+        active drawing. Changes: writes the file, creating its folder and replacing a
+        file already there; the open document is unchanged. Returns: `export` with
+        `file_path` and `format`, and `file_check` (the file read back: `exists`,
+        `size_bytes`, `format_ok`, and `version` and `release` for a DWG). A file that
+        is missing, empty or not DWG (or DXF) is an `export_invalid` error.
 
         Args:
-            input_data: The export. `file_path` (ending in .dwg) is required;
+            input_data: The export. `file_path` (ending in .dwg or .dxf) is required;
                 `format_type` is not needed: the file extension decides the
                 format.
 
@@ -622,11 +669,13 @@ async def register_export_tools(
             result = await adapter.export_file(input_data.file_path, "dwg")
 
         require_success(result, context="Failed to export DWG")
+        file_check = _file_check(input_data.file_path, "DWG", result.execution_time)
         if hasattr(adapter, "export_dwg"):
             return {
                 "status": "success",
                 "message": f"Exported to DWG format: {input_data.file_path}",
                 "data": result.data,
+                "file_check": file_check,
                 "execution_time": result.execution_time,
             }
         return {
@@ -638,6 +687,7 @@ async def register_export_tools(
                 "use_case": "AutoCAD compatibility",
                 "size_estimate": "Unknown",
             },
+            "file_check": file_check,
             "execution_time": result.execution_time,
         }
 
@@ -657,8 +707,9 @@ async def register_export_tools(
         document. Changes: writes the image file; a standard view or a zoom also
         turns or zooms the model on screen. Returns: `data` with `file_path`,
         `format`, `dimensions` (the size written), `requested_dimensions`, `view`,
-        `zoomed_to_fit`, `zoom_box_mm`, `zoom_box_view_mm` (that box in view
-        coordinates), `hidden`, `section` (as applied) and `window_state`.
+        `zoomed_to_fit`, `zoom_box_mm`, `zoom_box_view_mm`, `hidden`, `section` and
+        `window_state`, and `file_check` (the picture read back); a bad file is an
+        `export_invalid` error.
 
         Args:
             input_data: The image. `file_path` (or `output_path`) is needed; the
@@ -674,13 +725,18 @@ async def register_export_tools(
         if hasattr(adapter, "export_image"):
             result = await adapter.export_image(input_data.model_dump())
             require_success(result, "Failed to export image")
+            data = result.data if isinstance(result.data, dict) else {}
             reply: dict[str, Any] = {
                 "status": "success",
                 "message": f"Exported image: {input_data.file_path}",
                 "data": result.data,
+                "file_check": _file_check(
+                    data.get("file_path") or input_data.file_path,
+                    input_data.format_type,
+                    result.execution_time,
+                ),
                 "execution_time": result.execution_time,
             }
-            data = result.data if isinstance(result.data, dict) else {}
             section = data.get("section")
             if isinstance(section, dict) and section.get("removed") is False:
                 reply["warning"] = (
@@ -695,9 +751,13 @@ async def register_export_tools(
                 input_data.file_path, input_data.format_type
             )
             require_success(result, "Failed to export image")
+            file_check = _file_check(
+                input_data.file_path, input_data.format_type, result.execution_time
+            )
             return {
                 "status": "success",
                 "message": f"Exported image: {input_data.file_path}",
+                "file_check": file_check,
                 "export": {
                     "file_path": input_data.file_path,
                     "format": input_data.format_type.upper(),

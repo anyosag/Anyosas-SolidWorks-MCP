@@ -6,12 +6,27 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastmcp import FastMCP
 
+from solidworks_mcp.tools import export as export_module
 from solidworks_mcp.tools.export import (
     BatchExportInput,
     ExportFileInput,
     ExportImageInput,
     register_export_tools,
 )
+
+
+@pytest.fixture(autouse=True)
+def _file_checks_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests' adapters are fakes that write no file.
+
+    They check what the tools send and reply; reading the file back is tested
+    with files that exist in ``test_export_file_check.py``.
+    """
+    monkeypatch.setattr(
+        export_module,
+        "_file_check",
+        lambda path, fmt, _time: {"file_path": path, "format": fmt, "format_ok": True},
+    )
 
 
 class TestExportTools:

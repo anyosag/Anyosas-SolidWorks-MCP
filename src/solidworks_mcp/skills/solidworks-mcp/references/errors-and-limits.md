@@ -22,6 +22,7 @@ and a `hint`; some carry `data` with details. Act on `error_type`:
 | `solidworks_busy` | Nothing was run: SolidWorks didn't answer for `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS` (30 s by default), busy with a long operation (an earlier call, another program or the user). Wait a minute and retry; if it stays busy, tell the user. |
 | `operation_stopped` | The server stopped the call part-way: it ran past `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS`, or the client went away. Check what it did (`list_features`), then do the work in smaller pieces: fewer edges or outlines per call. |
 | `solidworks_dialog` | SolidWorks opened a dialog during the call; `data.dialog` has its title, text and buttons. The server cancelled it (it never answers Save or Don't Save), so the call may not have finished. Tell the user what it asked if it needs a decision; otherwise fix the cause and retry. |
+| `export_invalid` | SolidWorks said the export worked, but the file it left is missing, empty, cut short or not its format; `data.file_check` says what was read. Check the extension matches the format and the folder can be written, then export again. |
 | `com_member_not_found`, `com_type_mismatch`, `com_wrong_thread` | A server problem, not a modelling one. Stop and tell the user the tool, the arguments and the message. |
 
 Don't retry the same call unchanged: if it failed once with the same input,

@@ -67,6 +67,7 @@ SOLIDWORKS_RECONNECTED = "solidworks_reconnected"
 ACTIVE_DOCUMENT_CHANGED = "active_document_changed"
 SOLIDWORKS_BUSY = "solidworks_busy"
 OPERATION_STOPPED = "operation_stopped"
+EXPORT_INVALID = "export_invalid"
 
 DEFAULT_RULES: tuple[ErrorRule, ...] = (
     # First: a dialog's own text can contain anything ("file not found",
@@ -284,6 +285,19 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "a component) and call again."
         ),
         patterns=(r"\binvalid request:",),
+    ),
+    # An export SolidWorks reported done whose file, read back, is missing,
+    # empty or not its format (``utils/export_check``).
+    ErrorRule(
+        error_type=EXPORT_INVALID,
+        hint=(
+            "SolidWorks said the export worked, but the file it left is missing, "
+            "empty or not in the format; `data.file_check` says what was read. "
+            "Check that the file's extension is the format's, that the folder "
+            "can be written, and that the active document can be exported that "
+            "way (DWG and PDF of a drawing); then export again."
+        ),
+        patterns=(r"\bis not a valid [\w.-]+ file\b",),
     ),
 )
 

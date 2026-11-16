@@ -62,6 +62,68 @@ _MOCK_STL = (
     + "endsolid mock\n"
 )
 
+
+def _iges_line(text: str, section: str, number: int) -> str:
+    """One 80-column IGES line: text, the section letter in column 73, a number."""
+    return f"{text:<72}{section}{number:>7}\n"
+
+
+#: A 1 x 1 baseline JPEG (grey): one-code Huffman tables, a DC-only block.
+_MOCK_JPEG = (
+    b"\xff\xd8"
+    + b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    + b"\xff\xdb\x00\x43\x00"
+    + b"\x01" * 64
+    + b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
+    + b"\xff\xc4\x00\x14\x00\x01"
+    + b"\x00" * 15
+    + b"\x00"
+    + b"\xff\xc4\x00\x14\x10\x01"
+    + b"\x00" * 15
+    + b"\x00"
+    + b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00"
+    + b"\x3f\xff\xd9"
+)
+
+#: What the mock writes for each export, by extension: the smallest file
+#: each format's own check (``utils/export_check``) accepts.
+_MOCK_EXPORTS: dict[str, bytes] = {
+    ".step": (
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('mock'),'2;1');\n"
+        "FILE_NAME('mock.step','',(''),(''),'','','');\n"
+        "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\n"
+        "ENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+    ).encode("ascii"),
+    ".igs": (
+        _iges_line("mock IGES", "S", 1)
+        + _iges_line("1H,,1H;;", "G", 1)
+        + _iges_line("S      1G      1D      0P      0", "T", 1)
+    ).encode("ascii"),
+    ".pdf": b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF\n",
+    ".dwg": b"AC1032" + b"\x00" * 122,
+    ".dxf": b"  0\nSECTION\n  2\nHEADER\n  0\nENDSEC\n  0\nEOF\n",
+    ".jpg": _MOCK_JPEG,
+    ".bmp": (
+        b"BM:\x00\x00\x00\x00\x00\x00\x006\x00\x00\x00(\x00\x00\x00"
+        b"\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x18\x00\x00\x00\x00\x00"
+        b"\x04\x00\x00\x00\x13\x0b\x00\x00\x13\x0b\x00\x00\x00\x00\x00\x00"
+        b"\x00\x00\x00\x00\xff\xff\xff\x00"
+    ),
+    ".tif": b"II*\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    ".glb": b"glTF\x02\x00\x00\x00\x0c\x00\x00\x00",
+    ".gltf": b'{"asset": {"version": "2.0"}}\n',
+}
+_MOCK_EXPORTS[".stp"] = _MOCK_EXPORTS[".step"]
+_MOCK_EXPORTS[".iges"] = _MOCK_EXPORTS[".igs"]
+_MOCK_EXPORTS[".jpeg"] = _MOCK_EXPORTS[".jpg"]
+_MOCK_EXPORTS[".tiff"] = _MOCK_EXPORTS[".tif"]
+
+
+def _mock_export_bytes(file_path: str) -> bytes | None:
+    """What the mock writes for an export to ``file_path`` (None: nothing)."""
+    return _MOCK_EXPORTS.get(os.path.splitext(file_path)[1].lower())
+
+
 #: Orientations the mock accepts for a drawing view. Kept in step with
 #: ``_NAMED_VIEWS`` in ``adapters/solidworks/io.py`` by a test — the two lists
 #: are maintained separately, and an orientation accepted live but rejected
@@ -3043,7 +3105,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             b"\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff\xff\x00\x05\xfe\x02\xfe\xdc\xcaY\xe7"  # IDAT
             b"\x00\x00\x00\x00IEND\xaeB`\x82"  # IEND
         )
-        out.write_bytes(_PNG_1X1_WHITE)
+        # A .jpg or .bmp gets that format's bytes, as SolidWorks writes it.
+        out.write_bytes(_mock_export_bytes(file_path) or _PNG_1X1_WHITE)
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
@@ -3192,6 +3255,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             }
             if document_type == "assembly":
                 data["mesh"] = {"applied": [_STL_ONE_FILE[3]], "restored": True}
+        elif (written := _mock_export_bytes(file_path)) is not None:
+            # The smallest file of its format, so the export tools' read-back
+            # check (utils/export_check) sees what a real export leaves.
+            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+            with open(file_path, "wb") as handle:
+                handle.write(written)
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
@@ -4961,7 +5030,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     async def export_flat_pattern(
         self, file_path: str
     ) -> AdapterResult[dict[str, Any]]:
-        """Mock flat-pattern export: validates the target, writes nothing."""
+        """Mock flat-pattern export: validates the target, writes the smallest DXF/DWG."""
         guard = self._mock_doc_error({"Part"}, "export_flat_pattern")
         if guard is not None:
             return guard
@@ -4970,9 +5039,13 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error="file_path must end in .dxf or .dwg",
             )
+        written = _MOCK_EXPORTS[os.path.splitext(file_path)[1].lower()]
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "wb") as handle:
+            handle.write(written)
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"file_path": file_path, "size_bytes": 0, "mock": True},
+            data={"file_path": file_path, "size_bytes": len(written), "mock": True},
         )
 
     async def insert_model_dimensions(

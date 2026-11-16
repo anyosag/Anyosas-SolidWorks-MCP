@@ -125,6 +125,10 @@ async def test_a_section_left_on_is_a_warning(mock_config: Any, tmp_path: Path) 
     mcp = FastMCP("image")
     await register_export_tools(mcp, adapter, mock_config)
     export = next(t.fn for t in await mcp.list_tools() if t.name == "export_image")
+    # The stand-in export writes nothing; the tool reads the picture back.
+    (tmp_path / "x.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(17) + b"IEND\xaeB`\x82"
+    )
 
     result = await export(
         {"file_path": str(tmp_path / "x.png"), "section": {"plane": "Front Plane"}}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -129,17 +130,44 @@ class TestEngineeringDataTools:
 
 @pytest.mark.asyncio
 async def test_export_flat_pattern_reports_the_written_file(
-    mcp_server, mock_adapter, mock_config
+    mcp_server, mock_adapter, mock_config, tmp_path
 ) -> None:
     await register_engineering_data_tools(mcp_server, mock_adapter, mock_config)
     await mock_adapter.create_part()
+    out = str(tmp_path / "flat.dxf")
 
     result = await (await _tool(mcp_server, "export_flat_pattern"))(
-        input_data=ExportFlatPatternInput(file_path="C:/out/flat.dxf")
+        input_data=ExportFlatPatternInput(file_path=out)
     )
 
     assert result["status"] == "success"
-    assert result["message"] == "Exported the flat pattern to C:/out/flat.dxf"
+    assert result["message"] == f"Exported the flat pattern to {out}"
+    assert result["file_check"]["format"] == "DXF"
+    assert result["file_check"]["format_ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_export_flat_pattern_reads_the_file_back(
+    mcp_server, mock_adapter, mock_config, tmp_path
+) -> None:
+    await register_engineering_data_tools(mcp_server, mock_adapter, mock_config)
+    out = tmp_path / "flat.dxf"
+    out.write_bytes(b"")  # what the stand-in export leaves: an empty file
+    mock_adapter.export_flat_pattern = AsyncMock(  # type: ignore[method-assign]
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"file_path": str(out), "size_bytes": 0},
+        )
+    )
+
+    result = await (await _tool(mcp_server, "export_flat_pattern"))(
+        input_data=ExportFlatPatternInput(file_path=str(out))
+    )
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "export_invalid"
+    assert "is not a valid DXF file: it is empty" in result["message"]
+    assert result["data"]["file_check"]["size_bytes"] == 0
 
 
 @pytest.mark.asyncio

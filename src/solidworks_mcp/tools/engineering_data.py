@@ -13,8 +13,10 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from ..adapters.base import AdapterResult, SolidWorksAdapter
+from ..utils import export_check
 from .input_compat import CompatInput
 from .tool_boundary import (
+    ToolOperationError,
     normalize_input,
     require_capability,
     require_success,
@@ -402,7 +404,9 @@ async def register_engineering_data_tools(
         It writes the flat outline only, without bend lines or sketches. A part with no
         sheet-metal body is `not_found` and nothing is written. Needs: an open, active
         sheet-metal part. Changes: writes the file, replacing one already there.
-        Returns: `data` with `file_path` and `size_bytes`.
+        Returns: `data` with `file_path` and `size_bytes`, and `file_check` (the file
+        read back: `exists`, `size_bytes`, `format_ok`); a file that is missing,
+        empty or not DXF (or DWG) is an `export_invalid` error.
 
         Args:
             input_data: The export. `file_path` (ending in .dxf or .dwg) is
@@ -416,6 +420,16 @@ async def register_engineering_data_tools(
         result = await adapter.export_flat_pattern(input_data.file_path)
         require_success(result, context="Failed to export the flat pattern")
         written = (result.data or {}).get("file_path")
-        return _success(result, f"Exported the flat pattern to {written}")
+        check = export_check.check_export(written or input_data.file_path, "DXF")
+        if not export_check.passed(check):
+            raise ToolOperationError(
+                export_check.failure_message(check),
+                result.execution_time,
+                {"file_check": check},
+            )
+        return {
+            **_success(result, f"Exported the flat pattern to {written}"),
+            "file_check": check,
+        }
 
     return 8
