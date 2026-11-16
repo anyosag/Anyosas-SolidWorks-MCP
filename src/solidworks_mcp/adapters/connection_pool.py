@@ -531,6 +531,44 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.open_model_read_only(file_path),
         )
 
+    async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a feature's parameters using pool."""
+        return await self._execute_with_pool(
+            "get_feature_definition",
+            lambda adapter: adapter.get_feature_definition(name),
+        )
+
+    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a sketch using pool."""
+        return await self._execute_with_pool(
+            "get_sketch", lambda adapter: adapter.get_sketch(name)
+        )
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List a file's references using pool."""
+        return await self._execute_with_pool(
+            "list_references",
+            lambda adapter: adapter.list_references(file_path, traverse),
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move a SolidWorks file using pool."""
+        return await self._execute_with_pool(
+            "move_document",
+            lambda adapter: adapter.move_document(
+                source, destination, referencing, search_folders, dry_run
+            ),
+        )
+
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False
     ) -> AdapterResult[Any]:

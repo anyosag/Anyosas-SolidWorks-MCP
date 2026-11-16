@@ -203,10 +203,12 @@ _READ_ONLY_OPERATIONS = frozenset(
         "get_application_info",
         "get_custom_properties",
         "get_dimension",
+        "get_feature_definition",
         "get_material",
         "get_model_geometry_summary",
         "get_model_info",
         "get_model_update_stamp",
+        "get_sketch",
         "list_available_materials",
         "list_components",
         "list_configurations",
@@ -214,6 +216,7 @@ _READ_ONLY_OPERATIONS = frozenset(
         "list_features",
         "list_model_dimensions",
         "list_open_documents",
+        "list_references",
     }
 )
 
@@ -298,6 +301,9 @@ _DOCUMENT_CHOOSING_OPERATIONS = frozenset(
         "create_technical_drawing",
         "get_application_info",
         "list_open_documents",
+        # Work on files on disk, not on the active document.
+        "list_references",
+        "move_document",
         "open_model",
         # Puts the user's application settings back after an export; it must
         # run even when someone switched documents during the export.

@@ -426,6 +426,81 @@ class SolidWorksAdapter(ABC):
             error="open_model_read_only is not implemented by this adapter",
         )
 
+    async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a feature's parameters without editing it.
+
+        Args:
+            name (str): The feature's tree name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``type``,
+            ``suppressed``, ``known_type``, ``parameters`` and ``dimensions``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="get_feature_definition is not implemented by this adapter",
+        )
+
+    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a sketch's plane and segments without opening it for editing.
+
+        Args:
+            name (str): The sketch's tree name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``sketch``, ``kind``, ``plane``,
+            ``references``, ``axes``, ``segments`` and ``segment_counts``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="get_sketch is not implemented by this adapter",
+        )
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the files a SolidWorks file references, without opening it.
+
+        Args:
+            file_path (str): The part, assembly or drawing on disk.
+            traverse (bool): Also list what the referenced files reference.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file``, ``references`` (each with
+            ``name``, ``path``, ``exists``, ...), ``count`` and ``missing``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_references is not implemented by this adapter",
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or rename a SolidWorks file and repoint the documents that use it.
+
+        Args:
+            source (str): The file to move.
+            destination (str): Its new path (same extension).
+            referencing (list[str] | None): Documents known to use it.
+            search_folders (list[str] | None): Folders searched for more
+                (the source's own folder when None).
+            dry_run (bool): Only say what would change.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The plan (``dry_run``) or what was
+            moved and updated.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="move_document is not implemented by this adapter",
+        )
+
     @abstractmethod
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False

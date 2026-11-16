@@ -15,6 +15,8 @@ from solidworks_mcp.adapters.connection_pool import ConnectionPoolAdapter
     ("method", "args"),
     [
         ("open_model_read_only", ("C:/a.sldprt",)),
+        ("get_feature_definition", ("Boss-Extrude1",)),
+        ("get_sketch", ("Sketch1",)),
     ],
 )
 async def test_the_pool_passes_the_arguments(method: str, args: tuple) -> None:

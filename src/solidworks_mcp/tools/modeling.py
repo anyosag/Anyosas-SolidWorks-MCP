@@ -1095,6 +1095,21 @@ class EditFeatureInput(CompatInput):
         )
 
 
+class FeatureDefinitionInput(CompatInput):
+    """Input schema for reading a feature's parameters.
+
+    Attributes:
+        name (str): The feature to read.
+    """
+
+    name: str = Field(description="The feature to read, e.g. 'Boss-Extrude1'")
+
+    def model_post_init(self, __context: Any) -> None:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name is required")
+
+
 class SetRollbackInput(CompatInput):
     """Input schema for moving the rollback bar.
 
@@ -2906,6 +2921,51 @@ async def register_modeling_tools(
                 "own tangent edges."
             )
         return reply
+
+    @mcp.tool()
+    async def get_feature_definition(
+        input_data: FeatureDefinitionInput,
+    ) -> dict[str, Any]:
+        """Read a feature's parameters without changing it: what `edit_feature` would edit.
+
+        Use it to learn how an existing model was built before changing it: an
+        extrude's or cut's depth, end condition, direction, both directions and
+        draft; a revolve's angle; a fillet's radius and edge count; a chamfer's
+        distances or angle and edge count; a linear or circular pattern's count and
+        spacing; a sketch's plane, segment counts and text (for its coordinates,
+        `get_sketch`). Any other type gives its type and dimensions. Needs: an open
+        part with the feature. Read-only. The feature isn't opened for editing, so
+        the part isn't marked changed. Returns: `data` with `feature`, `type`,
+        `suppressed`, `known_type`, `parameters` (mm and degrees), `sketch` (its
+        name and text) when it is built from one, `dimensions` (the names
+        `set_dimension` takes, with values) and a `note` when parameters couldn't be
+        read.
+
+        Args:
+            input_data: The feature. `name` is required.
+
+        Returns:
+            dict[str, Any]: The feature's parameters.
+        """
+        input_data = normalize_input(input_data, FeatureDefinitionInput)
+        require_capability(
+            adapter,
+            "get_feature_definition",
+            "The active adapter cannot read feature definitions; nothing was read.",
+        )
+        result = await adapter.get_feature_definition(input_data.name)
+        require_success(result, context=f"Failed to read {input_data.name}")
+        data = result.data if isinstance(result.data, dict) else {}
+        return {
+            "status": "success",
+            "message": (
+                f"Read {input_data.name} ({data.get('type') or 'feature'}): "
+                f"{len(data.get('parameters') or {})} parameter(s), "
+                f"{len(data.get('dimensions') or [])} dimension(s)"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
 
     @mcp.tool()
     async def set_rollback(

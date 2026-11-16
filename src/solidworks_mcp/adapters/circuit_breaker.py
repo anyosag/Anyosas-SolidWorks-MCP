@@ -523,6 +523,49 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"file_path": file_path},
         )
 
+    async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a feature's parameters through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "get_feature_definition",
+            lambda: self.adapter.get_feature_definition(name),
+            input_dict={"name": name},
+        )
+
+    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a sketch through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "get_sketch",
+            lambda: self.adapter.get_sketch(name),
+            input_dict={"name": name},
+        )
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List a file's references through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "list_references",
+            lambda: self.adapter.list_references(file_path, traverse),
+            input_dict={"file_path": file_path, "traverse": traverse},
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move a SolidWorks file through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "move_document",
+            lambda: self.adapter.move_document(
+                source, destination, referencing, search_folders, dry_run
+            ),
+            input_dict={"source": source, "destination": destination},
+        )
+
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False
     ) -> AdapterResult[Any]:

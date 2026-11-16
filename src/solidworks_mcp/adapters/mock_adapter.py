@@ -1486,6 +1486,121 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["sketch_operation"] / 2,
         )
 
+    def _mock_sketch_definition(self, name: str) -> dict[str, Any]:
+        """A mock sketch as ``get_sketch`` reads it: its plane, no geometry kept."""
+        # The tree name of the plane it was made on, as create_sketch chose it.
+        key, names = plane_candidates_for(self._sketches[name])
+        return {
+            "sketch": name,
+            "kind": "2D",
+            "plane": names[0],
+            "references": [{"name": names[0], "type": "RefPlane"}],
+            "axes": default_plane_axes(key) if key else None,
+            "segments": [],
+            "segment_counts": {},
+        }
+
+    def _mock_parameters(self, kind: str, values: dict[str, Any]) -> dict[str, Any]:
+        """A mock feature's parameters in ``get_feature_definition``'s shape."""
+        if kind in ("Extrusion", "Cut"):
+            draft = values.get("draft_angle") or 0
+            return {
+                "direction1": {
+                    "depth_mm": values.get("depth"),
+                    "end_condition": values.get("end_condition"),
+                    "draft": bool(draft),
+                    **({"draft_angle_deg": draft} if draft else {}),
+                },
+                "both_directions": bool(values.get("both_directions")),
+                "reverse_direction": bool(values.get("reverse_direction")),
+                "thin": bool(values.get("thin_feature")),
+            }
+        if kind == "Revolution":
+            return {
+                "angle_deg": values.get("angle"),
+                "reverse_direction": bool(values.get("reverse_direction")),
+            }
+        edges = len(values.get("edges") or [])
+        if kind == "Fillet":
+            return {"radius_mm": values.get("size"), "edge_count": edges}
+        return {"distance_mm": values.get("size"), "edge_count": edges}
+
+    async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock reading a feature's parameters, in the live reply's shape.
+
+        Extrudes, cuts, revolves, fillets and chamfers give the values the
+        mock kept when it made them; a sketch gives its plane; any other
+        feature its type, as the live adapter does for types it doesn't read.
+        """
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        dimensions = [
+            {"name": key, "value": value, "units": "mm"}
+            for key, value in self._dimensions.items()
+            if key.endswith(f"@{name}")
+        ]
+        reply: dict[str, Any] = {
+            "feature": name,
+            "suppressed": name in self._suppressed_features,
+            "parameters": {},
+            "dimensions": dimensions,
+        }
+        feature = next((f for f in self._features.values() if f.name == name), None)
+        if name in self._sketches:
+            reply.update(type="ProfileFeature", known_type=True)
+            reply["parameters"] = {
+                "plane": self._mock_sketch_definition(name)["plane"],
+                "segment_counts": {},
+                "texts": [],
+            }
+        elif feature is not None:
+            kind = self._MOCK_TYPE_NAMES.get(feature.type, feature.type)
+            reply.update(type=kind, known_type=kind in self._MOCK_TYPE_NAMES.values())
+            if reply["known_type"]:
+                reply["parameters"] = self._mock_parameters(
+                    kind, feature.parameters or {}
+                )
+            else:
+                reply["note"] = f"A {kind} gives its dimensions only."
+        elif self._mock_feature_kind(name) is not None:
+            reply.update(type=self._mock_feature_kind(name), known_type=False)
+            reply["note"] = f"A {reply['type']} gives its dimensions only."
+        else:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Feature {name!r} not found; list_features names them.",
+            )
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=reply,
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock reading a sketch without opening it: its plane, no geometry kept."""
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if name not in self._sketches:
+            kind = self._mock_feature_kind(name)
+            error = (
+                f"Feature {name!r} not found; list_features names them."
+                if kind is None
+                else f"{name!r} is a {kind}, not a sketch; get_feature_definition "
+                "reads other features."
+            )
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=self._mock_sketch_definition(name),
+            execution_time=self._delays["sketch_operation"],
+        )
+
     async def check_printability(
         self,
         build_direction: str | list[float],
