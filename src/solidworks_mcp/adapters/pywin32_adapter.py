@@ -324,6 +324,7 @@ _SELECTION_CLEARING_OPERATIONS = frozenset(
         "add_chamfer",
         "add_fillet",
         "add_mate",
+        "combine_bodies",
         "create_axis",
         "create_cut_extrude",
         "create_extrusion",
@@ -333,10 +334,15 @@ _SELECTION_CLEARING_OPERATIONS = frozenset(
         "create_revolve",
         "create_sweep",
         "delete_feature",
+        "delete_keep_body",
         "edit_feature",
         "insert_component",
+        "insert_part",
+        "make_mating_negative",
         "mirror_feature",
+        "move_copy_body",
         "pattern_circular",
+        "split_body",
         "suppress_feature",
     }
 )
