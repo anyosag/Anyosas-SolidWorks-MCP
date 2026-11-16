@@ -17,6 +17,11 @@ from solidworks_mcp.adapters.connection_pool import ConnectionPoolAdapter
         ("open_model_read_only", ("C:/a.sldprt",)),
         ("get_feature_definition", ("Boss-Extrude1",)),
         ("get_sketch", ("Sketch1",)),
+        ("list_references", ("C:/a.sldasm", True)),
+        (
+            "move_document",
+            ("C:/a.sldprt", "C:/b.sldprt", ["C:/f.sldasm"], ["C:/"], False),
+        ),
     ],
 )
 async def test_the_pool_passes_the_arguments(method: str, args: tuple) -> None:

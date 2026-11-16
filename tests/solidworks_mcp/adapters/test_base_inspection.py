@@ -14,6 +14,8 @@ from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
         ("open_model_read_only", ("C:/a.sldprt",)),
         ("get_feature_definition", ("Boss-Extrude1",)),
         ("get_sketch", ("Sketch1",)),
+        ("list_references", ("C:/a.sldasm",)),
+        ("move_document", ("C:/a.sldprt", "C:/b.sldprt")),
     ],
 )
 async def test_an_adapter_without_them_says_so(method: str, args: tuple) -> None:

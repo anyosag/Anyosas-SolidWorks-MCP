@@ -2810,6 +2810,84 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("get_application_info", _read),
         )
 
+    def _file_operation(
+        self, operation_name: str, operation: Any
+    ) -> AdapterResult[dict[str, Any]]:
+        """Run a ``references`` operation on files; its errors read as sentences.
+
+        Args:
+            operation_name: For ``_handle_com_operation`` and its prefix.
+            operation: The zero-argument closure doing the work.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Its result; ``Not connected`` first
+            when SolidWorks isn't.
+        """
+        from .com_utils import strip_op_prefix
+
+        adapter = self._adapter(self)
+        if not adapter.is_connected():
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        result = cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation(operation_name, operation),
+        )
+        if not result.is_success:
+            result.error = strip_op_prefix(result.error, operation_name)
+        return result
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List a file's references without opening it (``references``).
+
+        Args:
+            file_path: The part, assembly or drawing on disk.
+            traverse: Also list what the referenced files reference.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file``, ``traverse``,
+            ``references``, ``count`` and ``missing``.
+        """
+        from .references import list_references
+
+        return self._file_operation(
+            "list_references",
+            lambda: list_references(self, file_path, traverse),
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or rename a file and repoint the documents that use it (``references``).
+
+        Args:
+            source: The file to move.
+            destination: Its new path (same extension), or a folder.
+            referencing: Documents known to use it.
+            search_folders: Folders searched for more (the source's when None).
+            dry_run: Only say what would change.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The plan, and for a move what was
+            moved and repointed.
+        """
+        from .references import move_document
+
+        return self._file_operation(
+            "move_document",
+            lambda: move_document(
+                self, source, destination, referencing, search_folders, dry_run
+            ),
+        )
+
     async def pack_and_go_assembly(
         self,
         source_path: str,

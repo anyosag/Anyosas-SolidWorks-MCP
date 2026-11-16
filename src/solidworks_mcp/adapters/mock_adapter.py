@@ -10,6 +10,7 @@ import asyncio
 import math
 import os
 import random
+import shutil
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -1599,6 +1600,137 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS,
             data=self._mock_sketch_definition(name),
             execution_time=self._delays["sketch_operation"],
+        )
+
+    def _mock_references(self, path: str) -> list[tuple[str, str]]:
+        """What a file references in the mock, as ``(name, path)``.
+
+        Tests set ``document_references``: a file's path -> the paths it
+        references, as ``GetDocumentDependencies2`` would read them.
+        """
+        from .solidworks.references import normalize
+
+        table = self.__dict__.get("document_references", {})
+        for key, paths in table.items():
+            if normalize(key) == normalize(path):
+                return [(os.path.splitext(os.path.basename(p))[0], p) for p in paths]
+        return []
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock listing a file's references from ``document_references``.
+
+        The file must be on disk, as for the live adapter; each reference is
+        checked on disk the same way (``references.describe_reference``).
+        """
+        from .solidworks.references import (
+            check_document,
+            describe_reference,
+            normalize,
+        )
+
+        if not self._connected:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        resolved = os.path.abspath(file_path)
+        try:
+            check_document(resolved)
+        except (LookupError, ValueError) as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        pairs = self._mock_references(resolved)
+        seen = {normalize(path) for _name, path in pairs}
+        index = 0
+        while traverse and index < len(pairs):
+            for name, path in self._mock_references(pairs[index][1]):
+                if normalize(path) not in seen:
+                    seen.add(normalize(path))
+                    pairs.append((name, path))
+            index += 1
+        references = [describe_reference(n, p, resolved) for n, p in pairs]
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "file": resolved,
+                "traverse": bool(traverse),
+                "references": references,
+                "count": len(references),
+                "missing": [r["path"] for r in references if not r["exists"]],
+            },
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving a file: the live plan, then the file moved on disk.
+
+        The plan is the live one (``references.plan_move``) over
+        ``document_references``; every model the mock has open counts as
+        open in SolidWorks. A move moves the file and repoints the
+        documents' entries in ``document_references``.
+        """
+        from .solidworks.references import (
+            blocked_message,
+            dry_run_reply,
+            normalize,
+            plan_move,
+        )
+
+        if not self._connected:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        try:
+            plan = plan_move(
+                source,
+                destination,
+                referencing,
+                search_folders,
+                self._mock_references,
+                {normalize(path): False for path in self._models},
+            )
+        except (LookupError, ValueError) as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        if dry_run:
+            return AdapterResult(
+                status=AdapterResultStatus.SUCCESS, data=dry_run_reply(plan)
+            )
+        if plan["blocked"]:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=blocked_message(plan)
+            )
+        src, dst = plan["source"], plan["destination"]
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(src, dst)
+        table = self.__dict__.setdefault("document_references", {})
+        users = {
+            normalize(u["path"]): normalize(u["references_as"]) for u in plan["users"]
+        }
+        for key in list(table):
+            old = users.get(normalize(key))
+            if old is not None:
+                table[key] = [dst if normalize(p) == old else p for p in table[key]]
+            if normalize(key) == normalize(src):
+                table[dst] = table.pop(key)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                **plan,
+                "dry_run": False,
+                "moved": True,
+                "method": "mock move",
+                "updated": [
+                    {"path": u["path"], "verified": True} for u in plan["users"]
+                ],
+            },
         )
 
     async def check_printability(

@@ -189,6 +189,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "save_part": _overwrites("Save Part"),
     "save_assembly": _overwrites("Save Assembly"),
     "pack_and_go_assembly": _overwrites("Pack and Go Assembly"),
+    "list_references": _reads("List File References"),
+    "move_document": _overwrites("Move or Rename Document"),
     "list_open_documents": _reads("List Open Documents"),
     "activate_document": _sets("Activate Document"),
     "save_body_as_part": _overwrites("Save Body as Part"),
