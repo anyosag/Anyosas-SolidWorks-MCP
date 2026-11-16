@@ -12,9 +12,10 @@ covers what spans tools:
 - checking results, since a tool's success doesn't prove the geometry;
 - reading errors and recovering with `rebuild_model` and `undo`;
 - the tools that can't run yet and the known faults, with workarounds;
-- when to write VBA instead.
+- when to write VBA instead, and how to call the API directly: its Remarks,
+  enum values, and C# snippets run on the live session.
 
-The files are `SKILL.md` and four references in
+The files are `SKILL.md` and five references in
 `src/solidworks_mcp/skills/solidworks-mcp/`, installed with the package.
 
 ## Three ways an agent gets it

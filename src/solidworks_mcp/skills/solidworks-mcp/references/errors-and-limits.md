@@ -23,6 +23,7 @@ and a `hint`; some carry `data` with details. Act on `error_type`:
 | `operation_stopped` | The server stopped the call part-way: it ran past `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS`, or the client went away. Check what it did (`list_features`), then do the work in smaller pieces: fewer edges or outlines per call. |
 | `solidworks_dialog` | SolidWorks opened a dialog during the call; `data.dialog` has its title, text and buttons. The server cancelled it (it never answers Save or Don't Save), so the call may not have finished. Tell the user what it asked if it needs a decision; otherwise fix the cause and retry. |
 | `com_member_not_found`, `com_type_mismatch`, `com_wrong_thread` | A server problem, not a modelling one. Stop and tell the user the tool, the arguments and the message. |
+| `api_snippet_failed` | Your `run_api_snippet` code failed; what it did before failing stays. Its data has the compile errors (with line numbers), the exception or the timeout, and stdout and stderr. Fix the code, check it with `compile_only`, and read the member's Remarks with `get_api_remarks`. |
 
 Don't retry the same call unchanged: if it failed once with the same input,
 it will again.

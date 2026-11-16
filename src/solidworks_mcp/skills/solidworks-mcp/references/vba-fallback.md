@@ -19,7 +19,9 @@ SolidWorks and change nothing. The macro comes back in `vba_code` with
 
 `execute_macro` runs a binary `.swp` macro file that already exists. It
 refuses VBA source text, so it can't run what the `generate_vba_*` tools
-return. A macro it runs must not wait for the user (no message boxes or
+return. To run API calls you wrote yourself, write them in C# for
+`run_api_snippet` ([api-escape-hatches.md](api-escape-hatches.md)); it is
+off unless the user turns it on. A macro it runs must not wait for the user (no message boxes or
 forms), or the call hangs, and its changes can't be undone from here.
 
 After the user runs a macro, read the model back (`get_model_info`,
@@ -27,4 +29,6 @@ After the user runs a macro, read the model back (`get_model_info`,
 macro did.
 
 To look up a SolidWorks API call while writing VBA, use
-`lookup_api_method`, `lookup_api_interface` or `search_solidworks_api_help`.
+`lookup_api_method`, `lookup_api_interface` or `search_solidworks_api_help`;
+`get_api_remarks` for the rules in its help page, and `lookup_api_enum` for
+the values of its enum arguments.
