@@ -14,6 +14,7 @@ from __future__ import annotations
 DOCUMENT_FAMILIES = frozenset(
     {
         "analysis",
+        "bodies",
         "drawing",
         "drawing_analysis",
         "drawing_automation",

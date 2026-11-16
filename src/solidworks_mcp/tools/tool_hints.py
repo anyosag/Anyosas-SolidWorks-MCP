@@ -114,6 +114,15 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "execute_workflow": _discards("Execute Workflow"),
     "create_template": _overwrites("Create Template File"),
     "optimize_performance": _sets("Optimize SolidWorks Performance"),
+    # bodies
+    "list_bodies": _reads("List Solid Bodies"),
+    "insert_part": _adds("Insert Part as Bodies"),
+    "combine_bodies": _adds("Combine Bodies"),
+    "move_copy_body": _adds("Move or Copy Bodies"),
+    "delete_keep_body": _adds("Delete or Keep Bodies"),
+    "split_body": _adds("Split Bodies"),
+    "body_clearance": _reads("Measure Clearance Between Bodies"),
+    "make_mating_negative": _adds("Cut Mating Negative With Clearance"),
     # docs_discovery
     "discover_solidworks_docs": _sets("Rebuild SolidWorks API Index"),
     "search_solidworks_api_help": _reads("Search SolidWorks API"),
