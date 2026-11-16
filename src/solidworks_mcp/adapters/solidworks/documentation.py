@@ -11,6 +11,7 @@ via ``pythoncom.LoadTypeLib``), not from memory. Live behaviour is covered by
 
 from __future__ import annotations
 
+import math
 import os
 from typing import TYPE_CHECKING, Any, cast
 
@@ -20,6 +21,7 @@ from defusedxml import DefusedXmlException
 from ..base import AdapterResult, AdapterResultStatus
 from . import dimension_layout as _layout
 from .com_utils import clear_selection
+from .com_utils import flag as _flag
 from .features import _null_callout, _parse_edge_spec, _select_edge_by_coord
 from .io import (
     _as_com,
@@ -329,6 +331,109 @@ def _sequence(raw: Any) -> list[Any]:
     return [raw]
 
 
+#: ``IMeasure`` properties ``measure_entities`` reports, and their keys.
+#: SolidWorks answers ``-1`` for one that doesn't apply to the selection.
+_MEASURE_PROPERTIES = (
+    ("Distance", "distance_m"),
+    ("NormalDistance", "normal_distance_m"),
+    ("CenterDistance", "center_distance_m"),
+    ("Angle", "angle_rad"),
+    ("Radius", "radius_m"),
+    ("Diameter", "diameter_m"),
+    ("Length", "length_m"),
+    ("ArcLength", "arc_length_m"),
+    ("Area", "area_m2"),
+    ("Perimeter", "perimeter_m"),
+    ("DeltaX", "delta_x_m"),
+    ("DeltaY", "delta_y_m"),
+    ("DeltaZ", "delta_z_m"),
+)
+
+
+def _plane(adapter: Any, face: Any) -> tuple[list[float], list[float]] | None:
+    """A planar face's plane as ``(normal, point on it)``, metres; else ``None``.
+
+    ``IFace2.GetSurface``, ``ISurface.IsPlane`` and ``ISurface.PlaneParams``
+    (a property: the normal's three values, then a point's).
+    """
+    _flag(adapter, face, "GetSurface")
+    surface = adapter._attempt(lambda: face.GetSurface(), default=None)
+    if surface is None:
+        return None
+    _flag(adapter, surface, "IsPlane")
+    if not adapter._attempt(lambda: surface.IsPlane(), default=False):
+        return None
+    params = adapter._attempt(lambda: list(surface.PlaneParams), default=None)
+    if not params or len(params) < 6:
+        return None
+    values = [float(v) for v in params[:6]]
+    return values[:3], values[3:]
+
+
+def _plane_gap(
+    first: tuple[list[float], ...], second: tuple[list[float], ...]
+) -> float:
+    """The distance between two parallel planes, along the first one's normal."""
+    normal, point = first
+    length = math.sqrt(sum(c * c for c in normal)) or 1.0
+    offset = [b - a for a, b in zip(point, second[1], strict=True)]
+    return abs(sum(o * n for o, n in zip(offset, normal, strict=True))) / length
+
+
+def _selected_faces_planes(adapter: Any, model: Any) -> list[Any] | None:
+    """The planes of the two selected faces, or ``None`` unless both are planar."""
+    manager = adapter._attempt(lambda: model.SelectionManager, default=None)
+    if manager is None:
+        return None
+    _flag(adapter, manager, "GetSelectedObject6")
+    planes = []
+    for index in (1, 2):
+        face = adapter._attempt(
+            lambda i=index: manager.GetSelectedObject6(i, -1), default=None
+        )
+        plane = _plane(adapter, face) if face is not None else None
+        if plane is None:
+            return None
+        planes.append(plane)
+    return planes
+
+
+def _normal_distance(
+    adapter: Any, model: Any, entities: list[str], result: dict[str, Any]
+) -> None:
+    """Make ``distance_m`` the normal distance between two parallel planar faces.
+
+    Two parallel faces at y = 1.0 and 3.5 mm measured ``Distance`` 24.75 mm
+    (``DeltaY`` 0), not 2.5 mm (Lid build, SolidWorks 2026 SP4.1). For such a
+    pair ``distance_m`` becomes ``IMeasure.NormalDistance``, or, when that is
+    unreadable, the gap between the faces' planes (``ISurface.PlaneParams``);
+    what ``Distance`` said stays as ``raw_distance_m``. Changes ``result``
+    in place.
+
+    Args:
+        adapter: The adapter.
+        model: The document the two faces are selected in.
+        entities: The two specs measured.
+        result: The measured values so far.
+    """
+    faces = all(_parse_measure_spec(spec)[4] == "FACE" for spec in entities)
+    if not faces or result.get("is_parallel") is not True:
+        return
+    planes = _selected_faces_planes(adapter, model)
+    if planes is None:
+        return
+    normal = result.get("normal_distance_m")
+    basis = "IMeasure.NormalDistance"
+    if not isinstance(normal, float):
+        normal, basis = _plane_gap(planes[0], planes[1]), "ISurface.PlaneParams"
+        result["normal_distance_m"] = normal
+    if "distance_m" in result:
+        result["raw_distance_m"] = result["distance_m"]
+    result["distance_m"] = normal
+    result["distance_kind"] = "normal"
+    result["distance_source"] = basis
+
+
 class SolidWorksDocumentationMixin:
     """Expose model-data and drawing-documentation methods through a mixin."""
 
@@ -484,7 +589,10 @@ class SolidWorksDocumentationMixin:
         Returns:
             AdapterResult[dict[str, Any]]: Measured values in metres, square
             metres and radians, plus ``selected``; ``is_parallel`` only for
-            two entities.
+            two entities. For two parallel planar faces ``distance_m`` is
+            the normal distance (``distance_kind`` ``"normal"``, with its
+            ``distance_source``) and ``raw_distance_m`` what
+            ``IMeasure.Distance`` gave; see :func:`_normal_distance`.
         """
         guard = self._require_doc_type({1, 2}, "measure_entities")
         if guard is not None:
@@ -532,20 +640,7 @@ class SolidWorksDocumentationMixin:
                 raise Exception("IMeasure.Calculate failed for this selection")
 
             result: dict[str, Any] = {"selected": list(entities)}
-            for prop, key in (
-                ("Distance", "distance_m"),
-                ("CenterDistance", "center_distance_m"),
-                ("Angle", "angle_rad"),
-                ("Radius", "radius_m"),
-                ("Diameter", "diameter_m"),
-                ("Length", "length_m"),
-                ("ArcLength", "arc_length_m"),
-                ("Area", "area_m2"),
-                ("Perimeter", "perimeter_m"),
-                ("DeltaX", "delta_x_m"),
-                ("DeltaY", "delta_y_m"),
-                ("DeltaZ", "delta_z_m"),
-            ):
+            for prop, key in _MEASURE_PROPERTIES:
                 value = self._attempt(lambda p=prop: getattr(measure, p), default=None)
                 if isinstance(value, (int, float)) and value != -1:
                     result[key] = float(value)
@@ -554,6 +649,7 @@ class SolidWorksDocumentationMixin:
                 parallel = self._attempt(lambda: measure.IsParallel, default=None)
                 if isinstance(parallel, bool):
                     result["is_parallel"] = parallel
+                _normal_distance(self, model, entities, result)
             self._attempt(lambda: model.ClearSelection2(True), default=None)
             return result
 

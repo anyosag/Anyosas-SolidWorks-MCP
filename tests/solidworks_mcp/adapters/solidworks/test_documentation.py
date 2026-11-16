@@ -440,6 +440,119 @@ async def test_measure_entities_guard() -> None:
     assert result.error == "No active model"
 
 
+# ---- two parallel faces: the normal distance -----------------------------------
+
+_LID_FACES = ["face:0.0175,0.001,0.0175", "face:0,0.0035,0"]
+
+
+class _LidMeasure:
+    """What SolidWorks 2026 SP4.1 reported for the Lid's two parallel faces."""
+
+    Distance = 0.02474874
+    DeltaX, DeltaY, DeltaZ = 0.0175, 0.0, 0.0175
+    IsParallel = True
+
+    def __init__(self, normal: float = 0.0025) -> None:
+        self.NormalDistance = normal
+
+    def Calculate(self, _selection):  # noqa: N802 - COM name
+        return True
+
+
+def _planar_face(y: float, planar: bool = True) -> SimpleNamespace:
+    surface = SimpleNamespace(
+        IsPlane=lambda: planar, PlaneParams=(0.0, 1.0, 0.0, 0.3, y, -0.2)
+    )
+    return SimpleNamespace(GetSurface=lambda: surface)
+
+
+def _two_faces(
+    measure: Any, faces: list[Any] | None, parallel: bool = True
+) -> SimpleNamespace:
+    model = _measurable(measure=measure, parallel=parallel)
+    if faces is not None:
+        model.SelectionManager = SimpleNamespace(
+            GetSelectedObject6=lambda index, _mark: faces[index - 1]
+        )
+    return model
+
+
+@pytest.fixture
+def _picks_anything(monkeypatch) -> None:
+    monkeypatch.setattr(doc, "_select_edge_by_coord", lambda *_args: True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_picks_anything")
+async def test_two_parallel_faces_give_their_normal_distance() -> None:
+    model = _two_faces(_LidMeasure(), [_planar_face(0.001), _planar_face(0.0035)])
+
+    result = await _Harness(model).measure_entities(_LID_FACES)
+
+    assert result.is_success, result.error
+    assert result.data["distance_m"] == 0.0025
+    assert result.data["normal_distance_m"] == 0.0025
+    assert result.data["raw_distance_m"] == 0.02474874
+    assert result.data["distance_kind"] == "normal"
+    assert result.data["distance_source"] == "IMeasure.NormalDistance"
+    assert result.data["delta_y_m"] == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_picks_anything")
+async def test_without_a_normal_distance_the_planes_give_it() -> None:
+    model = _two_faces(
+        _LidMeasure(normal=-1), [_planar_face(0.001), _planar_face(0.0035)]
+    )
+
+    result = await _Harness(model).measure_entities(_LID_FACES)
+
+    assert result.data["distance_m"] == pytest.approx(0.0025)
+    assert result.data["normal_distance_m"] == pytest.approx(0.0025)
+    assert result.data["distance_source"] == "ISurface.PlaneParams"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_picks_anything")
+@pytest.mark.parametrize(
+    ("entities", "faces", "parallel"),
+    [
+        (_LID_FACES, [_planar_face(0.001), _planar_face(0.0035, planar=False)], True),
+        (_LID_FACES, [_planar_face(0.001), SimpleNamespace(GetSurface=_raise)], True),
+        (_LID_FACES, [_planar_face(0.001), None], True),
+        (_LID_FACES, None, True),  # no selection manager
+        (_LID_FACES, [_planar_face(0.001), _planar_face(0.0035)], False),
+        (["face:0,0.001,0", "Edge<1>"], [_planar_face(0.001)] * 2, True),
+    ],
+    ids=["curved", "no-surface", "not-selected", "no-manager", "not-parallel", "edge"],
+)
+async def test_other_pairs_keep_the_distance_solidworks_gave(
+    entities, faces, parallel
+) -> None:
+    model = _two_faces(_LidMeasure(), faces, parallel)
+
+    result = await _Harness(model).measure_entities(entities)
+
+    assert result.data["distance_m"] == 0.02474874
+    assert result.data["normal_distance_m"] == 0.0025
+    assert "raw_distance_m" not in result.data
+    assert "distance_kind" not in result.data
+
+
+def test_plane_gap_is_measured_along_the_normal() -> None:
+    first = ([0.0, 2.0, 0.0], [0.0, 0.001, 0.0])  # a normal that isn't unit
+    second = ([0.0, -1.0, 0.0], [0.05, 0.0035, -0.02])
+
+    assert doc._plane_gap(first, second) == pytest.approx(0.0025)
+
+
+def test_a_plane_needs_six_parameters() -> None:
+    surface = SimpleNamespace(IsPlane=lambda: True, PlaneParams=(0.0, 1.0, 0.0))
+    face = SimpleNamespace(GetSurface=lambda: surface)
+
+    assert doc._plane(_Harness(), face) is None
+
+
 # ---- material -----------------------------------------------------------------
 
 

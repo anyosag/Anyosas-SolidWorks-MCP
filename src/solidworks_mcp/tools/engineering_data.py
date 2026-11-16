@@ -243,8 +243,11 @@ async def register_engineering_data_tools(
         check a feature's size or position; for the whole model, use `verify_model`.
         Needs: an open part or assembly. Read-only. It clears the selection afterwards.
         Returns: `data` with `selected` and the values in metres, square metres and
-        radians (`distance_m`, `angle_rad`, `length_m`, `radius_m`, `diameter_m`,
-        `area_m2`, `perimeter_m`; for two entities `is_parallel`).
+        radians (`distance_m`, `normal_distance_m`, `angle_rad`, `length_m`,
+        `radius_m`, `diameter_m`, `area_m2`, `perimeter_m`; for two entities
+        `is_parallel`). For two parallel planar faces `distance_m` is the normal
+        distance between them (`distance_kind` "normal"); `raw_distance_m` is
+        what SolidWorks' Measure reported as the distance.
 
         Args:
             input_data: What to measure. `entities` (one or two) is required, each
