@@ -2231,6 +2231,13 @@ def _parse_edge_spec(
 #: so a point that is not on any edge fails instead of grabbing a neighbour.
 _PICK_TOLERANCE_M = 5e-4
 
+#: SolidWorks' own pick at a point (``SelectByID2``) is kept when the edge it
+#: selects passes this close to the point. Two different edges that close to
+#: one point meet there (a vertex), where either is the point's edge; an edge
+#: picked through the view instead (a front edge hiding the one meant) lies a
+#: wall's thickness away and is undone.
+_DIRECT_PICK_TOLERANCE_M = 5e-5
+
 #: Every cached bounding box is grown by this much on each side, so an edge
 #: or face lying a little outside the box read for it (a tolerant edge, a
 #: rounded face box) is never ruled out. It only costs a few more measurements.
@@ -2316,6 +2323,8 @@ class _BodyEntityPicker:
         self._select_data: dict[int, Any] = {}
         self._rebuilt = False
         self.pruned = False
+        self.direct_picks = 0
+        self._manager: Any = None
 
     def rebuild(self) -> None:
         """Run ``ForceRebuild3(True)``, once per picker (pitfall #13).
@@ -2439,6 +2448,92 @@ class _BodyEntityPicker:
             )
         return self._face_edges[id(face)]
 
+    def pick_edge_at(
+        self, point: tuple[float, float, float], append: bool, mark: int = 0
+    ) -> bool:
+        """Try SolidWorks' own pick at ``point``; keep it if the edge is there.
+
+        On a merged body (a plate with letters cut in it) one face carries
+        every letter's edges, so its box rules nothing out and the search
+        reads hundreds of boxes and edges: 6 s for one pick (probe,
+        2026-11-16). ``SelectByID2("", "EDGE", x, y, z)`` is one call, but it
+        picks through the view (the class docstring), so its edge is kept only
+        when it passes within :data:`_DIRECT_PICK_TOLERANCE_M` of the point.
+        Otherwise that pick is taken back (``ISelectionMgr.DeSelect2``) and
+        the caller searches as before.
+
+        Returns:
+            bool: True when the edge at the point is selected under ``mark``;
+            False when the caller should search (the selection is as it was).
+
+        Raises:
+            RuntimeError: A rejected pick could not be taken back.
+        """
+        adapter = self._adapter
+        model = adapter.currentModel
+        manager = self._selection_manager()
+        if manager is None:
+            return False
+        self._flag_once(manager, "GetSelectedObjectCount2")
+        self._flag_once(manager, "GetSelectedObject6")
+        if not append:
+            _attempt(adapter, lambda: model.ClearSelection2(True))
+        before = self._selected_count(manager)
+        if before is None:
+            return False
+        x, y, z = point
+        picked = _attempt(
+            adapter,
+            lambda: model.Extension.SelectByID2(
+                "", "EDGE", x, y, z, True, mark, _null_callout(), 0
+            ),
+            False,
+        )
+        after = self._selected_count(manager) if picked else before
+        if after is None or after <= before:
+            return False
+        edge = _attempt(adapter, lambda: manager.GetSelectedObject6(after, -1))
+        # None (unreadable) measures as None, and the pick is taken back.
+        distance = self._distance(edge, point)
+        if (
+            after == before + 1
+            and distance is not None
+            and distance <= _DIRECT_PICK_TOLERANCE_M
+        ):
+            self.direct_picks += 1
+            return True
+        self._take_back(manager, before, after)
+        return False
+
+    def _selection_manager(self) -> Any:
+        """The model's ``ISelectionMgr``, read once per picker."""
+        if self._manager is None:
+            model = self._adapter.currentModel
+            self._manager = _attempt(self._adapter, lambda: model.SelectionManager)
+        return self._manager
+
+    def _selected_count(self, manager: Any) -> int | None:
+        """How many objects are selected, or None when it can't be read."""
+        count = _attempt(self._adapter, lambda: manager.GetSelectedObjectCount2(-1))
+        if isinstance(count, bool) or not isinstance(count, int):
+            return None
+        return count
+
+    def _take_back(self, manager: Any, before: int, after: int) -> None:
+        """Deselect what a trial pick added, from the last one back.
+
+        Raises:
+            RuntimeError: The selection didn't go back to ``before`` objects.
+        """
+        self._flag_once(manager, "DeSelect2")
+        for index in range(after, before, -1):
+            _attempt(self._adapter, lambda i=index: manager.DeSelect2(i, -1))
+        if self._selected_count(manager) != before:
+            raise RuntimeError(
+                "A trial pick with SelectByID2 could not be taken back, so the "
+                "selection may hold an edge that was not asked for."
+            )
+
     def select(self, entity: Any, append: bool, mark: int = 0) -> bool:
         """Select ``entity`` with ``IEntity.Select4`` under ``mark``."""
         select_data = self._selection_data(mark)
@@ -2493,8 +2588,7 @@ class _BodyEntityPicker:
     def _selection_data(self, mark: int) -> Any:
         """One ``SelectData`` per mark, reused for every entity (pitfall #24)."""
         if mark not in self._select_data:
-            model = self._adapter.currentModel
-            sel_mgr = _attempt(self._adapter, lambda: model.SelectionManager)
+            sel_mgr = self._selection_manager()
             _flag(self._adapter, sel_mgr, "CreateSelectData")
             select_data = _attempt(self._adapter, lambda: sel_mgr.CreateSelectData())
             if select_data is None:
@@ -2720,6 +2814,10 @@ def _select_edge_by_coord(
     # keeps the SelectByID2 pick, which honours the requested type.
     if entity_type not in ("EDGE", "FACE"):
         return _select_by_view_pick(adapter, x, y, z, append, mark, entity_type)
+
+    # SolidWorks' own pick first: kept only when its edge is at the point.
+    if entity_type == "EDGE" and picker.pick_edge_at((x, y, z), append, mark):
+        return True
 
     getter = "GetFaces" if entity_type == "FACE" else "GetEdges"
     nearest = picker.nearest(getter, (x, y, z))

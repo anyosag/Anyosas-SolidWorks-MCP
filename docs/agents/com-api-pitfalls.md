@@ -1415,6 +1415,14 @@ probes for that build's other reports (2026-11-16) found:
     200 edges: the face carrying the letters has a box as big as the part. Measuring all
     759 edges would take about 4.7 s (6 ms each), so the boxes don't pay there.
     `add_chamfer` took 9.7 s.
+  - So a coordinate edge pick now tries `SelectByID2("", "EDGE", x, y, z)` first
+    (`_BodyEntityPicker.pick_edge_at`). It keeps that pick only when the selected edge
+    passes within 0.05 mm of the point. Otherwise it takes the pick back with
+    `ISelectionMgr.DeSelect2(index, -1)` and searches as above.
+  - On both parts the direct pick took 0.07 s and chose the same edge as the search;
+    `add_chamfer` took 0.8 s.
+  - At the plate's bottom edge under the same point, the direct pick was not kept and
+    the search found the bottom edge.
 
 ---
 

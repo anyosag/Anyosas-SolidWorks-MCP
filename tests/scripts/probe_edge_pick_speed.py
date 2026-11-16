@@ -150,6 +150,30 @@ def _timed_pick(adapter: PyWin32Adapter) -> dict[str, Any]:
     }
 
 
+def _direct_pick(adapter: PyWin32Adapter, point: Any) -> dict[str, Any]:
+    """``pick_edge_at`` (SelectByID2, kept only on the point) against the search."""
+    model = adapter.currentModel
+    picker = features._BodyEntityPicker(adapter)
+    started = time.perf_counter()
+    kept = picker.pick_edge_at(point, append=False)
+    seconds = time.perf_counter() - started
+    manager = sw_type_info.flagged(model.SelectionManager, "ISelectionMgr")
+    count = manager.GetSelectedObjectCount2(-1)
+    chosen = manager.GetSelectedObject6(1, -1) if count else None
+    model.ClearSelection2(True)
+    searched = features._BodyEntityPicker(adapter).nearest("GetEdges", point)
+    want = describe_edge(adapter, searched[0]) if searched and searched[0] else None
+    got = describe_edge(adapter, chosen) if chosen is not None else None
+    return {
+        "seconds": round(seconds, 3),
+        "kept": kept,
+        "selected_after": count,
+        "picked": got,
+        "search_picks": want,
+        "same_as_search": None if not kept else got == want,
+    }
+
+
 def _every_edge(adapter: PyWin32Adapter) -> dict[str, Any]:
     """The old way: every edge, timed on a sample and scaled."""
     picker = features._BodyEntityPicker(adapter)
@@ -181,6 +205,9 @@ async def _variant(adapter: PyWin32Adapter, merge: bool) -> dict[str, Any]:
     try:
         report["soundness"] = _soundness(adapter)
         report["pick"] = _timed_pick(adapter)
+        report["direct_pick"] = _direct_pick(adapter, POINT)
+        # The plate's bottom edge under the same point, likely hidden from view.
+        report["direct_pick_bottom"] = _direct_pick(adapter, (POINT[0], 0.0, POINT[2]))
         report["every_edge"] = _every_edge(adapter)
         spec = ",".join(str(c) for c in POINT)
         started = time.perf_counter()
@@ -217,6 +244,8 @@ async def run() -> int:
                 f"every edge {r.get('every_edge')}, add_chamfer {r.get('add_chamfer')}, "
                 f"outside boxes {len(r.get('soundness', {}).get('outside', []))}"
             )
+            for pick in ("direct_pick", "direct_pick_bottom"):
+                print(f"[probe] {key} {pick}: {r.get(pick)}")
     return 0
 
 

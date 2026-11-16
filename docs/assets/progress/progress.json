@@ -1294,11 +1294,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 265,
+   "covered": 266,
    "total": 2838
   },
   "api": {
-   "covered": 322,
+   "covered": 323,
    "total": 5985
   },
   "interfaces": [
@@ -1565,6 +1565,7 @@
     "name": "ISelectionMgr",
     "covered": [
      "CreateSelectData",
+     "DeSelect2",
      "GetSelectedObject6",
      "GetSelectedObjectCount2",
      "GetSelectedObjectType3"

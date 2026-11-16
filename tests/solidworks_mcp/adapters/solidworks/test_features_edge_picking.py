@@ -1037,6 +1037,162 @@ def test_boxes_that_cannot_be_read_rule_nothing_out() -> None:
     assert calls["GetClosestPointOn"] == 11
 
 
+# ---- SolidWorks' own pick first -------------------------------------------------
+
+
+class _Selection(_SelectionManager):
+    """A selection list ``SelectByID2`` adds to and ``DeSelect2`` takes from."""
+
+    def __init__(self, log: _Log, deselects: bool = True) -> None:
+        super().__init__(log)
+        self.items: list[Any] = []
+        self.deselects = deselects
+
+    def GetSelectedObjectCount2(self, _mark: int) -> int:
+        self._count("GetSelectedObjectCount2")
+        return len(self.items)
+
+    def GetSelectedObject6(self, index: int, _mark: int) -> Any:
+        self._count("GetSelectedObject6")
+        return self.items[index - 1]
+
+    def DeSelect2(self, index: int, _mark: int) -> int:
+        self._count("DeSelect2")
+        if self.deselects:
+            del self.items[index - 1]
+        return len(self.items)
+
+
+class _ViewPick(_Extension):
+    """``SelectByID2`` at a point selects what ``under`` says is seen there."""
+
+    def __init__(self, log: _Log, manager: _Selection, under: Any, adds: int) -> None:
+        super().__init__(log, set())
+        self.manager, self.under, self.adds = manager, under, adds
+
+    def SelectByID2(self, name: str, kind: str, *rest: Any) -> bool:
+        self._count("SelectByID2")
+        x, y, z, append = rest[:4]
+        seen = self.under((x, y, z))
+        if seen is None:
+            return False
+        if not append:
+            self.manager.items.clear()
+        if seen not in self.manager.items:
+            self.manager.items.extend([seen] * self.adds)
+        return True
+
+
+def _viewed(
+    edges: list[_Edge], under: Any, deselects: bool = True, adds: int = 1
+) -> tuple[_Adapter, _Selection]:
+    adapter = _adapter(edges)
+    model = adapter.currentModel
+    manager = _Selection(adapter.log, deselects)
+    model.manager = manager
+    model.Extension = _ViewPick(adapter.log, manager, under, adds)
+    return adapter, manager
+
+
+def test_the_edge_at_the_point_is_kept_without_reading_the_body() -> None:
+    edges = _plate()
+    back_bottom = edges[4]
+    adapter, manager = _viewed(edges, lambda _p: back_bottom)
+    picker = features._BodyEntityPicker(adapter)
+
+    assert features._select_edge_by_coord(
+        adapter, 0.02, 0.0, -0.006, append=False, picker=picker
+    )
+
+    assert manager.items == [back_bottom]
+    assert picker.direct_picks == 1
+    calls = adapter.log.calls
+    assert calls["GetBodies2"] == calls["GetEdges"] == 0
+    assert calls["GetClosestPointOn"] == 1
+
+
+def test_a_front_edge_picked_through_the_view_is_taken_back() -> None:
+    """Seen from the front, the back edge at z=-6 hides behind the one at z=+6."""
+    edges = _plate()
+    front_bottom = edges[0]
+    adapter, manager = _viewed(edges, lambda _p: front_bottom)
+
+    assert features._select_edge_by_coord(adapter, 0.02, 0.0, -0.006, append=False)
+
+    assert manager.items == []  # the trial pick was taken back, then searched:
+    assert [e.name for e in edges if e.selected_with] == ["back-bottom"]
+    assert adapter.log.calls["DeSelect2"] == 1
+
+
+def test_earlier_picks_stay_selected_when_a_trial_pick_is_taken_back() -> None:
+    edges = _plate()
+    adapter, manager = _viewed(edges, lambda _p: edges[0])
+    earlier = SimpleNamespace(name="earlier")
+    manager.items.append(earlier)
+    picker = features._BodyEntityPicker(adapter)
+
+    assert not picker.pick_edge_at((0.02, 0.0, -0.006), append=True)
+    assert manager.items == [earlier]
+
+
+def test_more_than_one_new_object_is_taken_back() -> None:
+    edges = _plate()
+    adapter, manager = _viewed(edges, lambda _p: edges[4], adds=2)
+    picker = features._BodyEntityPicker(adapter)
+
+    assert not picker.pick_edge_at((0.02, 0.0, -0.006), append=False)
+    assert manager.items == []
+    assert adapter.log.calls["DeSelect2"] == 2
+
+
+def test_an_edge_already_selected_is_searched_for() -> None:
+    """Picking it again adds nothing, so there is no new object to check."""
+    edges = _plate()
+    adapter, manager = _viewed(edges, lambda _p: edges[4])
+    manager.items.append(edges[4])
+    picker = features._BodyEntityPicker(adapter)
+
+    assert not picker.pick_edge_at((0.02, 0.0, -0.006), append=True)
+    assert manager.items == [edges[4]]
+
+
+def test_nothing_at_the_point_is_searched_for() -> None:
+    edges = _plate()
+    adapter, _manager = _viewed(edges, lambda _p: None)
+
+    assert features._select_edge_by_coord(adapter, 0.02, 0.0, -0.006, append=False)
+
+    assert [e.name for e in edges if e.selected_with] == ["back-bottom"]
+    assert adapter.log.calls["GetBodies2"] == 1
+
+
+def test_an_object_that_cannot_be_measured_is_taken_back() -> None:
+    edges = _plate()
+    adapter, manager = _viewed(edges, lambda _p: SimpleNamespace())
+    picker = features._BodyEntityPicker(adapter)
+
+    assert not picker.pick_edge_at((0.02, 0.0, -0.006), append=False)
+    assert manager.items == []
+
+
+def test_a_trial_pick_that_cannot_be_taken_back_is_an_error() -> None:
+    edges = _plate()
+    adapter, _manager = _viewed(edges, lambda _p: edges[0], deselects=False)
+
+    with pytest.raises(RuntimeError, match="could not be taken back"):
+        features._select_edge_by_coord(adapter, 0.02, 0.0, -0.006, append=False)
+
+
+def test_without_a_selection_manager_there_is_no_trial_pick() -> None:
+    edges = _plate()
+    adapter = _adapter(edges)
+    adapter.currentModel.manager = None
+    picker = features._BodyEntityPicker(adapter)
+
+    assert not picker.pick_edge_at((0.02, 0.0, -0.006), append=False)
+    assert adapter.log.calls["SelectByID2"] == 0
+
+
 def test_an_edge_reached_from_two_faces_is_one_com_object(monkeypatch) -> None:
     """SolidWorks hands back a new wrapper per face; same_com_object tells."""
     log = _Log()
