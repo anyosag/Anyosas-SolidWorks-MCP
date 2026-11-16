@@ -2158,8 +2158,8 @@ async def register_modeling_tools(
         Name the edges as "Edge<1>", a point "x,y,z" (metres) or "face:x,y,z" for every
         edge of a face; or leave `edge_names` empty to use the current selection (e.g.
         from `select_face_edges`). A fillet that leaves the volume unchanged is an
-        error. Needs: an open part with a solid body. Changes: adds a Fillet feature.
-        Returns: `fillet` with `name`, `radius` and `edges`.
+        error. Needs: an open part with a solid body. Changes: adds a Fillet feature,
+        then clears the selection. Returns: `fillet` with `name`, `radius` and `edges`.
 
         Args:
             input_data: The fillet. `radius` (mm) is required; `edge_names`
@@ -2193,7 +2193,8 @@ async def register_modeling_tools(
         edge of a face; or leave `edge_names` empty to use the current selection (e.g.
         from `select_face_edges`). At 45 degrees both legs equal `distance`; at another
         angle, `flip` swaps which face `distance` is measured on. Needs: an open part
-        with a solid body. Changes: adds a Chamfer feature. Returns: `chamfer` with
+        with a solid body. Changes: adds a Chamfer feature, then clears the selection.
+        Returns: `chamfer` with
         `name`, `distance`, `angle`, `flip` and `edges`.
 
         Args:

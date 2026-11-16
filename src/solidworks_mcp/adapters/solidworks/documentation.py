@@ -19,6 +19,7 @@ from defusedxml import DefusedXmlException
 
 from ..base import AdapterResult, AdapterResultStatus
 from . import dimension_layout as _layout
+from .com_utils import clear_selection
 from .features import _null_callout, _parse_edge_spec, _select_edge_by_coord
 from .io import (
     _as_com,
@@ -1004,6 +1005,8 @@ class SolidWorksDocumentationMixin:
                     "pattern to export"
                 )
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            # An export with something selected writes only the selection.
+            clear_selection(self, model)
             model_path = str(
                 self._attempt(lambda: model.GetPathName(), default="") or ""
             )

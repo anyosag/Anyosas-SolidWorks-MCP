@@ -352,6 +352,38 @@ async def _stl_mesh_check(
     return check
 
 
+#: A part's STL whose volume is outside this share of the model's is suspect.
+_VOLUME_RATIO_RANGE = (0.9, 1.1)
+
+
+def _partial_mesh_warning(mesh_check: dict[str, Any]) -> str | None:
+    """A warning when the STL's volume is far from the part's.
+
+    An export made while a face was selected held only that face: 592
+    triangles of a chamfer band instead of the 18,738-triangle lid (Lid
+    build, SolidWorks 2026 SP4.1). The adapter now clears the selection
+    first; this catches what is left (a body left out, a mesh that lost
+    faces).
+
+    Args:
+        mesh_check: The export's ``mesh_check``.
+
+    Returns:
+        str | None: The warning, or ``None`` when the ratio is unknown or
+        within :data:`_VOLUME_RATIO_RANGE`.
+    """
+    ratio = mesh_check.get("volume_ratio")
+    low, high = _VOLUME_RATIO_RANGE
+    if not isinstance(ratio, int | float) or low <= ratio <= high:
+        return None
+    return (
+        f"The STL encloses {mesh_check.get('volume_mm3')} mm3, {ratio:.1%} of the "
+        f"part's {mesh_check.get('cad_volume_mm3')} mm3, so the file may hold only "
+        "part of the model. Check its size and triangle count before printing; "
+        "export again with nothing selected and every body shown."
+    )
+
+
 async def register_export_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -387,8 +419,9 @@ async def register_export_tools(
         Use it to hand a model to another CAD system; it is the most widely read
         exchange format. SolidWorks picks the format from the file's extension, so end
         `file_path` in .step or .stp. Needs: an open, active part or assembly. Changes:
-        writes the file, creating its folder and replacing a file already there; the
-        open document is unchanged. Returns: `export` with `file_path` and `format`.
+        writes the file, creating its folder and replacing a file already there; nothing
+        stays selected (an export writes only the selection) and the model is
+        unchanged. Returns: `export` with `file_path` and `format`.
 
         Args:
             input_data: The export. `file_path` (ending in .step or .stp) is required;
@@ -432,8 +465,9 @@ async def register_export_tools(
         Use it only when the receiver can't read STEP; prefer `export_step`. SolidWorks
         picks the format from the file's extension, so end `file_path` in .igs or .iges.
         Needs: an open, active part or assembly. Changes: writes the file, creating its
-        folder and replacing a file already there; the open document is unchanged.
-        Returns: `export` with `file_path` and `format`.
+        folder and replacing a file already there; nothing stays selected (an export
+        writes only the selection) and the model is unchanged. Returns: `export` with
+        `file_path` and `format`.
 
         Args:
             input_data: The export. `file_path` (ending in .igs or .iges) is required;
@@ -479,12 +513,15 @@ async def register_export_tools(
         `angle_deg`, `units` or `binary`; those apply to this file only, and the
         user's options are put back afterwards. Needs: an open, active part or
         assembly. Changes: writes the file, creating its folder and replacing a file
-        already there; the open document is unchanged. Returns: `export` with
-        `file_path`, `format`, `mesh_check` (the file read back: `triangles`,
-        `closed`, `open_edges`, `non_manifold_edges`, `volume_mm3`, `size_mm`,
-        `units`, and `cad_volume_mm3` and `volume_ratio` for a part; only `error`
-        when it couldn't be read) and, when the call changed STL options (mesh
-        settings, an assembly's one-file option), `mesh` (`applied`, `restored`).
+        already there; nothing stays selected (an export writes only the selection)
+        and the model is unchanged. Returns: `export` with `file_path`, `format`,
+        `mesh_check` (the file read back: `triangles`, `closed`, `open_edges`,
+        `non_manifold_edges`, `volume_mm3`, `size_mm`, `units`, and
+        `cad_volume_mm3` and `volume_ratio` for a part; only `error` when it
+        couldn't be read) and, when the call changed STL options (mesh settings,
+        an assembly's one-file option), `mesh` (`applied`, `restored`). A
+        `warning` says when a part's `volume_ratio` is outside 0.9-1.1: the file
+        may hold only part of the model.
 
         Args:
             input_data: The export. `file_path` (ending in .stl) is required;
@@ -523,15 +560,19 @@ async def register_export_tools(
         )
         message = f"Exported to STL format: {input_data.file_path}"
         export: dict[str, Any] = {"file_path": input_data.file_path, "format": "STL"}
+        warnings = [w for w in [_partial_mesh_warning(mesh_check)] if w]
         if native:
             export["mesh_check"] = mesh_check
-            return {
+            native_reply: dict[str, Any] = {
                 "status": "success",
                 "message": message,
                 "data": result.data,
                 "export": export,
                 "execution_time": result.execution_time,
             }
+            if warnings:
+                native_reply["warning"] = " ".join(warnings)
+            return native_reply
         if not settings:
             export["use_case"] = "3D printing and rapid prototyping"
             export["size_estimate"] = "Unknown"
@@ -546,10 +587,12 @@ async def register_export_tools(
             "execution_time": result.execution_time,
         }
         if mesh is not None and mesh.get("restored") is False:
-            reply["warning"] = (
+            warnings.append(
                 "The file was written, but the user's STL options could not "
                 "all be put back; check Tools > Options > Export > STL."
             )
+        if warnings:
+            reply["warning"] = " ".join(warnings)
         return reply
 
     @mcp.tool()
@@ -560,8 +603,9 @@ async def register_export_tools(
         the drawing it creates. SolidWorks picks the format from the file's extension,
         so end `file_path` in .pdf. Needs: an open, active drawing (a part or assembly
         gives a PDF of the view). Changes: writes the file, creating its folder and
-        replacing a file already there; the open document is unchanged. Returns:
-        `export` with `file_path` and `format`.
+        replacing a file already there; nothing stays selected (an export writes only
+        the selection) and the model is unchanged. Returns: `export` with `file_path`
+        and `format`.
 
         Args:
             input_data: The export. `file_path` (ending in .pdf) is required;
@@ -604,8 +648,8 @@ async def register_export_tools(
         Use it to hand a drawing to AutoCAD users. SolidWorks picks the format from the
         file's extension, so end `file_path` in .dwg. Needs: an open, active drawing.
         Changes: writes the file, creating its folder and replacing a file already
-        there; the open document is unchanged. Returns: `export` with `file_path` and
-        `format`.
+        there; nothing stays selected (an export writes only the selection) and the
+        model is unchanged. Returns: `export` with `file_path` and `format`.
 
         Args:
             input_data: The export. `file_path` (ending in .dwg) is required;

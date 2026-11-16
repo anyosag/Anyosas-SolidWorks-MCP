@@ -38,6 +38,7 @@ from .solidworks import (
     visibility,
     zoom_box,
 )
+from .solidworks.com_utils import clear_selection
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.io import activate_doc
@@ -302,6 +303,37 @@ _DOCUMENT_CHOOSING_OPERATIONS = frozenset(
         # Puts the user's application settings back after an export; it must
         # run even when someone switched documents during the export.
         "restore_stl_options",
+    }
+)
+
+
+#: Operations that build or change features. What they leave selected changes
+#: what the next call acts on: ``add_chamfer`` left its chamfer face selected,
+#: and the next STL export wrote only that face (Lid build, SolidWorks 2026
+#: SP4.1). So the outermost one clears the selection as it ends, whether it
+#: succeeded or not (``_handle_com_operation``). Not here: the tools whose job
+#: is to leave a selection (``select_edges``, ``select_face_edges``,
+#: ``select_feature``), sketch tools, and ``exit_sketch``, whose sketch stays
+#: selected for a ``create_extrusion`` given no sketch name.
+_SELECTION_CLEARING_OPERATIONS = frozenset(
+    {
+        "add_chamfer",
+        "add_fillet",
+        "add_mate",
+        "create_axis",
+        "create_cut_extrude",
+        "create_extrusion",
+        "create_loft",
+        "create_reference_plane",
+        "create_reference_point",
+        "create_revolve",
+        "create_sweep",
+        "delete_feature",
+        "edit_feature",
+        "insert_component",
+        "mirror_feature",
+        "pattern_circular",
+        "suppress_feature",
     }
 )
 
@@ -2584,6 +2616,9 @@ class PyWin32Adapter(
         finally:
             self._operation_depth -= 1
             if outermost:
+                if operation_name in _SELECTION_CLEARING_OPERATIONS:
+                    # A feature tool leaves nothing selected for the next one.
+                    clear_selection(self, self.currentModel)
                 limits.end()
                 # Read as part of the operation, before its settle gap.
                 self._remember_active_document()
@@ -3713,6 +3748,9 @@ class PyWin32Adapter(
     async def export_file(self, file_path: str, format_type: str) -> AdapterResult[Any]:
         """Export the current model to a file.
 
+        The selection is cleared first, whatever the format: SolidWorks
+        exports only the selected entities when something is selected.
+
         Args:
             file_path (str): Path to the target file.
             format_type (str): The format type value.
@@ -3769,6 +3807,12 @@ class PyWin32Adapter(
             target_doc = (
                 getattr(self.swApp, "ActiveDoc", None) if self.swApp else None
             ) or self.currentModel
+
+            # With something selected SolidWorks exports only the selection,
+            # and says nothing: an STL after add_chamfer held the chamfer
+            # band alone (592 triangles, y 1.0-1.4 mm) instead of the lid
+            # (18,738 triangles). Every format goes out whole.
+            clear_selection(self, target_doc)
 
             # ----------------------------------------------------------------
             # STL export: use Extension.SaveAs2 + ISTLExportData

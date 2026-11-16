@@ -737,6 +737,21 @@ async def test_export_flat_pattern_writes_the_file(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_export_flat_pattern_clears_the_selection_first(tmp_path) -> None:
+    """An export with something selected writes only the selection."""
+    events: list[str] = []
+    part = _sheet_metal_part(True)
+    export = part.ExportToDWG2
+    part.ClearSelection2 = lambda _all: events.append("ClearSelection2") or True
+    part.ExportToDWG2 = lambda *args: events.append("ExportToDWG2") or export(*args)
+
+    result = await _Harness(part).export_flat_pattern(str(tmp_path / "b.dxf"))
+
+    assert result.is_success, result.error
+    assert events == ["ClearSelection2", "ExportToDWG2"]
+
+
+@pytest.mark.asyncio
 async def test_export_flat_pattern_needs_a_sheet_metal_body(tmp_path) -> None:
     result = await _Harness(_sheet_metal_part(False)).export_flat_pattern(
         str(tmp_path / "x.dxf")

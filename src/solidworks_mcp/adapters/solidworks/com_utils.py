@@ -48,6 +48,23 @@ def double_array(values: list[float]) -> Any:
         return tuple(values)
 
 
+def clear_selection(adapter: Any, model: Any) -> bool:
+    """Clear everything selected in ``model`` (``IModelDoc2.ClearSelection2``).
+
+    A selection left behind changes what the next call acts on: an export of
+    a part with a face selected writes only that face (a chamfer band of 592
+    triangles instead of the 18,738-triangle lid, Lid build on SolidWorks 2026
+    SP4.1). Never raises.
+
+    Returns:
+        bool: True when SolidWorks accepted the call; False for no model or
+        a call that failed.
+    """
+    if model is None:
+        return False
+    return bool(attempt(adapter, lambda: model.ClearSelection2(True), False))
+
+
 def selection_count(adapter: Any, model: Any) -> int | None:
     """Number of entities currently selected in ``model``, or None."""
     sel_mgr = attempt(adapter, lambda: model.SelectionManager)
