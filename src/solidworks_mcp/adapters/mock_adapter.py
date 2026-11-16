@@ -515,6 +515,26 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["model_operation"],
         )
 
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Mock opening a model read-only: ``open_model``, marked read-only.
+
+        As in SolidWorks, a document already open stays as it was: one the
+        mock opened for writing comes back with ``read_only`` False.
+        """
+        already = self._models.get(file_path)
+        writable = already is not None and not (already.properties or {}).get(
+            "read_only"
+        )
+        result = await self.open_model(file_path)
+        if result.is_success and result.data is not None:
+            result.data.properties = {
+                **(result.data.properties or {}),
+                "read_only": not writable,
+            }
+        return result
+
     async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
         """Mock minimize/restore: changes the simulated window state.
 

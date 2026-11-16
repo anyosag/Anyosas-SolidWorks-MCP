@@ -522,6 +522,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "open_model", lambda adapter: adapter.open_model(file_path)
         )
 
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a model read-only using pool."""
+        return await self._execute_with_pool(
+            "open_model_read_only",
+            lambda adapter: adapter.open_model_read_only(file_path),
+        )
+
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False
     ) -> AdapterResult[Any]:

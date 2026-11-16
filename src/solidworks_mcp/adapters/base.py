@@ -408,6 +408,24 @@ class SolidWorksAdapter(ABC):
         """
         pass
 
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a SolidWorks model read-only, so nothing can be saved over it.
+
+        Args:
+            file_path (str): Path to the ``.sldprt``, ``.sldasm`` or ``.slddrw``.
+
+        Returns:
+            AdapterResult[SolidWorksModel]: The opened model; its
+            ``properties["read_only"]`` says whether SolidWorks holds it
+            read-only (an already-open document stays as it was).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="open_model_read_only is not implemented by this adapter",
+        )
+
     @abstractmethod
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False

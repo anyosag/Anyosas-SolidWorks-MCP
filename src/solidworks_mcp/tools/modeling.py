@@ -21,6 +21,7 @@ from ..adapters.solidworks.cut_check import shortfall_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
+    require_capability,
     require_success,
     with_tool_boundary,
 )
@@ -207,10 +208,19 @@ class OpenModelInput(BaseModel):
 
     Attributes:
         file_path (str): The file path value.
+        read_only (bool): Open it so nothing can be saved over the file.
     """
 
     file_path: str = Field(
         description="Full path to the SolidWorks file (.sldprt, .sldasm, .slddrw)"
+    )
+    read_only: bool = Field(
+        default=False,
+        description=(
+            "Open it read-only, to look at the file without risking it: "
+            "SolidWorks then saves nothing over it. A document already open "
+            "for editing stays as it is"
+        ),
     )
 
 
@@ -1655,19 +1665,32 @@ async def register_modeling_tools(
         """Open a part, assembly or drawing from disk and make it the active document.
 
         Use it to start work on an existing file. To switch to a document that is
-        already open, use `activate_document`. Needs: the file on disk (a vault file
-        must be checked out). Changes: opens the document; nothing is written. Returns:
-        `model` with `title`, `type`, `path` and `configuration`.
+        already open, use `activate_document`. With `read_only: true` it opens the
+        file so SolidWorks saves nothing over it, to inspect someone's file safely
+        (`get_feature_definition`, `get_sketch`). Needs: the file on disk (a vault
+        file must be checked out). Changes: opens the document; nothing is written.
+        Returns: `model` with `title`, `type`, `path`, `configuration` and
+        `read_only` (read back from SolidWorks), and a `warning` when a read-only
+        open found the document already open for editing.
 
         Args:
             input_data: The file. `file_path` (.sldprt, .sldasm or .slddrw) is
-                required.
+                required; `read_only` is off.
 
         Returns:
             dict[str, Any]: The opened document.
         """
         input_data = normalize_input(input_data, OpenModelInput)
-        result = await adapter.open_model(input_data.file_path)
+        if input_data.read_only:
+            require_capability(
+                adapter,
+                "open_model_read_only",
+                "The active adapter cannot open a file read-only; nothing was "
+                "opened. Open it without read_only, and don't save it.",
+            )
+            result = await adapter.open_model_read_only(input_data.file_path)
+        else:
+            result = await adapter.open_model(input_data.file_path)
 
         require_success(result, context="Failed to open model")
         model = result.data
@@ -1675,18 +1698,34 @@ async def register_modeling_tools(
         model_type = _result_value(model, "type", default="Part")
         path = _result_value(model, "path", "file_path", default=input_data.file_path)
         configuration = _result_value(model, "configuration", default="Default")
-        return {
+        properties = _result_value(model, "properties", default=None)
+        read_only = (
+            properties.get("read_only") if isinstance(properties, dict) else None
+        )
+        if not isinstance(read_only, bool):
+            read_only = input_data.read_only
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Opened {model_type}: {title}",
+            "message": (
+                f"Opened {model_type}: {title}" + (" (read-only)" if read_only else "")
+            ),
             "model": {
                 "title": title,
                 "name": title,
                 "type": model_type,
                 "path": path,
                 "configuration": configuration,
+                "read_only": bool(read_only),
             },
             "execution_time": result.execution_time,
         }
+        if input_data.read_only and not read_only:
+            reply["warning"] = (
+                f"{title} was already open in SolidWorks for editing, so it is "
+                "not read-only: saving would write the file. Close it first "
+                "(close_model) to open it read-only."
+            )
+        return reply
 
     @mcp.tool()
     async def create_part(input_data: CreatePartInput) -> dict[str, Any]:

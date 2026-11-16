@@ -513,6 +513,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"file_path": file_path},
         )
 
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a model read-only through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "open_model_read_only",
+            lambda: self.adapter.open_model_read_only(file_path),
+            input_dict={"file_path": file_path},
+        )
+
     async def close_model(
         self, save: bool = False, overwrite_modified_references: bool = False
     ) -> AdapterResult[Any]:

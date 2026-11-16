@@ -1424,6 +1424,20 @@ def _confirmation_or(result: AdapterResult[Any]) -> AdapterResult[Any]:
     return result
 
 
+#: ``swOpenDocOptions_e`` (SW 2026 swconst): open without dialogs, and open so
+#: that nothing can be saved over the file.
+OPEN_SILENT = 1
+OPEN_READ_ONLY = 2
+
+
+def _opened_read_only(adapter: Any, model: Any) -> bool | None:
+    """``IModelDoc2.IsOpenedReadOnly`` of ``model``; None when it can't be read."""
+    value = adapter._attempt(
+        lambda: adapter._get_attr_or_call(model, "IsOpenedReadOnly"), default=None
+    )
+    return value if isinstance(value, bool) else None
+
+
 class SolidWorksIOMixin:
     """Expose model open/save/create/configuration methods through a mixin."""
 
@@ -1572,6 +1586,39 @@ class SolidWorksIOMixin:
         Returns:
             AdapterResult[SolidWorksModel]: Model metadata for the opened document.
         """
+        return self._open_document(file_path, OPEN_SILENT)
+
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a model read-only (``swOpenDocOptions_Silent | ReadOnly``).
+
+        SolidWorks then refuses to save over the file. A document already open
+        for writing is handed back as it is (``OpenDoc6`` warns it is already
+        open), so ``properties["read_only"]`` is read back from the document
+        (``IModelDoc2.IsOpenedReadOnly``) rather than assumed.
+
+        Args:
+            file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
+
+        Returns:
+            AdapterResult[SolidWorksModel]: As :meth:`open_model`.
+        """
+        return self._open_document(file_path, OPEN_SILENT | OPEN_READ_ONLY)
+
+    def _open_document(
+        self, file_path: str, options: int
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a file with ``OpenDoc6`` ``options`` and make it the active document.
+
+        Args:
+            file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
+            options: ``swOpenDocOptions_e`` flags.
+
+        Returns:
+            AdapterResult[SolidWorksModel]: Model metadata for the opened
+            document; ``properties["read_only"]`` from the document itself.
+        """
         adapter = self._adapter(self)
         if not adapter.is_connected():
             return AdapterResult(
@@ -1604,7 +1651,7 @@ class SolidWorksIOMixin:
             else:
                 errors = 0
                 warnings = 0
-            model = app.OpenDoc6(resolved_path, doc_type, 1, "", errors, warnings)
+            model = app.OpenDoc6(resolved_path, doc_type, options, "", errors, warnings)
             if not model:
                 raise Exception(f"Failed to open model: {resolved_path}")
 
@@ -1647,6 +1694,7 @@ class SolidWorksIOMixin:
                         if callable(getattr(model, "GetSaveTime", None))
                         else None
                     ),
+                    "read_only": _opened_read_only(adapter, adapter.currentModel),
                 },
             )
 
