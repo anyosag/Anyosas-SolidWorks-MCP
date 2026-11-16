@@ -247,9 +247,14 @@ class _Face(_Dispatch):
 
 
 class _Body(_Dispatch):
-    def __init__(self, log: _Log, edges=(), faces=()) -> None:
+    def __init__(self, log: _Log, edges=(), faces=(), box=None) -> None:
         super().__init__(log)
         self.edges, self.faces = list(edges), list(faces)
+        self.box: list[float] | None = box  # GetBodyBox's six values
+
+    def GetBodyBox(self) -> list[float] | None:
+        self._count("GetBodyBox")
+        return self.box
 
     def GetEdges(self) -> tuple:
         self._count("GetEdges")
@@ -285,6 +290,7 @@ class _Model(_Dispatch):
     def __init__(self, log: _Log, body: _Body, named: set[str] | None = None) -> None:
         super().__init__(log)
         self.body = body
+        self.bodies = [body]
         self.manager = _SelectionManager(log)
         self.Extension = _Extension(log, named or set())
         self.counts = [7, 8]
@@ -300,7 +306,7 @@ class _Model(_Dispatch):
 
     def GetBodies2(self, _type: int, _visible: bool) -> tuple:
         self._count("GetBodies2")
-        return (self.body,)
+        return tuple(self.bodies)
 
     def ForceRebuild3(self, top_only: bool) -> bool:
         self._count("ForceRebuild3")
@@ -861,3 +867,190 @@ def test_a_fillet_stops_between_edges_and_says_which() -> None:
     assert result.is_error
     assert "Stopped selecting edge 1 of 2" in (result.error or "")
     assert adapter.log.calls["FeatureFillet3"] == 0
+
+
+# ---- the Lid: prune by body and face boxes before measuring ---------------------
+#
+# One coordinate chamfer took 46 s and 110 s on a part with about 23 text
+# bodies' worth of edges: every edge was measured. Bodies and faces whose box
+# is out of reach are now left out, and only the edges of the faces near the
+# point are measured.
+
+
+def _plate_part(log: _Log) -> tuple[list[_Edge], list[_Face]]:
+    """The plate's 12 edges and hole rim, on its 6 faces and the hole's wall."""
+    edges = _plate(log)[:13]  # no tilted arc or spline: they lie on no face
+    e = {edge.name: edge for edge in edges}
+
+    def face(name: str, lo: Point, hi: Point, names: list[str]) -> _Face:
+        return _Face(log, name, lo, hi, [e[n] for n in names])
+
+    front, back = (0.006, "front"), (-0.006, "back")
+    faces = [
+        face(
+            tag,
+            (0.0, 0.0, z),
+            (0.04, 0.02, z),
+            [f"{tag}-{s}" for s in ("bottom", "right", "top", "left")]
+            + (["hole-rim"] if tag == "front" else []),
+        )
+        for z, tag in (front, back)
+    ]
+    corners = ["depth-0.0-0.0", "depth-0.04-0.0", "depth-0.04-0.02", "depth-0.0-0.02"]
+    sides = [
+        ("bottom", (0.0, 0.0, -0.006), (0.04, 0.0, 0.006), (0, 1)),
+        ("right", (0.04, 0.0, -0.006), (0.04, 0.02, 0.006), (1, 2)),
+        ("top", (0.0, 0.02, -0.006), (0.04, 0.02, 0.006), (2, 3)),
+        ("left", (0.0, 0.0, -0.006), (0.0, 0.02, 0.006), (3, 0)),
+    ]
+    for side, lo, hi, (a, b) in sides:
+        names = [f"front-{side}", f"back-{side}", corners[a], corners[b]]
+        faces.append(face(side, lo, hi, names))
+    faces.append(face("hole", (0.016, 0.006, 0.0), (0.024, 0.014, 0.006), ["hole-rim"]))
+    return edges, faces
+
+
+def _text_faces(log: _Log, letter: int, count: int = 10) -> list[_Face]:
+    """A letter standing 5 mm tall, 100 mm and more from the plate."""
+    faces = []
+    for i in range(count):
+        x, z = 0.1 + letter * 0.01 + i * 0.0005, 0.03
+        lo, hi = (x, 0.02, z), (x + 0.0005, 0.025, z)
+        corners = [(x, 0.02, z), (x + 0.0005, 0.02, z), (x + 0.0005, 0.025, z)]
+        edges = [
+            _Line(log, f"t{letter}-{i}-{k}", corners[k], corners[(k + 1) % 3])
+            for k in range(3)
+        ]
+        faces.append(_Face(log, f"t{letter}-{i}", lo, hi, edges))
+    return faces
+
+
+def _box_of(faces: list[_Face]) -> list[float]:
+    lo = [min(f.lo[i] for f in faces) for i in range(3)]
+    hi = [max(f.hi[i] for f in faces) for i in range(3)]
+    return [*lo, *hi]
+
+
+def _lid(single_body: bool) -> tuple[_Adapter, list[_Edge]]:
+    """The plate and 23 letters: 23 more bodies, or faces of the plate's body."""
+    log = _Log()
+    edges, faces = _plate_part(log)
+    letters = [_text_faces(log, n) for n in range(23)]
+    adapter = _adapter()
+    adapter.log = log
+    model = _Model(log, _Body(log, edges, faces))
+    if single_body:
+        model.body.faces += [f for letter in letters for f in letter]
+    else:
+        model.body.box = _box_of(faces)
+        model.bodies += [_Body(log, faces=f, box=_box_of(f)) for f in letters]
+    adapter.currentModel = model
+    return adapter, edges
+
+
+def test_a_chamfer_on_the_lid_measures_the_plate_only() -> None:
+    adapter, edges = _lid(single_body=False)
+    calls = adapter.log.calls
+
+    result = features._add_chamfer_impl(adapter, 1.0, ["0.02,0.0,0.006"])
+
+    assert result.is_success, result.error
+    assert [e.name for e in edges if e.selected_with] == ["front-bottom"]
+    assert calls["GetBodyBox"] == 24  # the plate and 23 letters
+    assert calls["GetFaces"] == 1  # the letters' faces are never read
+    assert calls["GetBox"] == 7  # the plate's faces
+    assert calls["GetEdges"] == 2  # the front and bottom faces, near the point
+    # Front (4 + rim) and bottom (4, front-bottom shared): 8 edges of the
+    # 13 + 23 x 30 = 703 that every edge would have measured.
+    assert calls["GetClosestPointOn"] == 8
+
+
+def test_one_body_with_text_faces_measures_the_faces_near_the_point() -> None:
+    """A hidden back edge, in a body of 237 faces: the edges of two faces."""
+    adapter, edges = _lid(single_body=True)
+    calls = adapter.log.calls
+
+    result = features._add_chamfer_impl(adapter, 1.0, ["0.02,0.0,-0.006"])
+
+    assert result.is_success, result.error
+    assert [e.name for e in edges if e.selected_with] == ["back-bottom"]
+    assert calls["GetBodyBox"] == 0  # one body: nothing to rule out
+    assert calls["GetBox"] == 7 + 230
+    assert calls["GetEdges"] == 2
+    assert calls["GetClosestPointOn"] == 7  # back (4) and bottom (4, one shared)
+
+
+def test_face_pruning_picks_what_measuring_every_edge_picks() -> None:
+    """Same distance for every point within reach, and the same edge
+    wherever one edge is nearest (corners tie, and ties may go either way)."""
+    log = _Log()
+    edges, faces = _plate_part(log)
+    pruned = features._BodyEntityPicker(_adapter(edges, faces))
+    every = features._BodyEntityPicker(_adapter(edges))
+
+    for edge in edges:
+        for p in _points_on(edge):
+            for q in (p, (p[0] + 3e-4, p[1], p[2]), (p[0], p[1] - 2e-4, p[2] + 2e-4)):
+                expected = every.nearest("GetEdges", q)
+                if expected is None or expected[1] > features._PICK_TOLERANCE_M:
+                    continue
+                got = pruned.nearest("GetEdges", q)
+                assert got is not None and got[1] == pytest.approx(expected[1]), q
+                distances = sorted(math.dist(e.closest(q), q) for e in edges)
+                if distances[1] - distances[0] > 1e-12:
+                    assert got[0] is expected[0], q
+
+
+def test_a_point_out_of_reach_of_every_face_measures_nothing() -> None:
+    log = _Log()
+    edges, faces = _plate_part(log)
+    adapter = _adapter(edges, faces)
+
+    with pytest.raises(LookupError, match=r"none comes within 0\.5 mm of it"):
+        features._select_edge_by_coord(adapter, 0.02, -0.002, 0.006, append=False)
+    assert adapter.log.calls["GetClosestPointOn"] == 0
+
+
+def test_a_face_pick_out_of_reach_of_every_body_says_so() -> None:
+    adapter, _edges = _lid(single_body=False)
+    picker = features._BodyEntityPicker(adapter)
+
+    with pytest.raises(LookupError, match="No face passes through.*none comes within"):
+        features._select_face_edges_by_coord(adapter, 0.5, 0.5, 0.5, False, picker)
+    assert adapter.log.calls["GetFaces"] == 0
+
+
+def test_boxes_that_cannot_be_read_rule_nothing_out() -> None:
+    """A body or a face without a box is always searched."""
+    adapter, edges = _lid(single_body=False)
+    model = adapter.currentModel
+    for body in model.bodies:
+        body.box = None
+    model.body.faces[0].box = None  # the front face
+    calls = adapter.log.calls
+
+    assert features._select_edge_by_coord(adapter, 0.02, 0.0, -0.006, append=False)
+
+    assert [e.name for e in edges if e.selected_with] == ["back-bottom"]
+    assert calls["GetFaces"] == 24  # every body searched
+    # Front (5, no box), back (4) and bottom (4, two shared): 11.
+    assert calls["GetClosestPointOn"] == 11
+
+
+def test_an_edge_reached_from_two_faces_is_one_com_object(monkeypatch) -> None:
+    """SolidWorks hands back a new wrapper per face; same_com_object tells."""
+    log = _Log()
+    edges, faces = _plate_part(log)
+    twin = _Line(log, "front-bottom", edges[0].a, edges[0].b)
+    faces[2].edges[0] = twin  # the bottom face's copy of front-bottom
+    monkeypatch.setattr(
+        features.sw_type_info,
+        "same_com_object",
+        lambda a, b: a is b or {a.name, b.name} == {"front-bottom"},
+    )
+    adapter = _adapter(edges, faces)
+
+    nearest = features._BodyEntityPicker(adapter).nearest("GetEdges", (0.02, 0, 0.006))
+
+    assert nearest is not None and nearest[0] is edges[0]
+    assert adapter.log.calls["GetClosestPointOn"] == 8

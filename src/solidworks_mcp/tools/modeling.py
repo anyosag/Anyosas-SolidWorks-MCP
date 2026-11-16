@@ -1657,7 +1657,9 @@ async def register_modeling_tools(
         Use it to start work on an existing file. To switch to a document that is
         already open, use `activate_document`. Needs: the file on disk (a vault file
         must be checked out). Changes: opens the document; nothing is written. Returns:
-        `model` with `title`, `type`, `path` and `configuration`.
+        `model` with `title`, `type`, `path` and `configuration`, and a `warning`
+        quoting a dialog SolidWorks showed (and the server cancelled) when the file
+        opened anyway.
 
         Args:
             input_data: The file. `file_path` (.sldprt, .sldasm or .slddrw) is
@@ -1675,7 +1677,7 @@ async def register_modeling_tools(
         model_type = _result_value(model, "type", default="Part")
         path = _result_value(model, "path", "file_path", default=input_data.file_path)
         configuration = _result_value(model, "configuration", default="Default")
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Opened {model_type}: {title}",
             "model": {
@@ -1687,6 +1689,12 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        # A dialog SolidWorks showed while opening, cancelled; the file opened.
+        metadata = getattr(result, "metadata", None)
+        warning = metadata.get("warning") if isinstance(metadata, dict) else None
+        if isinstance(warning, str) and warning:
+            reply["warning"] = warning
+        return reply
 
     @mcp.tool()
     async def create_part(input_data: CreatePartInput) -> dict[str, Any]:
@@ -2158,8 +2166,8 @@ async def register_modeling_tools(
         Name the edges as "Edge<1>", a point "x,y,z" (metres) or "face:x,y,z" for every
         edge of a face; or leave `edge_names` empty to use the current selection (e.g.
         from `select_face_edges`). A fillet that leaves the volume unchanged is an
-        error. Needs: an open part with a solid body. Changes: adds a Fillet feature.
-        Returns: `fillet` with `name`, `radius` and `edges`.
+        error. Needs: an open part with a solid body. Changes: adds a Fillet feature,
+        then clears the selection. Returns: `fillet` with `name`, `radius` and `edges`.
 
         Args:
             input_data: The fillet. `radius` (mm) is required; `edge_names`
@@ -2193,7 +2201,8 @@ async def register_modeling_tools(
         edge of a face; or leave `edge_names` empty to use the current selection (e.g.
         from `select_face_edges`). At 45 degrees both legs equal `distance`; at another
         angle, `flip` swaps which face `distance` is measured on. Needs: an open part
-        with a solid body. Changes: adds a Chamfer feature. Returns: `chamfer` with
+        with a solid body. Changes: adds a Chamfer feature, then clears the selection.
+        Returns: `chamfer` with
         `name`, `distance`, `angle`, `flip` and `edges`.
 
         Args:

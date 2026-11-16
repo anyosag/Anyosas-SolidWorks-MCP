@@ -2202,14 +2202,28 @@ _PICK_TOLERANCE_M = 5e-4
 _BOX_PAD_M = 1e-4
 
 #: How many picks a picker must expect before it reads a bounding box for
-#: every entity. Without boxes each pick measures every entity, one
-#: ``GetClosestPointOn`` round trip each; a line edge's box takes about twenty
-#: (its curve, two vertices and their points, plus pywin32's type lookups on
-#: each new dispatch), a face's two. Below these counts, measuring is cheaper.
-_INDEX_MIN_PICKS = {"GetEdges": 20, "GetFaces": 2}
+#: every entity of a body. Without boxes each pick measures every entity, one
+#: ``GetClosestPointOn`` each; a line edge's box takes about twenty round
+#: trips (its curve, two vertices and their points, plus pywin32's type
+#: lookups on each new dispatch), so for edges that pays only for many picks.
+#: A face's box is two, and far cheaper for SolidWorks to answer than a
+#: closest point on a spline face, so faces always get theirs. (Edges of a
+#: body whose faces can be read don't need edge boxes: see
+#: :class:`_BodyEntityPicker`.)
+_INDEX_MIN_PICKS = {"GetEdges": 20, "GetFaces": 1}
 
 #: ``((xmin, ymin, zmin), (xmax, ymax, zmax))`` in metres.
 _Box = tuple[tuple[float, ...], tuple[float, ...]]
+
+
+class _PickBody:
+    """One solid body for a picker: its box, entity lists and their boxes."""
+
+    def __init__(self, body: Any, box: _Box | None) -> None:
+        self.body = body
+        self.box = box
+        self.entities: dict[str, list[Any]] = {}
+        self.boxes: dict[str, list[_Box | None]] = {}
 
 
 class _BodyEntityPicker:
@@ -2218,37 +2232,55 @@ class _BodyEntityPicker:
     ``SelectByID2("", "EDGE", x, y, z, ...)`` picks along the view direction
     through the point, so on a 12 mm plate seen from the front an edge at
     z=-6 is hidden behind the matching edge at z=+6 and the front one is
-    selected instead - silently. This walks every solid body's edges (or
-    faces) and measures the distance from the point to the closest point
-    *on* each (``IEdge`` / ``IFace2.GetClosestPointOn``), which does not
-    depend on the view, vertices or midpoints.
+    selected instead - silently. This measures the distance from the point
+    to the closest point *on* each candidate edge (or face)
+    (``IEdge`` / ``IFace2.GetClosestPointOn``), which does not depend on the
+    view, vertices or midpoints.
 
-    The entity lists are read once per picker, so one fillet over many edges
-    costs one body walk, not one per edge. A picker told to expect many picks
-    (``picks``, at least :data:`_INDEX_MIN_PICKS`) also reads a bounding box
-    for every entity, once, and then measures only the entities whose box is
-    no further from the point than the best distance measured so far. A box
-    is never closer than what it holds, so the answer is the one measuring
-    every entity gives - the nearest, the first in body order on a tie - and
-    N picks over E edges cost one pass over the edges plus a few
-    measurements per pick, instead of N x E round trips.
+    Measuring every edge was what made one coordinate chamfer take 46 s and
+    110 s on the Lid, a part with about 23 text bodies' worth of edges. So
+    the candidates are pruned by boxes first, and only those that can lie
+    within :data:`_PICK_TOLERANCE_M` of the point are measured (a pick
+    further away is refused anyway):
+
+    * with more than one body, a body whose box (``IBody2.GetBodyBox``) is
+      further away is left out whole;
+    * an edge is looked for among the edges (``IFace2.GetEdges``) of the
+      faces whose box (``IFace2.GetBox``) is within reach, an edge shared by
+      two faces measured once. A body whose faces can't be read has its
+      edges (``IBody2.GetEdges``) measured as before.
+
+    Every edge lies on the faces it bounds, and a box is never closer than
+    what it holds, so the nearest edge within the tolerance is always among
+    the candidates. Lists and boxes are read once per picker, so a fillet
+    over many points costs one walk. A picker told to expect many edge picks
+    (``picks``, at least :data:`_INDEX_MIN_PICKS`) also reads a box for each
+    edge of a body without faces, and measures nearest box first, stopping
+    at the first box further than the best distance found. On a tie the
+    first candidate wins: body order, then face order on a body with faces.
 
     Args:
         adapter: A connected adapter with a valid ``currentModel``.
         picks: How many picks the caller will make, per getter
             (``"GetEdges"`` / ``"GetFaces"``). Defaults to one of each.
+
+    Attributes:
+        pruned: Whether the last :meth:`nearest` left out bodies or faces by
+            their boxes, so a miss is "nothing within the tolerance".
     """
 
     def __init__(self, adapter: Any, picks: dict[str, int] | None = None) -> None:
         self._adapter = adapter
         self._picks = dict(picks or {})
-        self._cache: dict[str, list[Any]] = {}
-        self._boxes: dict[str, list[_Box | None]] = {}
+        self._bodies: list[_PickBody] | None = None
+        # id(face) -> its edges; the faces stay held by their body's list.
+        self._face_edges: dict[int, list[Any]] = {}
         # id -> (object, names flagged on it). Holding the object stops its
         # id from passing to another dispatch while the picker lives.
         self._flagged: dict[int, tuple[Any, set[str]]] = {}
         self._select_data: dict[int, Any] = {}
         self._rebuilt = False
+        self.pruned = False
 
     def rebuild(self) -> None:
         """Run ``ForceRebuild3(True)``, once per picker (pitfall #13).
@@ -2261,49 +2293,116 @@ class _BodyEntityPicker:
             model = self._adapter.currentModel
             self._adapter._attempt(lambda: model.ForceRebuild3(True), default=None)
 
-    def entities(self, getter: str) -> list[Any]:
-        """Return every solid body's ``GetEdges()`` or ``GetFaces()``."""
-        if getter not in self._cache:
+    def nearest(
+        self, getter: str, point: tuple[float, float, float]
+    ) -> tuple[Any, float] | None:
+        """Return ``(entity, distance_m)`` for the closest candidate.
+
+        Candidates (:meth:`_candidates`) are measured nearest box first (in
+        their order when there are no boxes), and the search stops at the
+        first box further away than the best distance measured: nothing in
+        it can be closer.
+
+        Returns:
+            tuple[Any, float] | None: The nearest entity and its distance;
+            ``(None, inf)`` when boxes ruled out every entity that could lie
+            within :data:`_PICK_TOLERANCE_M`; ``None`` when nothing could be
+            read or measured at all.
+        """
+        candidates = self._candidates(getter, point)
+        best: tuple[Any, float] | None = None
+        best_index = 0
+        for index in sorted(range(len(candidates)), key=lambda i: candidates[i][1]):
+            entity, bound = candidates[index]
+            if best is not None and bound > best[1]:
+                break
+            distance = self._distance(entity, point)
+            if distance is None:
+                continue
+            # A tie goes to the first candidate, as it does when every
+            # candidate is measured in order.
+            if best is None or (distance, index) < (best[1], best_index):
+                best, best_index = (entity, distance), index
+        if best is None and self.pruned:
+            return None, math.inf
+        return best
+
+    def _body_list(self) -> list[_PickBody]:
+        """The part's solid bodies, each with its box when there are several."""
+        if self._bodies is None:
             model = self._adapter.currentModel
             _flag(self._adapter, model, "GetBodies2")
             bodies = as_list(
                 _attempt(self._adapter, lambda: model.GetBodies2(0, False))
             )
-            found: list[Any] = []
-            for body in bodies:
-                _flag(self._adapter, body, getter)
-                found.extend(
-                    as_list(
-                        _attempt(self._adapter, lambda b=body: getattr(b, getter)())
-                    )
+            # A body's box only pays when there is another body to rule out.
+            self._bodies = [
+                _PickBody(
+                    body, _body_box(self._adapter, body) if len(bodies) > 1 else None
                 )
-            self._cache[getter] = found
-        return self._cache[getter]
+                for body in bodies
+            ]
+        return self._bodies
 
-    def nearest(
+    def _of(self, body: _PickBody, getter: str) -> list[Any]:
+        """A body's ``GetEdges()`` or ``GetFaces()``, read once."""
+        if getter not in body.entities:
+            _flag(self._adapter, body.body, getter)
+            body.entities[getter] = as_list(
+                _attempt(self._adapter, lambda: getattr(body.body, getter)())
+            )
+        return body.entities[getter]
+
+    def _candidates(
         self, getter: str, point: tuple[float, float, float]
-    ) -> tuple[Any, float] | None:
-        """Return ``(entity, distance_m)`` for the closest entity, or ``None``.
+    ) -> list[tuple[Any, float]]:
+        """``(entity, box distance)`` for every entity that may be in reach.
 
-        Entities are measured nearest box first (in body order when there
-        are no boxes), and the search stops at the first box further away
-        than the best distance measured: nothing in it can be closer.
+        Sets :attr:`pruned` when a body's or a face's box ruled it out.
         """
-        entities = self.entities(getter)
-        bounds = self._lower_bounds(getter, point)
-        best: tuple[Any, float] | None = None
-        best_index = 0
-        for index in sorted(range(len(entities)), key=bounds.__getitem__):
-            if best is not None and bounds[index] > best[1]:
-                break
-            distance = self._distance(entities[index], point)
-            if distance is None:
+        self.pruned = False
+        found: list[tuple[Any, float]] = []
+        for body in self._body_list():
+            if _box_distance(body.box, point) > _PICK_TOLERANCE_M:
+                self.pruned = True
                 continue
-            # A tie goes to the first entity in body order, as it does when
-            # every entity is measured in order.
-            if best is None or (distance, index) < (best[1], best_index):
-                best, best_index = (entities[index], distance), index
-        return best
+            if getter == "GetEdges":
+                faces = self._of(body, "GetFaces")
+                if faces:
+                    found.extend((e, 0.0) for e in self._edges_near(body, faces, point))
+                    continue
+            entities = self._of(body, getter)
+            found.extend(
+                zip(entities, self._lower_bounds(body, getter, point), strict=True)
+            )
+        return found
+
+    def _edges_near(
+        self, body: _PickBody, faces: list[Any], point: tuple[float, float, float]
+    ) -> list[Any]:
+        """The edges of the body's faces whose box is within reach, each once.
+
+        An edge bounds two faces, and SolidWorks hands back a new wrapper for
+        it from each; ``same_com_object`` (no call to SolidWorks) tells.
+        """
+        near: list[Any] = []
+        for face, box in zip(faces, self._boxes_of(body, "GetFaces"), strict=True):
+            if _box_distance(box, point) > _PICK_TOLERANCE_M:
+                self.pruned = True
+                continue
+            for edge in self._edges_of(face):
+                if not any(sw_type_info.same_com_object(edge, seen) for seen in near):
+                    near.append(edge)
+        return near
+
+    def _edges_of(self, face: Any) -> list[Any]:
+        """A face's ``GetEdges()``, read once."""
+        if id(face) not in self._face_edges:
+            _flag(self._adapter, face, "GetEdges")
+            self._face_edges[id(face)] = as_list(
+                _attempt(self._adapter, lambda: face.GetEdges())
+            )
+        return self._face_edges[id(face)]
 
     def select(self, entity: Any, append: bool, mark: int = 0) -> bool:
         """Select ``entity`` with ``IEntity.Select4`` under ``mark``."""
@@ -2316,20 +2415,23 @@ class _BodyEntityPicker:
         )
 
     def _lower_bounds(
-        self, getter: str, point: tuple[float, float, float]
+        self, body: _PickBody, getter: str, point: tuple[float, float, float]
     ) -> list[float]:
-        """Each entity's box distance from ``point``; 0 where it has no box."""
-        entities = self.entities(getter)
+        """Each of a body's entities' box distance from ``point``; 0 without boxes."""
         if self._picks.get(getter, 1) < _INDEX_MIN_PICKS[getter]:
-            return [0.0] * len(entities)
-        if getter not in self._boxes:
+            return [0.0] * len(self._of(body, getter))
+        return [_box_distance(box, point) for box in self._boxes_of(body, getter)]
+
+    def _boxes_of(self, body: _PickBody, getter: str) -> list[_Box | None]:
+        """A box for each of a body's edges or faces, read once."""
+        if getter not in body.boxes:
             read = _face_box if getter == "GetFaces" else _edge_box
             boxes = []
-            for entity in entities:
+            for entity in self._of(body, getter):
                 limits.check("reading edge and face boxes")
                 boxes.append(read(self._adapter, entity))
-            self._boxes[getter] = boxes
-        return [_box_distance(box, point) for box in self._boxes[getter]]
+            body.boxes[getter] = boxes
+        return body.boxes[getter]
 
     def _distance(self, entity: Any, point: tuple[float, float, float]) -> float | None:
         """Distance from ``point`` to the closest point on ``entity``, or None."""
@@ -2443,16 +2545,43 @@ def _circle_box(params: list[Any] | None) -> _Box | None:
     )
 
 
-def _face_box(adapter: Any, face: Any) -> _Box | None:
-    """The box ``IFace2.GetBox`` gives for ``face`` (two opposite corners)."""
-    _flag(adapter, face, "GetBox")
-    box = _attempt(adapter, lambda: list(face.GetBox()))
-    if not box or len(box) < 6:
+def _corner_box(raw: Any) -> _Box | None:
+    """A padded box from two opposite corners ``[x1, y1, z1, x2, y2, z2]``."""
+    if not raw or len(raw) < 6:
         return None
-    corners = [float(c) for c in box[:6]]
+    corners = [float(c) for c in raw[:6]]
     return _padded(
         [min(corners[i], corners[i + 3]) for i in range(3)],
         [max(corners[i], corners[i + 3]) for i in range(3)],
+    )
+
+
+def _face_box(adapter: Any, face: Any) -> _Box | None:
+    """The box ``IFace2.GetBox`` gives for ``face`` (two opposite corners)."""
+    _flag(adapter, face, "GetBox")
+    return _corner_box(_attempt(adapter, lambda: list(face.GetBox())))
+
+
+def _body_box(adapter: Any, body: Any) -> _Box | None:
+    """The box ``IBody2.GetBodyBox`` gives for ``body`` (two opposite corners)."""
+    _flag(adapter, body, "GetBodyBox")
+    return _corner_box(_attempt(adapter, lambda: list(body.GetBodyBox())))
+
+
+def _no_entity_at(kind: str, point: tuple[float, float, float], distance: float) -> str:
+    """The error for a coordinate pick that lands on no edge or face.
+
+    ``distance`` is the nearest measured, or ``inf`` when boxes ruled out
+    everything within :data:`_PICK_TOLERANCE_M` (nothing else was measured).
+    """
+    x, y, z = point
+    where = f"({x * 1000:g}, {y * 1000:g}, {z * 1000:g}) mm"
+    if math.isinf(distance):
+        reach = f"none comes within {_PICK_TOLERANCE_M * 1000:g} mm of it"
+    else:
+        reach = f"the nearest is {distance * 1000:.3f} mm away"
+    return (
+        f"No {kind} passes through {where}; {reach}. Give a point on the {kind} itself."
     )
 
 
@@ -2564,12 +2693,7 @@ def _select_edge_by_coord(
 
     entity, distance = nearest
     if distance > _PICK_TOLERANCE_M:
-        kind = entity_type.lower()
-        raise LookupError(
-            f"No {kind} passes through ({x * 1000:g}, {y * 1000:g}, "
-            f"{z * 1000:g}) mm; the nearest is {distance * 1000:.3f} mm away. "
-            f"Give a point on the {kind} itself."
-        )
+        raise LookupError(_no_entity_at(entity_type.lower(), (x, y, z), distance))
     return picker.select(entity, append, mark)
 
 
@@ -2601,10 +2725,7 @@ def _select_face_edges_by_coord(
         return False
     face, distance = nearest
     if distance > _PICK_TOLERANCE_M:
-        raise LookupError(
-            f"No face passes through ({x * 1000:g}, {y * 1000:g}, {z * 1000:g}) "
-            f"mm; the nearest is {distance * 1000:.3f} mm away."
-        )
+        raise LookupError(_no_entity_at("face", (x, y, z), distance))
     _flag(adapter, face, "GetEdges")
     edges = as_list(_attempt(adapter, lambda: face.GetEdges()))
     if not edges:

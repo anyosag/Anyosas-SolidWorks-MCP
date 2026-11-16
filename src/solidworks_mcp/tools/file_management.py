@@ -38,6 +38,15 @@ def _saved_references(data: Any) -> list[str]:
     return []
 
 
+def _with_open_warning(reply: dict[str, Any], result: Any) -> dict[str, Any]:
+    """Add the ``warning`` of a file that opened although SolidWorks showed a dialog."""
+    metadata = getattr(result, "metadata", None)
+    warning = metadata.get("warning") if isinstance(metadata, dict) else None
+    if isinstance(warning, str) and warning:
+        reply["warning"] = warning
+    return reply
+
+
 #: Shared by every tool that can save an assembly (see adapters/solidworks/saving.py).
 _OVERWRITE_REFERENCES_DESCRIPTION = (
     "Set true only after the user agreed: lets an assembly save also overwrite "
@@ -1204,17 +1213,20 @@ async def register_file_management_tools(
         title = _result_value(model, "title", "name", default=file_path)
         path = _result_value(model, "path", "file_path", default=file_path)
         configuration = _result_value(model, "configuration", default="Default")
-        return {
-            "status": "success",
-            "message": f"Loaded part: {title}",
-            "model": {
-                "name": title,
-                "type": "Part",
-                "path": path,
-                "configuration": configuration,
+        return _with_open_warning(
+            {
+                "status": "success",
+                "message": f"Loaded part: {title}",
+                "model": {
+                    "name": title,
+                    "type": "Part",
+                    "path": path,
+                    "configuration": configuration,
+                },
+                "execution_time": result.execution_time,
             },
-            "execution_time": result.execution_time,
-        }
+            result,
+        )
 
     @mcp.tool()
     async def load_assembly(input_data: LoadAssemblyInput) -> dict[str, Any]:
@@ -1246,17 +1258,20 @@ async def register_file_management_tools(
         title = _result_value(model, "title", "name", default=file_path)
         path = _result_value(model, "path", "file_path", default=file_path)
         configuration = _result_value(model, "configuration", default="Default")
-        return {
-            "status": "success",
-            "message": f"Loaded assembly: {title}",
-            "model": {
-                "name": title,
-                "type": "Assembly",
-                "path": path,
-                "configuration": configuration,
+        return _with_open_warning(
+            {
+                "status": "success",
+                "message": f"Loaded assembly: {title}",
+                "model": {
+                    "name": title,
+                    "type": "Assembly",
+                    "path": path,
+                    "configuration": configuration,
+                },
+                "execution_time": result.execution_time,
             },
-            "execution_time": result.execution_time,
-        }
+            result,
+        )
 
     @mcp.tool()
     async def save_part(input_data: SavePartInput | None = None) -> dict[str, Any]:

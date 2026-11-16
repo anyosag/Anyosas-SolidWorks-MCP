@@ -1377,6 +1377,28 @@ Reported 2026-11-13 by the Cellvis DishRack build; measured the same day.
 
 ---
 
+## 50. An export with something selected writes only the selection
+
+`add_chamfer` left its chamfer face selected, and the next `export_stl` wrote that face
+alone: 592 triangles spanning y 1.0 to 1.4 mm, the chamfer band, reported as a success.
+After `ClearSelection2(True)` the same export held 18,738 triangles, 91.6 x 4.7 x 91.6 mm.
+
+- `export_file` (every format) and `export_flat_pattern` clear the selection before
+  writing. `export_image` keeps it.
+- A feature tool leaves nothing selected for the next one: the outermost operation in
+  `_SELECTION_CLEARING_OPERATIONS` (`pywin32_adapter.py`) clears the selection as it
+  ends, whether it succeeded or not. The `select_*` tools, sketch tools and `exit_sketch`
+  (whose sketch `create_extrusion` takes when given no name) keep theirs.
+- `export_stl` warns when a part's `volume_ratio` is outside 0.9 to 1.1.
+
+Reported by the "Lid with inverted text features" build on SOLIDWORKS 2026 SP4.1. The
+other reports from that build (`measure_entities` on parallel faces, `edit_sketch`
+marking the part modified, `list_model_dimensions` finding none, a coordinate chamfer
+taking 46 s) wait on `tests/scripts/probe_measure_faces.py`,
+`probe_sketch_round_trip.py`, `probe_model_dimensions.py` and `probe_edge_pick_speed.py`.
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests

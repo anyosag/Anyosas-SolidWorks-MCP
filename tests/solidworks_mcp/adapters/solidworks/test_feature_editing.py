@@ -772,6 +772,136 @@ def test_points_that_do_not_read_are_left_out() -> None:
     }
 
 
+# ---- sketch text ---------------------------------------------------------------
+
+
+class _Text(_Segment):
+    """A text segment that is its own ``ISketchText``, as one COM object is."""
+
+    def __init__(self, text: str = "LID", height: float = 0.005) -> None:
+        super().__init__(fe.SEGMENT_TEXT)
+        self.Text = text
+        self._format = SimpleNamespace(CharHeight=height, TypeFaceName="Arial")
+        self.point_reads = 0
+
+    def GetTextFormat(self) -> Any:  # noqa: N802
+        return self._format
+
+    def GetCoordinates(self) -> tuple[float, float, float]:  # noqa: N802
+        return (0.012, -0.0035, 0.0)
+
+    def GetStartPoint2(self) -> Any:  # noqa: N802
+        self.point_reads += 1
+        raise AttributeError("a text has no start point")
+
+
+def test_a_text_segment_says_what_it_reads() -> None:
+    """edit_sketch listed the Lid's text as "Text_5" with nothing else."""
+    text = _Text()
+
+    info = fe.describe_segment(_Adapter(_Model([])), text)
+
+    assert info == {
+        "type": "text",
+        "text": "LID",
+        "height_mm": 5.0,
+        "font": "Arial",
+        "position_mm": [12.0, -3.5, 0.0],
+        "construction": False,
+    }
+    assert text.point_reads == 0
+
+
+def test_a_text_that_reads_nothing_is_just_text() -> None:
+    text = _Segment(fe.SEGMENT_TEXT)
+
+    assert fe.describe_segment(_Adapter(_Model([])), text) == {
+        "type": "text",
+        "construction": False,
+    }
+
+
+def test_unreadable_text_values_are_left_out() -> None:
+    text = _Text(text=None, height=0.0)  # type: ignore[arg-type]
+    text._format = SimpleNamespace(CharHeight=0.0, TypeFaceName="")
+    text.GetCoordinates = lambda: ("x", 0.0)  # type: ignore[method-assign]
+
+    assert fe.describe_text(_Adapter(_Model([])), text) == {}
+
+
+def test_texts_come_from_the_sketch_when_the_segment_is_not_one() -> None:
+    """``GetSketchTextSegments`` gives the ``ISketchText``s; one wrapping the
+    same object is used, else the next in order."""
+    segments = [_Segment(fe.SEGMENT_TEXT), _Segment(0), _Text("B"), _Segment(4)]
+    first = _Text("A")
+    sketch = SimpleNamespace(
+        GetSketchSegments=lambda: segments,
+        GetSketchTextSegments=lambda: (first, segments[2]),
+    )
+
+    described = fe.describe_segments(_Adapter(_Model([])), sketch)
+
+    assert [info.get("text") for _segment, info in described] == [
+        "A",
+        None,
+        "B",
+        None,  # no text left for it: read as itself
+    ]
+
+
+# ---- a sketch opened only to read it -----------------------------------------------
+
+
+def _clean_part(dirty: bool | None = False) -> tuple[_Adapter, SimpleNamespace]:
+    sketch = _sketch()
+    model = _Model([_Feature("Sketch2", "ProfileFeature", None)], sketch=sketch)
+    if dirty is not None:
+        model.GetSaveFlag = lambda: dirty  # type: ignore[attr-defined]
+    adapter = _Adapter(model)
+    fe.open_sketch(adapter, "Sketch2")
+    return adapter, sketch
+
+
+def test_opening_a_sketch_records_how_it_was_found() -> None:
+    adapter, _sketch_ = _clean_part()
+
+    opened = adapter._opened_sketch
+    assert opened["name"] == "Sketch2"
+    assert opened["was_dirty"] is False
+    assert [s["type"] for s in opened["segments"]] == ["line", "arc", "spline"]
+
+
+def test_a_sketch_left_as_it_was_on_a_clean_part_is_unchanged() -> None:
+    adapter, sketch = _clean_part()
+
+    assert fe.unchanged_since_opened(adapter, sketch) is True
+    assert adapter._opened_sketch is None  # read once
+
+
+@pytest.mark.parametrize("dirty", [True, None], ids=["dirty", "unreadable"])
+def test_a_part_with_changes_before_is_never_unchanged(dirty: bool | None) -> None:
+    adapter, sketch = _clean_part(dirty)
+
+    assert fe.unchanged_since_opened(adapter, sketch) is False
+
+
+def test_a_moved_segment_is_a_change() -> None:
+    adapter, sketch = _clean_part()
+    sketch.GetSketchSegments()[0]._end = _Point(25, 0)
+
+    assert fe.unchanged_since_opened(adapter, sketch) is False
+
+
+def test_another_sketch_or_none_is_not_the_one_opened() -> None:
+    adapter, sketch = _clean_part()
+    adapter._last_sketch_name = "Sketch3"
+    assert fe.unchanged_since_opened(adapter, sketch) is False
+
+    adapter, _sketch_ = _clean_part()
+    assert fe.unchanged_since_opened(adapter, None) is False
+    assert fe.unchanged_since_opened(adapter, sketch) is False  # forgotten
+
+
 def test_sketch_entities_are_deleted_by_id() -> None:
     model = _Model([])
     adapter = _Adapter(model)

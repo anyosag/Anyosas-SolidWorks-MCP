@@ -560,31 +560,133 @@ def _point_mm(adapter: Any, point: Any) -> list[float] | None:
     return [round(float(c) * 1000, 6) for c in coords]
 
 
-def describe_segment(adapter: Any, segment: Any) -> dict[str, Any]:
-    """A sketch segment's kind and points in sketch mm, as far as they read."""
+#: ``swSketchSegments_e.swSketchTEXT``.
+SEGMENT_TEXT = 4
+
+
+def describe_text(adapter: Any, text: Any) -> dict[str, Any]:
+    """A sketch text's string, height, font and position, as far as they read.
+
+    ``ISketchText.Text`` (a property), ``GetTextFormat()`` (an
+    ``ITextFormat``: ``CharHeight`` in metres, ``TypeFaceName``) and
+    ``GetCoordinates()`` (metres).
+
+    Returns:
+        dict[str, Any]: ``text``, ``height_mm``, ``font`` and
+        ``position_mm``; a value that doesn't read is left out.
+    """
+    _flag(adapter, text, "GetTextFormat", "GetCoordinates")
+    info: dict[str, Any] = {}
+    value = _attempt(adapter, lambda: text.Text)
+    if isinstance(value, str):
+        info["text"] = value
+    text_format = _attempt(adapter, lambda: text.GetTextFormat())
+    if text_format is not None:
+        height = _attempt(adapter, lambda: text_format.CharHeight)
+        if isinstance(height, int | float) and height > 0:
+            info["height_mm"] = round(float(height) * 1000, 6)
+        font = _attempt(adapter, lambda: text_format.TypeFaceName)
+        if isinstance(font, str) and font:
+            info["font"] = font
+    coords = _attempt(adapter, lambda: list(text.GetCoordinates()))
+    if coords and all(isinstance(c, int | float) for c in coords[:3]):
+        info["position_mm"] = [round(float(c) * 1000, 6) for c in coords[:3]]
+    return info
+
+
+class _SketchTexts:
+    """Find the ``ISketchText`` behind a text segment of a sketch.
+
+    ``ISketch.GetSketchTextSegments`` gives the sketch's texts, read once;
+    a text segment is matched to the one wrapping the same COM object, or,
+    when none does, to the first one not matched yet, in the order they
+    came. With none left the segment is read as itself.
+    """
+
+    def __init__(self, adapter: Any, sketch: Any) -> None:
+        self._adapter, self._sketch = adapter, sketch
+        self._texts: list[Any] | None = None
+        self._used: set[int] = set()
+
+    def __call__(self, segment: Any) -> Any:
+        if self._texts is None:
+            _flag(self._adapter, self._sketch, "GetSketchTextSegments")
+            self._texts = as_list(
+                _attempt(self._adapter, lambda: self._sketch.GetSketchTextSegments())
+            )
+        free = [i for i in range(len(self._texts)) if i not in self._used]
+        same = [
+            i for i in free if _sw_type_info.same_com_object(self._texts[i], segment)
+        ]
+        for index in same or free[:1]:
+            self._used.add(index)
+            return self._texts[index]
+        return segment
+
+
+def describe_segment(adapter: Any, segment: Any, text_of: Any = None) -> dict[str, Any]:
+    """A sketch segment's kind and points in sketch mm, as far as they read.
+
+    Args:
+        adapter: The adapter.
+        segment: An ``ISketchSegment``.
+        text_of: For a text segment, gives its ``ISketchText`` (see
+            :class:`_SketchTexts`); without it the segment itself is read.
+
+    Returns:
+        dict[str, Any]: ``type``, the points that read (``start_mm``,
+        ``end_mm``, ``center_mm``), ``construction``; a text's
+        :func:`describe_text` instead of points.
+    """
     _flag(
         adapter, segment, "GetType", "GetStartPoint2", "GetEndPoint2", "GetCenterPoint2"
     )
     kind = _attempt(adapter, lambda: segment.GetType())
     info: dict[str, Any] = {"type": SEGMENT_PREFIXES.get(kind, "Segment").lower()}
-    for key, getter in (
-        ("start_mm", "GetStartPoint2"),
-        ("end_mm", "GetEndPoint2"),
-        ("center_mm", "GetCenterPoint2"),
-    ):
-        point = _point_mm(
-            adapter, _attempt(adapter, lambda g=getter: getattr(segment, g)())
-        )
-        if point is not None:
-            info[key] = point
+    if kind == SEGMENT_TEXT:
+        # A text has no end points; "Text_5" alone said nothing of it.
+        info.update(describe_text(adapter, text_of(segment) if text_of else segment))
+    else:
+        for key, getter in (
+            ("start_mm", "GetStartPoint2"),
+            ("end_mm", "GetEndPoint2"),
+            ("center_mm", "GetCenterPoint2"),
+        ):
+            point = _point_mm(
+                adapter, _attempt(adapter, lambda g=getter: getattr(segment, g)())
+            )
+            if point is not None:
+                info[key] = point
     construction = _attempt(adapter, lambda: segment.ConstructionGeometry)
     if construction is not None:
         info["construction"] = bool(construction)
     return info
 
 
+def describe_segments(adapter: Any, sketch: Any) -> list[tuple[Any, dict[str, Any]]]:
+    """Every segment of ``sketch`` with :func:`describe_segment`'s description."""
+    _flag(adapter, sketch, "GetSketchSegments")
+    text_of = _SketchTexts(adapter, sketch)
+    return [
+        (segment, describe_segment(adapter, segment, text_of))
+        for segment in as_list(_attempt(adapter, lambda: sketch.GetSketchSegments()))
+    ]
+
+
+def save_flag(adapter: Any, model: Any) -> bool | None:
+    """``IModelDoc2.GetSaveFlag``: whether the document has unsaved changes."""
+    _flag(adapter, model, "GetSaveFlag")
+    value = _attempt(adapter, lambda: model.GetSaveFlag())
+    return value if isinstance(value, bool) else None
+
+
 def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     """Open an existing sketch for editing and give each of its segments an id.
+
+    Records ``adapter._opened_sketch`` (the name, whether the document had
+    unsaved changes before, and the segments as described) for
+    :func:`unchanged_since_opened`: a sketch opened only to be read is left
+    without a rebuild.
 
     Args:
         adapter: A connected ``PyWin32Adapter`` with a ``currentModel``.
@@ -592,7 +694,8 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: ``sketch`` and ``segments`` (each with ``id``,
-        ``type`` and its points in sketch mm).
+        ``type`` and its points in sketch mm, or a text's string, height,
+        font and position).
 
     Raises:
         LookupError: No such feature.
@@ -606,6 +709,7 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
     if kind not in SKETCH_TYPES:
         raise ValueError(f"{name!r} is a {kind or 'feature'}, not a sketch.")
+    was_dirty = save_flag(adapter, model)
     _flag(adapter, feature, "Select2", "GetSpecificFeature2")
     _flag(adapter, model, "ClearSelection2", "EditSketch")
     _attempt(adapter, lambda: model.ClearSelection2(True))
@@ -622,13 +726,46 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     adapter._last_sketch_name = name
     adapter._reset_sketch_entity_registry()
     manager.AddToDB = True  # as create_sketch: points land where asked
-    _flag(adapter, sketch, "GetSketchSegments")
     segments = []
-    for segment in as_list(_attempt(adapter, lambda: sketch.GetSketchSegments())):
-        info = describe_segment(adapter, segment)
+    described = describe_segments(adapter, sketch)
+    for segment, info in described:
         entity_id = adapter._register_sketch_entity(info["type"].capitalize(), segment)
         segments.append({"id": entity_id, **info})
+    adapter._opened_sketch = {
+        "name": name,
+        "was_dirty": was_dirty,
+        "segments": [info for _segment, info in described],
+    }
     return {"sketch": name, "segments": segments}
+
+
+def unchanged_since_opened(adapter: Any, sketch: Any) -> bool:
+    """Whether the open sketch is as :func:`open_sketch` found it, on a clean part.
+
+    True only when the document had no unsaved changes when the sketch was
+    opened and every segment still describes the same. ``exit_sketch`` then
+    leaves without a rebuild: an ``edit_sketch`` + ``exit_sketch`` made only
+    to read geometry marked the Lid part modified (SolidWorks 2026 SP4.1).
+    Reads and forgets ``adapter._opened_sketch``.
+
+    Args:
+        adapter: The adapter.
+        sketch: The sketch being exited (``ISketch``).
+
+    Returns:
+        bool: True for a read-only round trip.
+    """
+    opened = getattr(adapter, "_opened_sketch", None)
+    adapter._opened_sketch = None
+    if (
+        not opened
+        or opened.get("was_dirty") is not False
+        or opened.get("name") != getattr(adapter, "_last_sketch_name", None)
+        or sketch is None
+    ):
+        return False
+    now = [info for _segment, info in describe_segments(adapter, sketch)]
+    return bool(now == opened.get("segments"))
 
 
 #: The most ids a not-found error lists.

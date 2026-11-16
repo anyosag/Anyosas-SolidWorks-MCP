@@ -184,3 +184,97 @@ async def test_an_adapter_with_its_own_stl_export_gets_the_check_too(
     assert result["data"] == {"triangle_count": 4}
     assert result["export"]["format"] == "STL"
     assert "error" in result["export"]["mesh_check"]
+
+
+# ---- a mesh far smaller than the part ------------------------------------------
+
+
+async def test_a_mesh_close_to_the_part_gives_no_warning(
+    mock_config: Any, tmp_path: Path
+) -> None:
+    adapter = await _mock()
+    adapter.get_model_geometry_summary = AsyncMock(  # type: ignore[method-assign]
+        return_value=_ok({"document_type": "part", "volume_mm3": 170.0})
+    )
+    export = await _export_stl(adapter, mock_config)
+
+    result = await export({"file_path": str(tmp_path / "bracket.stl")})
+
+    assert result["export"]["mesh_check"]["volume_ratio"] == 0.9804
+    assert "warning" not in result
+
+
+async def test_a_mesh_holding_part_of_the_model_is_a_warning(
+    mock_config: Any, tmp_path: Path
+) -> None:
+    """The Lid's STL held only the chamfer band a selection left behind."""
+    adapter = await _mock()
+    adapter.get_model_geometry_summary = AsyncMock(  # type: ignore[method-assign]
+        return_value=_ok({"document_type": "part", "volume_mm3": 5000.0})
+    )
+    export = await _export_stl(adapter, mock_config)
+
+    result = await export({"file_path": str(tmp_path / "lid.stl")})
+
+    assert result["status"] == "success"
+    assert result["export"]["mesh_check"]["volume_ratio"] == 0.0333
+    assert result["warning"] == (
+        "The STL encloses 166.667 mm3, 3.3% of the part's 5000.0 mm3, so the file "
+        "may hold only part of the model. Check its size and triangle count before "
+        "printing; export again with nothing selected and every body shown."
+    )
+
+
+async def test_a_mesh_larger_than_the_part_is_a_warning_too(
+    mock_config: Any, tmp_path: Path
+) -> None:
+    adapter = await _mock()
+    adapter.get_model_geometry_summary = AsyncMock(  # type: ignore[method-assign]
+        return_value=_ok({"document_type": "part", "volume_mm3": 100.0})
+    )
+    export = await _export_stl(adapter, mock_config)
+
+    result = await export({"file_path": str(tmp_path / "lid.stl")})
+
+    assert "166.7% of the part's 100.0 mm3" in result["warning"]
+
+
+async def test_both_warnings_are_given_together(
+    mock_config: Any, tmp_path: Path
+) -> None:
+    class _Summarised(_Plain):
+        async def get_model_geometry_summary(self) -> AdapterResult[Any]:
+            return _ok({"volume_mm3": 5000.0})
+
+    content = (await _mock_stl_bytes(tmp_path)).read_bytes()
+    adapter = _Summarised(
+        {"document_type": "part", "mesh": {"applied": ["mm"], "restored": False}},
+        content,
+    )
+    export = await _export_stl(adapter, mock_config)
+
+    result = await export({"file_path": str(tmp_path / "x.stl")})
+
+    first, second = result["warning"].split(" The file was written")
+    assert "may hold only part of the model" in first
+    assert second.startswith(", but the user's STL options")
+
+
+async def test_an_adapter_with_its_own_stl_export_gets_the_warning(
+    mock_config: Any, tmp_path: Path
+) -> None:
+    content = (await _mock_stl_bytes(tmp_path)).read_bytes()
+
+    class _Native:
+        async def export_stl(self, payload: dict[str, Any]) -> AdapterResult[Any]:
+            Path(payload["file_path"]).write_bytes(content)
+            return _ok({"document_type": "part", "units": "mm"})
+
+        async def get_model_geometry_summary(self) -> AdapterResult[Any]:
+            return _ok({"volume_mm3": 5000.0})
+
+    export = await _export_stl(_Native(), mock_config)
+
+    result = await export({"file_path": str(tmp_path / "n.stl")})
+
+    assert "may hold only part of the model" in result["warning"]

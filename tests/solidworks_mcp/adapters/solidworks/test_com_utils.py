@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
-from solidworks_mcp.adapters.solidworks.com_utils import as_list, strip_op_prefix
+from solidworks_mcp.adapters.solidworks.com_utils import (
+    as_list,
+    clear_selection,
+    strip_op_prefix,
+)
 
 
 @pytest.mark.parametrize(
@@ -26,3 +33,28 @@ def test_as_list_normalises_com_returns(value: object, expected: list) -> None:
 )
 def test_strip_op_prefix(error: str | None, expected: str | None) -> None:
     assert strip_op_prefix(error, "select_feature") == expected
+
+
+class _Adapter:
+    def _attempt(self, fn: Any, default: Any = None) -> Any:
+        try:
+            return fn()
+        except Exception:
+            return default
+
+
+def _refuses(_all: bool) -> bool:
+    raise RuntimeError("RPC server is unavailable")
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        (SimpleNamespace(ClearSelection2=lambda _all: True), True),
+        (SimpleNamespace(ClearSelection2=_refuses), False),
+        (SimpleNamespace(), False),
+        (None, False),
+    ],
+)
+def test_clear_selection_never_raises(model: Any, expected: bool) -> None:
+    assert clear_selection(_Adapter(), model) is expected

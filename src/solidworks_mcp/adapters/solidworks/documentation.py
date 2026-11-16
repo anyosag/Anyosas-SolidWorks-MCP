@@ -11,6 +11,7 @@ via ``pythoncom.LoadTypeLib``), not from memory. Live behaviour is covered by
 
 from __future__ import annotations
 
+import math
 import os
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,6 +20,8 @@ from defusedxml import DefusedXmlException
 
 from ..base import AdapterResult, AdapterResultStatus
 from . import dimension_layout as _layout
+from .com_utils import clear_selection
+from .com_utils import flag as _flag
 from .features import _null_callout, _parse_edge_spec, _select_edge_by_coord
 from .io import (
     _as_com,
@@ -328,6 +331,252 @@ def _sequence(raw: Any) -> list[Any]:
     return [raw]
 
 
+#: Members the dimension walk calls on each feature (flagging only these is
+#: far cheaper than the whole ``IFeature`` interface on every fresh dispatch).
+_DIMENSION_WALK_MEMBERS = (
+    "GetNextFeature",
+    "GetFirstSubFeature",
+    "GetNextSubFeature",
+    "GetFirstDisplayDimension",
+    "GetNextDisplayDimension",
+)
+
+#: How deep under a top-level feature the walk looks (a feature's sketch is
+#: one level down, a folder's features one more).
+_SUB_FEATURE_DEPTH = 2
+
+#: A runaway guard on every chain the walk follows.
+_WALK_LIMIT = 20000
+
+
+#: What a member call that raised gives :func:`_read_member`.
+_FAILED = object()
+
+
+def _read_member(adapter: Any, obj: Any, name: str) -> Any:
+    """A zero-argument member, called as a method or read as a property.
+
+    Unflagged, late binding reads ``FirstFeature`` as a property and hands
+    back the feature: a dispatch, itself callable, whose call fails. The
+    walk then ended before it began and listed nothing. Such a dispatch is
+    returned as it is; a method that raised gives ``None``.
+    """
+    member = adapter._attempt(lambda: getattr(obj, name), default=None)
+    if not callable(member):
+        return member
+    called = adapter._attempt(member, default=_FAILED)
+    if called is not _FAILED:
+        return called
+    return member if hasattr(member, "_oleobj_") else None
+
+
+def _feature_name(adapter: Any, feature: Any) -> str:
+    """A feature's tree name; empty when it can't be read."""
+    return str(adapter._attempt(lambda: feature.Name, default="") or "")
+
+
+def _top_level_features(adapter: Any, model: Any) -> list[Any]:
+    """The model's top-level features in tree order.
+
+    ``FirstFeature`` / ``GetNextFeature``, and, when that walk comes up
+    short of ``IFeatureManager.GetFeatureCount(True)``, the rest by
+    ``FeatureByPositionReverse`` (zero-based from the end): on some
+    installs ``GetNextFeature`` stops at the system folders, before every
+    sketch and body feature (see ``_list_document_features`` in
+    ``pywin32_adapter``). A name seen twice is listed once.
+    """
+    _flag(adapter, model, "FirstFeature", "FeatureByPositionReverse")
+    features: list[Any] = []
+    names: set[str] = set()
+
+    def _add(feature: Any) -> bool:
+        _flag(adapter, feature, *_DIMENSION_WALK_MEMBERS)
+        name = _feature_name(adapter, feature)
+        if name and name in names:
+            return False
+        names.add(name)
+        features.append(feature)
+        return True
+
+    feature = _read_member(adapter, model, "FirstFeature")
+    while feature is not None and len(features) < _WALK_LIMIT and _add(feature):
+        feature = adapter._attempt(lambda f=feature: f.GetNextFeature(), default=None)
+    manager = adapter._attempt(lambda: model.FeatureManager, default=None)
+    count = adapter._attempt(lambda: int(manager.GetFeatureCount(True) or 0), default=0)
+    if count and len(features) < count:
+        for position in range(min(count, _WALK_LIMIT) - 1, -1, -1):
+            found = adapter._attempt(
+                lambda p=position: model.FeatureByPositionReverse(p), default=None
+            )
+            if found is not None:
+                _add(found)
+    return features
+
+
+def _sub_features(adapter: Any, feature: Any) -> list[Any]:
+    """A feature's sub-features (an extrude's sketch, a folder's features)."""
+    subs: list[Any] = []
+    sub = adapter._attempt(lambda: feature.GetFirstSubFeature(), default=None)
+    while sub is not None and len(subs) < _WALK_LIMIT:
+        _flag(adapter, sub, *_DIMENSION_WALK_MEMBERS)
+        subs.append(sub)
+        sub = adapter._attempt(lambda s=sub: s.GetNextSubFeature(), default=None)
+    return subs
+
+
+def _dimension_features(adapter: Any, model: Any) -> list[tuple[Any, str]]:
+    """Every feature whose dimensions are listed, with its name, in tree order.
+
+    The top-level features (:func:`_top_level_features`), each followed by
+    its sub-features to :data:`_SUB_FEATURE_DEPTH`: a sketch an extrude
+    absorbed sits under it, and its dimensions (``D1@Sketch1``) are its own.
+    A part made of Instant3D ("ICE") extrudes listed no dimensions at all.
+
+    Raises:
+        RuntimeError: When the tree can't be read at all (no feature).
+    """
+    top = _top_level_features(adapter, model)
+    if not top:
+        raise RuntimeError(
+            "Could not read the feature tree (FirstFeature returned nothing), so "
+            "no dimensions could be listed"
+        )
+    out: list[tuple[Any, str]] = []
+    seen: set[str] = set()
+
+    def _visit(feature: Any, depth: int) -> None:
+        name = _feature_name(adapter, feature)
+        if name and name in seen:
+            return
+        seen.add(name)
+        out.append((feature, name))
+        if depth < _SUB_FEATURE_DEPTH:
+            for sub in _sub_features(adapter, feature):
+                _visit(sub, depth + 1)
+
+    for feature in top:
+        _visit(feature, 0)
+    return out
+
+
+def _feature_dimensions(adapter: Any, feature: Any) -> list[Any]:
+    """The ``IDimension`` of each display dimension on one feature."""
+    dims: list[Any] = []
+    display = adapter._attempt(lambda: feature.GetFirstDisplayDimension(), default=None)
+    while display is not None and len(dims) < _WALK_LIMIT:
+        disp = _sw_type_info.flagged(display, "IDisplayDimension")
+        dim = adapter._attempt(lambda d=disp: d.GetDimension2(0), default=None)
+        if dim is not None:
+            dims.append(_sw_type_info.flagged(dim, "IDimension"))
+        display = adapter._attempt(
+            lambda d=display: feature.GetNextDisplayDimension(d), default=None
+        )
+    return dims
+
+
+#: ``IMeasure`` properties ``measure_entities`` reports, and their keys.
+#: SolidWorks answers ``-1`` for one that doesn't apply to the selection.
+_MEASURE_PROPERTIES = (
+    ("Distance", "distance_m"),
+    ("NormalDistance", "normal_distance_m"),
+    ("CenterDistance", "center_distance_m"),
+    ("Angle", "angle_rad"),
+    ("Radius", "radius_m"),
+    ("Diameter", "diameter_m"),
+    ("Length", "length_m"),
+    ("ArcLength", "arc_length_m"),
+    ("Area", "area_m2"),
+    ("Perimeter", "perimeter_m"),
+    ("DeltaX", "delta_x_m"),
+    ("DeltaY", "delta_y_m"),
+    ("DeltaZ", "delta_z_m"),
+)
+
+
+def _plane(adapter: Any, face: Any) -> tuple[list[float], list[float]] | None:
+    """A planar face's plane as ``(normal, point on it)``, metres; else ``None``.
+
+    ``IFace2.GetSurface``, ``ISurface.IsPlane`` and ``ISurface.PlaneParams``
+    (a property: the normal's three values, then a point's).
+    """
+    _flag(adapter, face, "GetSurface")
+    surface = adapter._attempt(lambda: face.GetSurface(), default=None)
+    if surface is None:
+        return None
+    _flag(adapter, surface, "IsPlane")
+    if not adapter._attempt(lambda: surface.IsPlane(), default=False):
+        return None
+    params = adapter._attempt(lambda: list(surface.PlaneParams), default=None)
+    if not params or len(params) < 6:
+        return None
+    values = [float(v) for v in params[:6]]
+    return values[:3], values[3:]
+
+
+def _plane_gap(
+    first: tuple[list[float], ...], second: tuple[list[float], ...]
+) -> float:
+    """The distance between two parallel planes, along the first one's normal."""
+    normal, point = first
+    length = math.sqrt(sum(c * c for c in normal)) or 1.0
+    offset = [b - a for a, b in zip(point, second[1], strict=True)]
+    return abs(sum(o * n for o, n in zip(offset, normal, strict=True))) / length
+
+
+def _selected_faces_planes(adapter: Any, model: Any) -> list[Any] | None:
+    """The planes of the two selected faces, or ``None`` unless both are planar."""
+    manager = adapter._attempt(lambda: model.SelectionManager, default=None)
+    if manager is None:
+        return None
+    _flag(adapter, manager, "GetSelectedObject6")
+    planes = []
+    for index in (1, 2):
+        face = adapter._attempt(
+            lambda i=index: manager.GetSelectedObject6(i, -1), default=None
+        )
+        plane = _plane(adapter, face) if face is not None else None
+        if plane is None:
+            return None
+        planes.append(plane)
+    return planes
+
+
+def _normal_distance(
+    adapter: Any, model: Any, entities: list[str], result: dict[str, Any]
+) -> None:
+    """Make ``distance_m`` the normal distance between two parallel planar faces.
+
+    Two parallel faces at y = 1.0 and 3.5 mm measured ``Distance`` 24.75 mm
+    (``DeltaY`` 0), not 2.5 mm (Lid build, SolidWorks 2026 SP4.1). For such a
+    pair ``distance_m`` becomes ``IMeasure.NormalDistance``, or, when that is
+    unreadable, the gap between the faces' planes (``ISurface.PlaneParams``);
+    what ``Distance`` said stays as ``raw_distance_m``. Changes ``result``
+    in place.
+
+    Args:
+        adapter: The adapter.
+        model: The document the two faces are selected in.
+        entities: The two specs measured.
+        result: The measured values so far.
+    """
+    faces = all(_parse_measure_spec(spec)[4] == "FACE" for spec in entities)
+    if not faces or result.get("is_parallel") is not True:
+        return
+    planes = _selected_faces_planes(adapter, model)
+    if planes is None:
+        return
+    normal = result.get("normal_distance_m")
+    basis = "IMeasure.NormalDistance"
+    if not isinstance(normal, float):
+        normal, basis = _plane_gap(planes[0], planes[1]), "ISurface.PlaneParams"
+        result["normal_distance_m"] = normal
+    if "distance_m" in result:
+        result["raw_distance_m"] = result["distance_m"]
+    result["distance_m"] = normal
+    result["distance_kind"] = "normal"
+    result["distance_source"] = basis
+
+
 class SolidWorksDocumentationMixin:
     """Expose model-data and drawing-documentation methods through a mixin."""
 
@@ -386,10 +635,14 @@ class SolidWorksDocumentationMixin:
     ) -> AdapterResult[list[dict[str, Any]]]:
         """List every dimension in the active part or assembly.
 
-        Walks ``IModelDoc2::FirstFeature`` / ``IFeature::GetNextFeature`` and
-        each feature's ``GetFirstDisplayDimension`` chain. ``full_name`` (e.g.
+        Walks the feature tree (:func:`_dimension_features`: the top-level
+        features, completed by ``FeatureByPositionReverse`` when
+        ``GetNextFeature`` stops short, and each one's sub-features, where an
+        absorbed sketch's dimensions live) and each feature's
+        ``GetFirstDisplayDimension`` chain. ``full_name`` (e.g.
         ``"D1@Sketch1"``) is the name ``set_dimension`` accepts, so the pair
         gives edit-by-name access to every driving parameter in the model.
+        A dimension reached twice is listed once.
 
         Args:
             feature_name: Only list dimensions of this feature (case-insensitive).
@@ -408,52 +661,34 @@ class SolidWorksDocumentationMixin:
         def _list() -> list[dict[str, Any]]:
             model = self.currentModel
             dims: list[dict[str, Any]] = []
-            feature = self._attempt(lambda: model.FirstFeature(), default=None)
-            guard_count = 0
-            while feature is not None and guard_count < 20000:
-                guard_count += 1
-                feat = _sw_type_info.flagged(feature, "IFeature")
-                name = str(self._attempt(lambda f=feat: f.Name, default="") or "")
-                if not target or name.lower() == target:
-                    display = self._attempt(
-                        lambda f=feat: f.GetFirstDisplayDimension(), default=None
+            listed: set[str] = set()
+            for feat, name in _dimension_features(self, model):
+                if target and name.lower() != target:
+                    continue
+                for dim in _feature_dimensions(self, feat):
+                    kind, unit, _factor = dimension_kind(self, dim)
+                    full_name = _strip_document_suffix(
+                        self._attempt(lambda d=dim: d.FullName, default=None)
                     )
-                    while display is not None:
-                        disp = _sw_type_info.flagged(display, "IDisplayDimension")
-                        dim = self._attempt(
-                            lambda d=disp: d.GetDimension2(0), default=None
-                        )
-                        if dim is not None:
-                            dim = _sw_type_info.flagged(dim, "IDimension")
-                            kind, unit, _factor = dimension_kind(self, dim)
-                            dims.append(
-                                {
-                                    "full_name": _strip_document_suffix(
-                                        self._attempt(
-                                            lambda d=dim: d.FullName, default=None
-                                        )
-                                    ),
-                                    "feature": name,
-                                    "value": self._attempt(
-                                        lambda d=dim: d.Value, default=None
-                                    ),
-                                    "system_value": self._attempt(
-                                        lambda d=dim: d.SystemValue, default=None
-                                    ),
-                                    "kind": kind,
-                                    "units": unit,
-                                    "read_only": bool(
-                                        self._attempt(
-                                            lambda d=dim: d.ReadOnly, default=False
-                                        )
-                                    ),
-                                }
-                            )
-                        display = self._attempt(
-                            lambda f=feat, d=display: f.GetNextDisplayDimension(d),
-                            default=None,
-                        )
-                feature = self._attempt(lambda f=feat: f.GetNextFeature(), default=None)
+                    if full_name is not None and full_name in listed:
+                        continue
+                    if full_name is not None:
+                        listed.add(full_name)
+                    dims.append(
+                        {
+                            "full_name": full_name,
+                            "feature": name,
+                            "value": self._attempt(lambda d=dim: d.Value, default=None),
+                            "system_value": self._attempt(
+                                lambda d=dim: d.SystemValue, default=None
+                            ),
+                            "kind": kind,
+                            "units": unit,
+                            "read_only": bool(
+                                self._attempt(lambda d=dim: d.ReadOnly, default=False)
+                            ),
+                        }
+                    )
             if target and not dims:
                 raise LookupError(
                     f"No dimensions found on feature {feature_name!r}; list "
@@ -483,7 +718,10 @@ class SolidWorksDocumentationMixin:
         Returns:
             AdapterResult[dict[str, Any]]: Measured values in metres, square
             metres and radians, plus ``selected``; ``is_parallel`` only for
-            two entities.
+            two entities. For two parallel planar faces ``distance_m`` is
+            the normal distance (``distance_kind`` ``"normal"``, with its
+            ``distance_source``) and ``raw_distance_m`` what
+            ``IMeasure.Distance`` gave; see :func:`_normal_distance`.
         """
         guard = self._require_doc_type({1, 2}, "measure_entities")
         if guard is not None:
@@ -531,20 +769,7 @@ class SolidWorksDocumentationMixin:
                 raise Exception("IMeasure.Calculate failed for this selection")
 
             result: dict[str, Any] = {"selected": list(entities)}
-            for prop, key in (
-                ("Distance", "distance_m"),
-                ("CenterDistance", "center_distance_m"),
-                ("Angle", "angle_rad"),
-                ("Radius", "radius_m"),
-                ("Diameter", "diameter_m"),
-                ("Length", "length_m"),
-                ("ArcLength", "arc_length_m"),
-                ("Area", "area_m2"),
-                ("Perimeter", "perimeter_m"),
-                ("DeltaX", "delta_x_m"),
-                ("DeltaY", "delta_y_m"),
-                ("DeltaZ", "delta_z_m"),
-            ):
+            for prop, key in _MEASURE_PROPERTIES:
                 value = self._attempt(lambda p=prop: getattr(measure, p), default=None)
                 if isinstance(value, (int, float)) and value != -1:
                     result[key] = float(value)
@@ -553,6 +778,7 @@ class SolidWorksDocumentationMixin:
                 parallel = self._attempt(lambda: measure.IsParallel, default=None)
                 if isinstance(parallel, bool):
                     result["is_parallel"] = parallel
+                _normal_distance(self, model, entities, result)
             self._attempt(lambda: model.ClearSelection2(True), default=None)
             return result
 
@@ -1004,6 +1230,8 @@ class SolidWorksDocumentationMixin:
                     "pattern to export"
                 )
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            # An export with something selected writes only the selection.
+            clear_selection(self, model)
             model_path = str(
                 self._attempt(lambda: model.GetPathName(), default="") or ""
             )

@@ -216,7 +216,8 @@ async def register_engineering_data_tools(
 
         Use it to find a dimension in an existing model before changing it: each
         `full_name` (e.g. "D1@Sketch1") is the name `get_dimension` and `set_dimension`
-        take. Needs: an open part or assembly. Read-only. Returns: `data`, one entry per
+        take. A feature's own sketch (under it in the tree) is listed with its own
+        name. Needs: an open part or assembly. Read-only. Returns: `data`, one entry per
         dimension with `full_name`, `feature`, `value` (document units), `system_value`
         (metres or radians), `kind` (length, angle or count), `units` (what
         `set_dimension` takes: mm, deg or count) and `read_only`.
@@ -243,8 +244,11 @@ async def register_engineering_data_tools(
         check a feature's size or position; for the whole model, use `verify_model`.
         Needs: an open part or assembly. Read-only. It clears the selection afterwards.
         Returns: `data` with `selected` and the values in metres, square metres and
-        radians (`distance_m`, `angle_rad`, `length_m`, `radius_m`, `diameter_m`,
-        `area_m2`, `perimeter_m`; for two entities `is_parallel`).
+        radians (`distance_m`, `normal_distance_m`, `angle_rad`, `length_m`,
+        `radius_m`, `diameter_m`, `area_m2`, `perimeter_m`; for two entities
+        `is_parallel`). For two parallel planar faces `distance_m` is the normal
+        distance between them (`distance_kind` "normal"); `raw_distance_m` is
+        what SolidWorks' Measure reported as the distance.
 
         Args:
             input_data: What to measure. `entities` (one or two) is required, each

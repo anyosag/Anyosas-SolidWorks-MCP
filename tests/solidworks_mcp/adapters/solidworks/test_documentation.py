@@ -314,6 +314,156 @@ async def test_list_model_dimensions_unknown_feature_is_not_found() -> None:
     assert "No dimensions found on feature 'Fillet9'" in result.error
 
 
+# ---- the Lid: Instant3D extrudes whose sketches sit under them -------------------
+
+
+class _TreeFeature(_Feature):
+    """A feature with sub-features (``GetFirstSubFeature`` / ``GetNextSubFeature``)."""
+
+    def __init__(self, name: str, dims: list[Any], subs: list[Any] = ()) -> None:
+        super().__init__(name, dims)
+        self._subs = list(subs)
+        self._parent: _TreeFeature | None = None
+        for sub in self._subs:
+            sub._parent = self
+
+    def GetFirstSubFeature(self):  # noqa: N802 - COM name
+        return self._subs[0] if self._subs else None
+
+    def GetNextSubFeature(self):  # noqa: N802 - COM name
+        siblings = self._parent._subs if self._parent else []
+        index = siblings.index(self) + 1
+        return siblings[index] if index < len(siblings) else None
+
+
+def _chain(features: list[_Feature]) -> list[_Feature]:
+    for first, second in zip(features, features[1:], strict=False):
+        first._next = second
+    return features
+
+
+def _lid(top: list[_Feature], count: int = 0, by_position: Any = None) -> Any:
+    _chain(top)
+    model = SimpleNamespace(
+        GetType=lambda: 1,
+        FirstFeature=lambda: top[0] if top else None,
+        FeatureManager=SimpleNamespace(GetFeatureCount=lambda _top: count),
+    )
+    if by_position is not None:
+        model.FeatureByPositionReverse = by_position
+    return model
+
+
+def _boss(n: int) -> _TreeFeature:
+    """An "ICE" Boss-Extrude whose depth is its own and whose sketch is under it."""
+    sketch = _TreeFeature(f"Sketch{n}", [_dim(f"D1@Sketch{n}@Lid.Part", 91.6)])
+    return _TreeFeature(
+        f"Boss-Extrude{n}", [_dim(f"D1@Boss-Extrude{n}@Lid.Part", 1.0)], [sketch]
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_absorbed_sketchs_dimensions_are_listed_after_its_feature() -> None:
+    top = [_TreeFeature("Origin", []), _boss(2), _boss(3)]
+
+    result = await _Harness(_lid(top)).list_model_dimensions()
+
+    assert result.is_success, result.error
+    assert [(d["feature"], d["full_name"]) for d in result.data] == [
+        ("Boss-Extrude2", "D1@Boss-Extrude2"),
+        ("Sketch2", "D1@Sketch2"),
+        ("Boss-Extrude3", "D1@Boss-Extrude3"),
+        ("Sketch3", "D1@Sketch3"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_absorbed_sketch_can_be_asked_for_by_name() -> None:
+    result = await _Harness(_lid([_boss(2)])).list_model_dimensions("sketch2")
+
+    assert [d["full_name"] for d in result.data] == ["D1@Sketch2"]
+
+
+@pytest.mark.asyncio
+async def test_a_walk_that_stops_at_the_folders_is_completed_by_position() -> None:
+    """GetNextFeature can stop at the system folders before any body feature."""
+    folder = _TreeFeature("Comments", [])
+    later = [folder, _boss(2), _boss(3)]
+    # Zero-based from the end; one position reads nothing.
+    by_position = [None, *reversed(later)]
+    model = _lid([folder], count=4, by_position=lambda position: by_position[position])
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == [
+        "D1@Boss-Extrude2",
+        "D1@Sketch2",
+        "D1@Boss-Extrude3",
+        "D1@Sketch3",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_reached_twice_is_listed_once() -> None:
+    """A sketch both on the top level and under its feature is visited once,
+    and a dimension two features report is listed once."""
+    boss = _boss(2)
+    sketch = boss._subs[0]
+    shared = _TreeFeature("Fillet1", [_dim("D1@Boss-Extrude2@Lid.Part", 1.0)])
+    model = _lid([sketch, boss, shared])
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == [
+        "D1@Sketch2",
+        "D1@Boss-Extrude2",
+    ]
+
+
+class _PropertyFeature(_TreeFeature):
+    """What an unflagged ``model.FirstFeature`` reads as: the feature itself,
+    a dispatch whose call fails."""
+
+    _oleobj_ = object()
+
+    def __call__(self) -> None:
+        raise RuntimeError("Member not found")
+
+
+@pytest.mark.asyncio
+async def test_first_feature_read_as_a_property_still_starts_the_walk() -> None:
+    first = _PropertyFeature("Origin", [])
+    boss = _boss(2)
+    first._next = boss
+    model = SimpleNamespace(GetType=lambda: 1, FirstFeature=first)
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == ["D1@Boss-Extrude2", "D1@Sketch2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [lambda: None, _raise, None])
+async def test_a_tree_that_cannot_be_read_is_an_error(first: Any) -> None:
+    """It used to answer an empty list, as if the part had no dimensions."""
+    model = SimpleNamespace(GetType=lambda: 1, FirstFeature=first)
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert result.is_error
+    assert "Could not read the feature tree" in result.error
+
+
+@pytest.mark.asyncio
+async def test_a_feature_tree_that_loops_ends() -> None:
+    boss = _boss(2)
+    boss._next = boss  # GetNextFeature handing back the same feature
+
+    result = await _Harness(_lid([boss])).list_model_dimensions()
+
+    assert [d["full_name"] for d in result.data] == ["D1@Boss-Extrude2", "D1@Sketch2"]
+
+
 # ---- measure_entities ---------------------------------------------------------
 
 
@@ -438,6 +588,119 @@ async def test_measure_entities_failed_calculation() -> None:
 async def test_measure_entities_guard() -> None:
     result = await _Harness().measure_entities(["Edge<1>"])
     assert result.error == "No active model"
+
+
+# ---- two parallel faces: the normal distance -----------------------------------
+
+_LID_FACES = ["face:0.0175,0.001,0.0175", "face:0,0.0035,0"]
+
+
+class _LidMeasure:
+    """What SolidWorks 2026 SP4.1 reported for the Lid's two parallel faces."""
+
+    Distance = 0.02474874
+    DeltaX, DeltaY, DeltaZ = 0.0175, 0.0, 0.0175
+    IsParallel = True
+
+    def __init__(self, normal: float = 0.0025) -> None:
+        self.NormalDistance = normal
+
+    def Calculate(self, _selection):  # noqa: N802 - COM name
+        return True
+
+
+def _planar_face(y: float, planar: bool = True) -> SimpleNamespace:
+    surface = SimpleNamespace(
+        IsPlane=lambda: planar, PlaneParams=(0.0, 1.0, 0.0, 0.3, y, -0.2)
+    )
+    return SimpleNamespace(GetSurface=lambda: surface)
+
+
+def _two_faces(
+    measure: Any, faces: list[Any] | None, parallel: bool = True
+) -> SimpleNamespace:
+    model = _measurable(measure=measure, parallel=parallel)
+    if faces is not None:
+        model.SelectionManager = SimpleNamespace(
+            GetSelectedObject6=lambda index, _mark: faces[index - 1]
+        )
+    return model
+
+
+@pytest.fixture
+def _picks_anything(monkeypatch) -> None:
+    monkeypatch.setattr(doc, "_select_edge_by_coord", lambda *_args: True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_picks_anything")
+async def test_two_parallel_faces_give_their_normal_distance() -> None:
+    model = _two_faces(_LidMeasure(), [_planar_face(0.001), _planar_face(0.0035)])
+
+    result = await _Harness(model).measure_entities(_LID_FACES)
+
+    assert result.is_success, result.error
+    assert result.data["distance_m"] == 0.0025
+    assert result.data["normal_distance_m"] == 0.0025
+    assert result.data["raw_distance_m"] == 0.02474874
+    assert result.data["distance_kind"] == "normal"
+    assert result.data["distance_source"] == "IMeasure.NormalDistance"
+    assert result.data["delta_y_m"] == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_picks_anything")
+async def test_without_a_normal_distance_the_planes_give_it() -> None:
+    model = _two_faces(
+        _LidMeasure(normal=-1), [_planar_face(0.001), _planar_face(0.0035)]
+    )
+
+    result = await _Harness(model).measure_entities(_LID_FACES)
+
+    assert result.data["distance_m"] == pytest.approx(0.0025)
+    assert result.data["normal_distance_m"] == pytest.approx(0.0025)
+    assert result.data["distance_source"] == "ISurface.PlaneParams"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_picks_anything")
+@pytest.mark.parametrize(
+    ("entities", "faces", "parallel"),
+    [
+        (_LID_FACES, [_planar_face(0.001), _planar_face(0.0035, planar=False)], True),
+        (_LID_FACES, [_planar_face(0.001), SimpleNamespace(GetSurface=_raise)], True),
+        (_LID_FACES, [_planar_face(0.001), None], True),
+        (_LID_FACES, None, True),  # no selection manager
+        (_LID_FACES, [_planar_face(0.001), _planar_face(0.0035)], False),
+        (["face:0,0.001,0", "Edge<1>"], [_planar_face(0.001)] * 2, True),
+    ],
+    ids=["curved", "no-surface", "not-selected", "no-manager", "not-parallel", "edge"],
+)
+async def test_other_pairs_keep_the_distance_solidworks_gave(
+    entities, faces, parallel
+) -> None:
+    model = _two_faces(_LidMeasure(), faces, parallel)
+
+    result = await _Harness(model).measure_entities(entities)
+
+    assert result.data["distance_m"] == 0.02474874
+    assert result.data["normal_distance_m"] == 0.0025
+    assert "raw_distance_m" not in result.data
+    assert "distance_kind" not in result.data
+
+
+def test_plane_gap_is_measured_along_the_normal() -> None:
+    first = ([0.0, 2.0, 0.0], [0.0, 0.001, 0.0])  # a normal that isn't unit
+    second = ([0.0, -1.0, 0.0], [0.05, 0.0035, -0.02])
+
+    assert doc._plane_gap(first, second) == pytest.approx(0.0025)
+
+
+def test_a_plane_needs_six_parameters() -> None:
+    surface = SimpleNamespace(IsPlane=lambda: True, PlaneParams=(0.0, 1.0, 0.0))
+    face = SimpleNamespace(GetSurface=lambda: surface)
+
+    assert doc._plane(_Harness(), face) is None
 
 
 # ---- material -----------------------------------------------------------------
@@ -734,6 +997,21 @@ async def test_export_flat_pattern_writes_the_file(tmp_path) -> None:
     result = await _Harness(_sheet_metal_part(True)).export_flat_pattern(str(out))
 
     assert result.data == {"file_path": str(out), "size_bytes": os.path.getsize(out)}
+
+
+@pytest.mark.asyncio
+async def test_export_flat_pattern_clears_the_selection_first(tmp_path) -> None:
+    """An export with something selected writes only the selection."""
+    events: list[str] = []
+    part = _sheet_metal_part(True)
+    export = part.ExportToDWG2
+    part.ClearSelection2 = lambda _all: events.append("ClearSelection2") or True
+    part.ExportToDWG2 = lambda *args: events.append("ExportToDWG2") or export(*args)
+
+    result = await _Harness(part).export_flat_pattern(str(tmp_path / "b.dxf"))
+
+    assert result.is_success, result.error
+    assert events == ["ClearSelection2", "ExportToDWG2"]
 
 
 @pytest.mark.asyncio
