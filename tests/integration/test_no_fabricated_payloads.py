@@ -42,6 +42,10 @@ ADAPTER_FREE_TOOLS = {
     "lookup_api_method",
     "lookup_api_interface",
     "find_related_api_members",
+    # The swconst enum index shipped with the server, and the index of the
+    # installed API help: local files, read the same way.
+    "lookup_api_enum",
+    "get_api_remarks",
     "generate_vba_part_modeling",
     "generate_vba_assembly_mates",
     "generate_vba_drawing_dimensions",

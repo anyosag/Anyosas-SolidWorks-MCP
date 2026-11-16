@@ -123,6 +123,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "lookup_api_method": _reads("Look Up API Method"),
     "lookup_api_interface": _reads("Look Up API Interface"),
     "find_related_api_members": _reads("Find Related API Members"),
+    "lookup_api_enum": _reads("Look Up API Enum Value"),
+    "get_api_remarks": _reads("Read API Help Remarks"),
     # drawing
     "create_drawing_view": _adds("Create Drawing View"),
     "add_dimension": _adds("Add Drawing Dimension"),
