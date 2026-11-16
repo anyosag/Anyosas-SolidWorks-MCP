@@ -139,6 +139,13 @@ async def run() -> int:
         title = str(adapter._get_attr_or_call(model, "GetTitle"))
         assert (await adapter.create_sketch("Top")).is_success
         assert (await adapter.add_rectangle(-20, -20, 20, 20)).is_success
+        assert (await adapter.exit_sketch()).is_success
+        # A sketch holding the rectangle and the text won't extrude: the block
+        # is extruded first, and the text gets a sketch of its own.
+        boss = await adapter.create_extrusion(ExtrusionParameters(depth=5))
+        assert boss.is_success, boss.error
+        assert (await adapter.create_sketch("Top")).is_success
+        assert (await adapter.add_line(-15, -15, 15, -15)).is_success
         sw_type_info.flag_members(model, "InsertSketchText")
         made = adapter._attempt(
             lambda: model.InsertSketchText(
@@ -147,9 +154,7 @@ async def run() -> int:
         )
         report["inserted_text"] = made is not None
         assert (await adapter.exit_sketch()).is_success
-        sketch_name = adapter._last_sketch_name or "Sketch1"
-        boss = await adapter.create_extrusion(ExtrusionParameters(depth=5))
-        assert boss.is_success, boss.error
+        sketch_name = adapter._last_sketch_name or "Sketch2"
         saved = await adapter.save_file(str(scratch / "probe_round_trip.SLDPRT"))
         assert saved.is_success, saved.error
         report["sketch"] = sketch_name

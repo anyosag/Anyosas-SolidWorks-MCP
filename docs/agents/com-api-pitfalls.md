@@ -1392,10 +1392,97 @@ After `ClearSelection2(True)` the same export held 18,738 triangles, 91.6 x 4.7 
 - `export_stl` warns when a part's `volume_ratio` is outside 0.9 to 1.1.
 
 Reported by the "Lid with inverted text features" build on SOLIDWORKS 2026 SP4.1. The
-other reports from that build (`measure_entities` on parallel faces, `edit_sketch`
-marking the part modified, `list_model_dimensions` finding none, a coordinate chamfer
-taking 46 s) wait on `tests/scripts/probe_measure_faces.py`,
-`probe_sketch_round_trip.py`, `probe_model_dimensions.py` and `probe_edge_pick_speed.py`.
+probes for that build's other reports (2026-11-16) found:
+
+- **`measure_entities` on parallel faces** (`probe_measure_faces.py`). On two parallel
+  faces 2.5 mm apart, `Distance` and `NormalDistance` both read 2.5 mm. The Lid's
+  24.7 mm most likely came from a different face than meant at its pick point.
+  `measure_entities` now reports `normal_distance_m` and uses it for parallel faces.
+- **A read-only sketch round trip** (`probe_sketch_round_trip.py`). `EditSketch` and
+  `InsertSketch(False)` leave `GetSaveFlag` False; `InsertSketch(True)` (the rebuild)
+  sets it. `exit_sketch` on an unchanged sketch now exits without the rebuild and leaves
+  the part clean. `ISketchText` gives `Text`, `GetCoordinates` (m), `CharHeight` (m) and
+  `TypeFaceName`.
+- **`list_model_dimensions`** (`probe_model_dimensions.py`). On a part from
+  `create_extrusion` and `create_cut_extrude`, the old walk found the dimensions too,
+  twice over: sketches are on the top level and also sub-features. The new walk lists
+  each once. Why the Lid's part gave none is not settled.
+- **A coordinate edge pick on a 92 mm plate with 23 letters** (`probe_edge_pick_speed.py`).
+  The picker now skips bodies and faces whose box is out of reach.
+  - With the letters as separate bodies it measured 7 edges in 0.56 s, and
+    `add_chamfer` took 1.3 s; the Lid reported 46 s and 110 s.
+  - With the letters merged into the plate (289 faces) the pick took 6 s and measured
+    200 edges: the face carrying the letters has a box as big as the part. Measuring all
+    759 edges would take about 4.7 s (6 ms each), so the boxes don't pay there.
+    `add_chamfer` took 9.7 s.
+
+---
+
+## 51. A feature renames the bodies it changes
+
+SolidWorks names a body after the last feature that changed it. In
+`tests/scripts/probe_bodies.py` (SOLIDWORKS 2026 SP4.1, 2026-11-16):
+
+- a Combine's result became `Combine1`;
+- a moved `Boss-Extrude2[1]` became `Body-Move/Copy1`, and after a second move
+  `Body-Move/Copy2`;
+- split pieces became `Split1[1]`, `Split1[2]`.
+
+Bodies brought in by `InsertPart3` kept their `<pb_holder>-<Boss-Extrude1>` names through a
+move, and a Body-Delete/Keep left the kept bodies' names alone.
+
+So a name read before a feature is not the body's name after it. `move_bodies`
+(`adapters/solidworks/bodies.py`) matches each lost name to a new one by where the body
+should now lie (`match_renamed`), and returns `name_now`. `combine_bodies`' `result`,
+`split_body`'s `pieces` and `make_mating_negative`'s `result_body` give the new names.
+
+## 52. Combine, Indent and the other multibody calls: what works
+
+From the same probe:
+
+- **`InsertCombineFeature`.** Subtract works preselected (main body at mark 1, tools at
+  mark 2, then `null` and an empty array) and with the bodies passed directly. Add and
+  common work with every body at mark 2; with the main body at mark 1 they make nothing.
+  Common also works passed directly.
+- **`InsertIndent`.** It returns `null` when the tools lie fully inside the target, both
+  with a tool face and with the tool bodies at mark 4. `IBody2.MakeOffset` is
+  surface-only.
+  - `make_mating_negative` therefore falls back to a union of the tool copied and shifted
+    in 32 directions (`Operations2` add, then `CreateFeatureFromBody3`), and a Combine
+    subtract.
+  - One tool takes about 6 s. Two 10 x 1 x 6 mm labels with 0.15 mm clearance took 16 s,
+    removed 168.65 mm³ and left 0 mm³ of overlap.
+- **`InsertMoveCopyBody2`.** Angles are in radians and follow the right-hand rule about
+  the axis. The copies are named `Body-Move/Copy3[1]`, `[2]`.
+- **The rest.** `InsertDeleteBody2` takes its bodies at mark 0. `PostSplitBody2` takes an
+  array of null dispatches for the origins and empty strings for the paths.
+  `InsertPart3` with the file closed opens no dialog. `IBody2.Select2` with a SelectData
+  mark selects as `SelectByID2 "SOLIDBODY"` does.
+- **`IBody2.GetMassProperties(1.0)`.** Index 3 is the volume and index 4 the area.
+  `GetBodyBox` is exact, not padded.
+
+## 53. A draft angle needs its draft flag, and `IsBossFeature` can say no to a boss
+
+- **The draft flag.** `FeatureExtrusion3`, `FeatureExtrusionThin2` and `FeatureCut4` take
+  `Dchk1` (draft on) separately from `Dang1` (the angle).
+  - With `Dchk1` False the angle is ignored: a 40 x 20 x 10 mm block asked for a 3°
+    draft came out 8000 mm³.
+  - With it on, the block is 7689 mm³, a 3° inward draft, and `GetDraftAngle` reads it
+    back.
+- **`IsBossFeature`.** `IExtrudeFeatureData2.IsBossFeature()` read False on that boss
+  extrude, so `get_feature_definition` takes boss or cut from the feature's type
+  (`Extrusion` or `Cut`).
+- **Read-only opens.** `OpenDoc6` with options 3 (Silent | ReadOnly) opens a file
+  `IsOpenedReadOnly`, and `Save3` then fails with errors 3. On a document already open
+  for editing it hands back that document, still writable. Reading definitions and
+  sketches without `AccessSelections` or `EditSketch` leaves `GetSaveFlag` False.
+- **Moving files.**
+  - `ISldWorks.MoveDocument` with an empty `VT_ARRAY | VT_BSTR` for the children moves a
+    closed file (0) and refuses an open one (2).
+  - It doesn't touch the documents that use the file: `move_document` repoints them
+    with `ReplaceReferencedDocument` on the closed files.
+  - `GetDocumentDependencies2` with `traverse` off lists direct references only: a
+    drawing gives its assembly. With it on, the assembly's parts too.
 
 ---
 
