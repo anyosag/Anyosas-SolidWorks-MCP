@@ -43,6 +43,17 @@ CATEGORY_META: dict[str, dict[str, str]] = {
         ),
         "prerequisite": "An active part document with an active sketch edit session.",
     },
+    "bodies": {
+        "title": "Bodies Tools",
+        "icon": ":material-cube-unfolded:",
+        "description": (
+            "Work with the solid bodies of a multibody part: list them, insert another "
+            "part as bodies, combine (add, subtract, common), move or copy, delete or "
+            "keep, split, measure the gap between two, and cut a body grown by a "
+            "clearance out of another (a mating negative)."
+        ),
+        "prerequisite": "An active Part document.",
+    },
     "drawing": {
         "title": "Drawing Tools",
         "icon": ":material-technical-draw:",

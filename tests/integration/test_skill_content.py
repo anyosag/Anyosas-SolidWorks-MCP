@@ -39,6 +39,7 @@ _RESPONSE_KEYS = {
     "length_m",
     "length_mm",
     "measured_change",
+    "normal_distance_m",
     "system_value",
     "thin_spots",
     "usage_instructions",

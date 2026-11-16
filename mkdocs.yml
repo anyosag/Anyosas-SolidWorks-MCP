@@ -46,6 +46,7 @@ nav:
       - All Tools: user-guide/tool-catalog/index.md
       - Modeling: user-guide/tool-catalog/modeling.md
       - Sketching: user-guide/tool-catalog/sketching.md
+      - Bodies: user-guide/tool-catalog/bodies.md
       - Drawing: user-guide/tool-catalog/drawing.md
       - Drawing Analysis: user-guide/tool-catalog/drawing-analysis.md
       - Drawing Automation: user-guide/tool-catalog/drawing-automation.md

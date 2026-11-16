@@ -164,6 +164,27 @@ To hide planes, axes or sketches (before a screenshot, say), use
 `set_visibility` with `types`; its reply gives each type's `before`, so a
 second call can put them back.
 
+## Reading a model without changing it
+
+To look inside someone's file, `open_model` with `read_only: true`:
+SolidWorks then saves nothing over it (the reply says whether it really is
+read-only; a file already open for editing isn't). Then:
+
+- `get_feature_definition` with a feature's `name`: an extrude's depth and
+  end condition, a fillet's radius, a pattern's count, a sketch's text
+  (string, font, height). It never opens the feature for editing.
+- `get_sketch` with a sketch's `name`: its plane and segments in sketch mm,
+  text included, without entering the sketch (`edit_sketch` does, and can
+  mark the part changed).
+- `measure_entities` on two faces: for parallel planes, `distance_m` is the
+  gap between them (`normal_distance_m`), not the distance between centres.
+
+`list_references` with a `file_path` lists what a part, assembly or drawing
+uses, and whether each file is there, without opening it. To move or rename
+a file and keep the assemblies and drawings that use it working,
+`move_document` (a `dry_run` first lists what it would change; the files
+involved must be closed).
+
 ## An assembly
 
 1. Save each part first (`save_part`): `insert_component` takes a file path.
@@ -223,5 +244,8 @@ Step by step instead:
 
 `export_step`, `export_stl` and the other `export_*` tools write the active
 document; the file extension decides the format, so name it to match.
-`export_image` saves a picture in a chosen view: useful to show the user the
-result.
+Each reads the file back and fails with `export_invalid` when it is missing,
+empty or not that format. An export with something selected writes only the
+selection, so they clear the selection first (and every feature tool clears
+what it selected when it ends). `export_image` saves a picture in a chosen
+view: useful to show the user the result.

@@ -4,7 +4,7 @@ Open, save, and manage SolidWorks documents. Load parts and assemblies, save-as 
 
 > **Prerequisite:** SolidWorks running. File-write operations need writable output paths.
 
-**Total tools in this category: 19**
+**Total tools in this category: 21**
 
 ---
 
@@ -352,6 +352,56 @@ Copy an assembly and every part it references into one folder, with the referenc
 {
   "source_path": "C:\\Temp\\mcp_demo\\file.sldprt",
   "target_dir": "example"
+}
+```
+
+---
+
+### `list_references`
+
+List the files a part, assembly or drawing references, read from the file without opening it.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file_path` | `str` | ✅ | `` | Full path of the part, assembly or drawing (.sldprt, .sldasm, .slddrw) |
+| `traverse` | `bool` | — | `False` | Also list what the referenced files reference, all the way down (a drawing's assembly's parts); off lists only the file's own |
+
+**Sample call:**
+
+```json
+{
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
+}
+```
+
+---
+
+### `move_document`
+
+Move or rename a part, sub-assembly or drawing file and repoint the documents that use it.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | `str` | ✅ | `` | Full path of the part, sub-assembly or drawing to move or rename |
+| `destination` | `str` | ✅ | `` | Its new full path, with the same extension; or an existing folder to move it into under its own name |
+| `referencing_documents` | `List[str]?` | — | `None` | Assemblies, drawings or parts you know use it, full paths; they are repointed too, wherever they are |
+| `search_folders` | `List[str]?` | — | `None` | Folders whose SolidWorks files are checked for references to it (not their subfolders). Left out: the source's own folder |
+| `dry_run` | `bool` | — | `True` | Only say what would move and which documents would be repointed (the default); false moves it |
+
+**Sample call:**
+
+```json
+{
+  "source": "example",
+  "destination": "example"
 }
 ```
 

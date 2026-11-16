@@ -4,7 +4,7 @@ Create and manipulate SolidWorks parts, assemblies, and drawings. These are the 
 
 > **Prerequisite:** An active SolidWorks session. Most feature tools require an open Part document.
 
-**Total tools in this category: 37**
+**Total tools in this category: 38**
 
 ---
 
@@ -19,6 +19,7 @@ Open a part, assembly or drawing from disk and make it the active document.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path to the SolidWorks file (.sldprt, .sldasm, .slddrw) |
+| `read_only` | `bool` | — | `False` | Open it read-only, to look at the file without risking it: SolidWorks then saves nothing over it. A document already open for editing stays as it is |
 
 **Sample call:**
 
@@ -697,6 +698,28 @@ Change an existing feature in place: an extrude's or cut's depth, end condition 
 | `radius` | `float?` | — | `None` | Fillet: the new radius, mm |
 | `edges` | `Literal['selection']?` | — | `None` | Fillet or chamfer: 'selection' replaces all its edges with the edges selected now (select_edges or select_face_edges first) |
 | `edge_rules` | `Dict[str, Any]?` | — | `None` | Fillet or chamfer: replace all its edges with those this select_edges query matches (it selects nothing). It takes select_edges' keys except append, any_of included, e.g. {'side': 'top', 'edge_type': 'linear'}. Not with edges |
+
+**Sample call:**
+
+```json
+{
+  "name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `get_feature_definition`
+
+Read a feature's parameters without changing it: what `edit_feature` would edit.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | `str` | ✅ | `` | The feature to read, e.g. 'Boss-Extrude1' |
 
 **Sample call:**
 

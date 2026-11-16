@@ -4,7 +4,7 @@ Record, replay, analyse, and optimize SolidWorks VBA macros. Create macro librar
 
 > **Prerequisite:** SolidWorks running. Macro execution requires a valid .swp file path.
 
-**Total tools in this category: 7**
+**Total tools in this category: 8**
 
 ---
 
@@ -74,6 +74,30 @@ Run a binary SolidWorks macro (.swp, or legacy .swb) in the running SolidWorks, 
 
 ```json
 {}
+```
+
+---
+
+### `run_api_snippet`
+
+Compile and run a C# snippet on the user's live SolidWorks, for a job no tool does.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `code` | `str` | ✅ | `` | C# 5 code: classes declaring `public static object Run(SldWorks app)`, that method alone, or only its body (statements using `app`, ending in `return ...;`). System, System.Linq and the SolidWorks sldworks and swconst namespaces are imported |
+| `timeout_s` | `float` | — | `DEFAULT_TIMEOUT_S` | Seconds before the snippet's process is killed (1-600) |
+| `compile_only` | `bool` | — | `False` | Only compile it and find Run; SolidWorks isn't touched |
+
+**Sample call:**
+
+```json
+{
+  "code": "example"
+}
 ```
 
 ---

@@ -4,7 +4,7 @@ Look up SolidWorks API interfaces, methods and properties, with each member's pa
 
 > **Prerequisite:** SolidWorks installed (it need not be running), Windows with pywin32. The server's --year picks which installed release answers.
 
-**Total tools in this category: 5**
+**Total tools in this category: 7**
 
 ---
 
@@ -126,6 +126,55 @@ Find SolidWorks API members related to an interface or member name.
 ```json
 {
   "name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `lookup_api_enum`
+
+Find SolidWorks API enum values (swconst) by enum or member name, or members by value.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | `str` | ✅ | `` | An enum name ('swBodyOperationType_e'), a member ('SWBODYCUT'), part of either ('swInsertPart'), 'Enum.Member', or a number to find the members with that value; case does not matter |
+| `max_results` | `int` | — | `20` | Most enums, and most members, to return |
+
+**Sample call:**
+
+```json
+{
+  "query": ""
+}
+```
+
+---
+
+### `get_api_remarks`
+
+Read a SolidWorks API member's help page: summary, parameters, Remarks, examples.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `interface` | `str` | ✅ | `` | COM interface, e.g. 'IFeatureManager' (the leading I may be left out); case does not matter |
+| `member` | `str?` | — | `None` | Method or property, e.g. 'InsertCombineFeature'. Unset: the interface's own page (how to get it, its remarks, its members) |
+| `example` | `str?` | — | `None` | Also return one example's code: a language (csharp, vbnet, vba, cpp) for the first example in it, or a topic from `examples` |
+| `build_if_missing` | `bool` | — | `True` | Build the index when there is none or the help changed (about a minute, once). False: say how to build it instead |
+| `year` | `int?` | — | `None` | SolidWorks year whose help to read, e.g. 2026. Unset: the server's --year, else the newest installed |
+
+**Sample call:**
+
+```json
+{
+  "interface": "example"
 }
 ```
 

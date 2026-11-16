@@ -4,7 +4,7 @@ Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge
 
 > **Prerequisite:** An active part document with an active sketch edit session.
 
-**Total tools in this category: 22**
+**Total tools in this category: 23**
 
 ---
 
@@ -214,6 +214,28 @@ Open an existing sketch for editing, listing its segments with ids.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | `str` | ✅ | `` | The sketch to open, e.g. 'Sketch3' |
+
+**Sample call:**
+
+```json
+{
+  "name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `get_sketch`
+
+Read a sketch's segments, plane and text without opening it for editing.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | `str` | ✅ | `` | The sketch to read, e.g. 'Sketch3' |
 
 **Sample call:**
 
