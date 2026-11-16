@@ -2293,10 +2293,6 @@ class _BodyEntityPicker:
             model = self._adapter.currentModel
             self._adapter._attempt(lambda: model.ForceRebuild3(True), default=None)
 
-    def entities(self, getter: str) -> list[Any]:
-        """Return every solid body's ``GetEdges()`` or ``GetFaces()``."""
-        return [e for body in self._body_list() for e in self._of(body, getter)]
-
     def nearest(
         self, getter: str, point: tuple[float, float, float]
     ) -> tuple[Any, float] | None:
