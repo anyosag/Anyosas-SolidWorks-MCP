@@ -198,6 +198,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "start_macro_recording": _adds("Start Macro Recording"),
     "stop_macro_recording": _discards("Stop Macro Recording"),
     "execute_macro": _discards("Run Macro"),
+    "run_api_snippet": _discards("Run C# API Snippet"),
     "analyze_macro": _reads("Analyze Macro"),
     "batch_execute_macros": _discards("Run Macros in Batch"),
     "optimize_macro": _reads("Optimize Macro"),

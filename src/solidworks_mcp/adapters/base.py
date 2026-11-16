@@ -1259,6 +1259,29 @@ class SolidWorksAdapter(ABC):
             error="check_printability is not implemented by this adapter",
         )
 
+    async def run_api_snippet(
+        self, code: str, timeout_s: float = 60.0, compile_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Compile a C# snippet against the SolidWorks API and run it on the running SolidWorks.
+
+        See ``solidworks.api_snippets``: the snippet runs in its own Windows
+        PowerShell process, attached with ``GetActiveObject``.
+
+        Args:
+            code (str): The snippet: classes declaring
+                ``static object Run(SldWorks app)``, that method, or its body.
+            timeout_s (float): Seconds before its process is killed.
+            compile_only (bool): Compile and find ``Run`` only.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``result``, ``result_type``,
+            ``stdout``, ``stderr``, ``stage`` and, on failure, what failed.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="run_api_snippet is not implemented by this adapter",
+        )
+
     async def edit_feature(
         self, name: str, changes: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

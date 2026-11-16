@@ -12,6 +12,14 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks.api_snippets import (
+    ALLOW_ENV,
+    DEFAULT_TIMEOUT_S,
+    MAX_CODE_CHARS,
+    MAX_TIMEOUT_S,
+    snippets_allowed,
+)
+from .error_classifier import NOT_SUPPORTED, Classification
 from .input_compat import CompatInput
 from .tool_boundary import (
     ToolOperationError,
@@ -136,6 +144,45 @@ class MacroPlaybackInput(CompatInput):
                     "text) must be saved as a .swp in the SolidWorks VBA "
                     "editor first."
                 )
+
+
+class ApiSnippetInput(CompatInput):
+    """Input schema for ``run_api_snippet``.
+
+    Attributes:
+        code (str): The C# snippet.
+        timeout_s (float): Seconds before its process is killed.
+        compile_only (bool): Only compile it.
+    """
+
+    code: str = Field(
+        min_length=1,
+        max_length=MAX_CODE_CHARS,
+        description=(
+            "C# 5 code: classes declaring `public static object Run(SldWorks "
+            "app)`, that method alone, or only its body (statements using "
+            "`app`, ending in `return ...;`). System, System.Linq and the "
+            "SolidWorks sldworks and swconst namespaces are imported"
+        ),
+    )
+    timeout_s: float = Field(
+        default=DEFAULT_TIMEOUT_S,
+        ge=1.0,
+        le=MAX_TIMEOUT_S,
+        description="Seconds before the snippet's process is killed (1-600)",
+    )
+    compile_only: bool = Field(
+        default=False,
+        description="Only compile it and find Run; SolidWorks isn't touched",
+    )
+
+
+_SNIPPETS_OFF_HINT = (
+    "Nothing ran. API snippets run arbitrary code on the user's SolidWorks, so "
+    f"they are off unless the server's environment sets {ALLOW_ENV}=1. Ask the "
+    "user whether to turn them on (it takes a server restart); meanwhile use the "
+    "tools, or give the user the code to run themselves."
+)
 
 
 class MacroAnalysisInput(CompatInput):
@@ -280,7 +327,8 @@ async def register_macro_recording_tools(
 
         Use it to run an existing macro file. VBA source (.bas, .vb, plain text, or what
         the `generate_vba_*` tools return) is refused as invalid input before SolidWorks
-        sees it. The macro must not wait for the user (no MsgBox or forms), or the call
+        sees it; to run API code given as text, write it in C# for `run_api_snippet`.
+        The macro must not wait for the user (no MsgBox or forms), or the call
         hangs. It runs `repeat_count` times, `pause_between_runs` seconds apart, and
         stops at the first run that fails. Needs: SolidWorks running and the macro file
         on disk. Changes: whatever the macro does; it can't be undone from here.
@@ -326,6 +374,56 @@ async def register_macro_recording_tools(
             "runs_completed": total,
             "data": result.data if result is not None else None,
             "execution_time": execution_time,
+        }
+
+    @mcp.tool()
+    async def run_api_snippet(input_data: ApiSnippetInput) -> dict[str, Any]:
+        """Compile and run a C# snippet on the user's live SolidWorks, for a job no tool does.
+
+        Off unless the server runs with SOLIDWORKS_MCP_ALLOW_API_SNIPPETS=1;
+        otherwise every call returns `not_supported`. The snippet runs in its own
+        Windows PowerShell process: compiled (C# 5) against SolidWorks' interop
+        assemblies and attached to the running SolidWorks (it never starts one),
+        its `Run(SldWorks app)` gets the application. Look calls up first
+        (`get_api_remarks`, `lookup_api_enum`, `lookup_api_method`), and check it
+        with `compile_only`. If it opens or activates a document, call
+        `activate_document` afterwards. Needs: Windows, SolidWorks running.
+        Changes: whatever the code does to the user's documents; it can't be
+        undone from here. Returns: `data` with `result` (what Run returned, as
+        JSON), `result_type`, `stdout`, `stderr` and `stage`. A failure is
+        `api_snippet_failed`, with the compile errors or the exception in `data`.
+
+        Example input: ``{"code": "return ((ModelDoc2)app.ActiveDoc).GetTitle();"}``
+
+        Args:
+            input_data: The snippet. `code` is required; `timeout_s` (60 s) and
+                `compile_only` (false) have defaults.
+
+        Returns:
+            dict[str, Any]: The run's outcome.
+        """
+        input_data = normalize_input(input_data, ApiSnippetInput)
+        if not snippets_allowed():
+            raise ToolOperationError(
+                "run_api_snippet is off: it runs arbitrary code on the user's "
+                f"SolidWorks. Set {ALLOW_ENV}=1 in the MCP server's environment and "
+                "restart the server to turn it on.",
+                classification=Classification(NOT_SUPPORTED, _SNIPPETS_OFF_HINT),
+            )
+        result = await adapter.run_api_snippet(
+            input_data.code, input_data.timeout_s, input_data.compile_only
+        )
+        require_success(result, with_data=True)
+        data = result.data or {}
+        if input_data.compile_only:
+            message = f"Compiled; entry point {data.get('entry_point', 'Run')}"
+        else:
+            message = f"Snippet ran; it returned {data.get('result_type') or 'null'}"
+        return {
+            "status": "success",
+            "message": message,
+            "data": data,
+            "execution_time": result.execution_time,
         }
 
     @mcp.tool()
@@ -463,5 +561,5 @@ async def register_macro_recording_tools(
             f"no library was created at {library_path or '(unspecified path)'}."
         )
 
-    tool_count = 8  # Macro recording and management tools
+    tool_count = 9  # Macro recording and management tools, and run_api_snippet
     return tool_count

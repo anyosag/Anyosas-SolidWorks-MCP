@@ -771,6 +771,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             ),
         )
 
+    async def run_api_snippet(
+        self, code: str, timeout_s: float = 60.0, compile_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Run an API snippet using pool."""
+        return await self._execute_with_pool(
+            "run_api_snippet",
+            lambda adapter: adapter.run_api_snippet(code, timeout_s, compile_only),
+        )
+
     async def edit_feature(
         self, name: str, changes: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

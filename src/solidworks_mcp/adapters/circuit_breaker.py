@@ -858,6 +858,25 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             },
         )
 
+    async def run_api_snippet(
+        self, code: str, timeout_s: float = 60.0, compile_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Run an API snippet through the circuit breaker.
+
+        A snippet that fails to compile or throws is the snippet's fault, not
+        the connection's, so only an exception counts against the breaker.
+        """
+        return await self._execute_with_circuit_breaker(
+            "run_api_snippet",
+            lambda: self.adapter.run_api_snippet(code, timeout_s, compile_only),
+            input_dict={
+                "code": code[:2000],
+                "timeout_s": timeout_s,
+                "compile_only": compile_only,
+            },
+            error_results_are_failures=False,
+        )
+
     async def edit_feature(
         self, name: str, changes: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

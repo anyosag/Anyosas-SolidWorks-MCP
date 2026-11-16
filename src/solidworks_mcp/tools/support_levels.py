@@ -180,6 +180,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "create_macro_library": _PLANNED,
     "execute_macro": _STABLE,
     "optimize_macro": _PLANNED,
+    "run_api_snippet": _UNCHECKED,
     "start_macro_recording": _PLANNED,
     "stop_macro_recording": _PLANNED,
     # modeling
