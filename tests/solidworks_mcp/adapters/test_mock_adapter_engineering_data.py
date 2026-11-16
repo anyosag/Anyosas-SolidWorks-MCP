@@ -83,12 +83,15 @@ async def test_set_custom_property_needs_a_document_and_a_name(part) -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_flat_pattern_validates_the_extension(part) -> None:
+async def test_export_flat_pattern_validates_the_extension(part, tmp_path) -> None:
+    out = str(tmp_path / "flat.dxf")
     bad = await part.export_flat_pattern("flat.pdf")
-    good = await part.export_flat_pattern("flat.dxf")
+    good = await part.export_flat_pattern(out)
 
     assert bad.error == "file_path must end in .dxf or .dwg"
-    assert good.data == {"file_path": "flat.dxf", "size_bytes": 0, "mock": True}
+    size = (tmp_path / "flat.dxf").stat().st_size
+    assert size > 0
+    assert good.data == {"file_path": out, "size_bytes": size, "mock": True}
 
 
 @pytest.mark.asyncio

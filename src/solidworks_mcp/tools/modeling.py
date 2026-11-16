@@ -21,6 +21,7 @@ from ..adapters.solidworks.cut_check import shortfall_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
+    require_capability,
     require_success,
     with_tool_boundary,
 )
@@ -207,10 +208,19 @@ class OpenModelInput(BaseModel):
 
     Attributes:
         file_path (str): The file path value.
+        read_only (bool): Open it so nothing can be saved over the file.
     """
 
     file_path: str = Field(
         description="Full path to the SolidWorks file (.sldprt, .sldasm, .slddrw)"
+    )
+    read_only: bool = Field(
+        default=False,
+        description=(
+            "Open it read-only, to look at the file without risking it: "
+            "SolidWorks then saves nothing over it. A document already open "
+            "for editing stays as it is"
+        ),
     )
 
 
@@ -1085,6 +1095,21 @@ class EditFeatureInput(CompatInput):
         )
 
 
+class FeatureDefinitionInput(CompatInput):
+    """Input schema for reading a feature's parameters.
+
+    Attributes:
+        name (str): The feature to read.
+    """
+
+    name: str = Field(description="The feature to read, e.g. 'Boss-Extrude1'")
+
+    def model_post_init(self, __context: Any) -> None:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name is required")
+
+
 class SetRollbackInput(CompatInput):
     """Input schema for moving the rollback bar.
 
@@ -1655,21 +1680,33 @@ async def register_modeling_tools(
         """Open a part, assembly or drawing from disk and make it the active document.
 
         Use it to start work on an existing file. To switch to a document that is
-        already open, use `activate_document`. Needs: the file on disk (a vault file
-        must be checked out). Changes: opens the document; nothing is written. Returns:
-        `model` with `title`, `type`, `path` and `configuration`, and a `warning`
-        quoting a dialog SolidWorks showed (and the server cancelled) when the file
-        opened anyway.
+        already open, use `activate_document`. With `read_only: true` it opens the
+        file so SolidWorks saves nothing over it, to inspect someone's file safely
+        (`get_feature_definition`, `get_sketch`). Needs: the file on disk (a vault
+        file must be checked out). Changes: opens the document; nothing is written.
+        Returns: `model` with `title`, `type`, `path`, `configuration` and
+        `read_only` (read back from SolidWorks), and a `warning` quoting a dialog
+        SolidWorks showed (and the server cancelled) when the file opened anyway, or
+        when a read-only open found the document already open for editing.
 
         Args:
             input_data: The file. `file_path` (.sldprt, .sldasm or .slddrw) is
-                required.
+                required; `read_only` is off.
 
         Returns:
             dict[str, Any]: The opened document.
         """
         input_data = normalize_input(input_data, OpenModelInput)
-        result = await adapter.open_model(input_data.file_path)
+        if input_data.read_only:
+            require_capability(
+                adapter,
+                "open_model_read_only",
+                "The active adapter cannot open a file read-only; nothing was "
+                "opened. Open it without read_only, and don't save it.",
+            )
+            result = await adapter.open_model_read_only(input_data.file_path)
+        else:
+            result = await adapter.open_model(input_data.file_path)
 
         require_success(result, context="Failed to open model")
         model = result.data
@@ -1677,23 +1714,41 @@ async def register_modeling_tools(
         model_type = _result_value(model, "type", default="Part")
         path = _result_value(model, "path", "file_path", default=input_data.file_path)
         configuration = _result_value(model, "configuration", default="Default")
+        properties = _result_value(model, "properties", default=None)
+        read_only = (
+            properties.get("read_only") if isinstance(properties, dict) else None
+        )
+        if not isinstance(read_only, bool):
+            read_only = input_data.read_only
         reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Opened {model_type}: {title}",
+            "message": (
+                f"Opened {model_type}: {title}" + (" (read-only)" if read_only else "")
+            ),
             "model": {
                 "title": title,
                 "name": title,
                 "type": model_type,
                 "path": path,
                 "configuration": configuration,
+                "read_only": bool(read_only),
             },
             "execution_time": result.execution_time,
         }
+        warnings: list[str] = []
         # A dialog SolidWorks showed while opening, cancelled; the file opened.
         metadata = getattr(result, "metadata", None)
-        warning = metadata.get("warning") if isinstance(metadata, dict) else None
-        if isinstance(warning, str) and warning:
-            reply["warning"] = warning
+        dialog_warning = metadata.get("warning") if isinstance(metadata, dict) else None
+        if isinstance(dialog_warning, str) and dialog_warning:
+            warnings.append(dialog_warning)
+        if input_data.read_only and not read_only:
+            warnings.append(
+                f"{title} was already open in SolidWorks for editing, so it is "
+                "not read-only: saving would write the file. Close it first "
+                "(close_model) to open it read-only."
+            )
+        if warnings:
+            reply["warning"] = " ".join(warnings)
         return reply
 
     @mcp.tool()
@@ -2876,6 +2931,51 @@ async def register_modeling_tools(
                 "own tangent edges."
             )
         return reply
+
+    @mcp.tool()
+    async def get_feature_definition(
+        input_data: FeatureDefinitionInput,
+    ) -> dict[str, Any]:
+        """Read a feature's parameters without changing it: what `edit_feature` would edit.
+
+        Use it to learn how an existing model was built before changing it: an
+        extrude's or cut's depth, end condition, direction, both directions and
+        draft; a revolve's angle; a fillet's radius and edge count; a chamfer's
+        distances or angle and edge count; a linear or circular pattern's count and
+        spacing; a sketch's plane, segment counts and text (for its coordinates,
+        `get_sketch`). Any other type gives its type and dimensions. Needs: an open
+        part with the feature. Read-only. The feature isn't opened for editing, so
+        the part isn't marked changed. Returns: `data` with `feature`, `type`,
+        `suppressed`, `known_type`, `parameters` (mm and degrees), `sketch` (its
+        name and text) when it is built from one, `dimensions` (the names
+        `set_dimension` takes, with values) and a `note` when parameters couldn't be
+        read.
+
+        Args:
+            input_data: The feature. `name` is required.
+
+        Returns:
+            dict[str, Any]: The feature's parameters.
+        """
+        input_data = normalize_input(input_data, FeatureDefinitionInput)
+        require_capability(
+            adapter,
+            "get_feature_definition",
+            "The active adapter cannot read feature definitions; nothing was read.",
+        )
+        result = await adapter.get_feature_definition(input_data.name)
+        require_success(result, context=f"Failed to read {input_data.name}")
+        data = result.data if isinstance(result.data, dict) else {}
+        return {
+            "status": "success",
+            "message": (
+                f"Read {input_data.name} ({data.get('type') or 'feature'}): "
+                f"{len(data.get('parameters') or {})} parameter(s), "
+                f"{len(data.get('dimensions') or [])} dimension(s)"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
 
     @mcp.tool()
     async def set_rollback(

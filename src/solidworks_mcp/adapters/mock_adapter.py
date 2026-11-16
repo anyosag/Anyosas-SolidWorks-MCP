@@ -10,6 +10,7 @@ import asyncio
 import math
 import os
 import random
+import shutil
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -61,6 +62,68 @@ _MOCK_STL = (
     )
     + "endsolid mock\n"
 )
+
+
+def _iges_line(text: str, section: str, number: int) -> str:
+    """One 80-column IGES line: text, the section letter in column 73, a number."""
+    return f"{text:<72}{section}{number:>7}\n"
+
+
+#: A 1 x 1 baseline JPEG (grey): one-code Huffman tables, a DC-only block.
+_MOCK_JPEG = (
+    b"\xff\xd8"
+    + b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    + b"\xff\xdb\x00\x43\x00"
+    + b"\x01" * 64
+    + b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
+    + b"\xff\xc4\x00\x14\x00\x01"
+    + b"\x00" * 15
+    + b"\x00"
+    + b"\xff\xc4\x00\x14\x10\x01"
+    + b"\x00" * 15
+    + b"\x00"
+    + b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00"
+    + b"\x3f\xff\xd9"
+)
+
+#: What the mock writes for each export, by extension: the smallest file
+#: each format's own check (``utils/export_check``) accepts.
+_MOCK_EXPORTS: dict[str, bytes] = {
+    ".step": (
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('mock'),'2;1');\n"
+        "FILE_NAME('mock.step','',(''),(''),'','','');\n"
+        "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\n"
+        "ENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+    ).encode("ascii"),
+    ".igs": (
+        _iges_line("mock IGES", "S", 1)
+        + _iges_line("1H,,1H;;", "G", 1)
+        + _iges_line("S      1G      1D      0P      0", "T", 1)
+    ).encode("ascii"),
+    ".pdf": b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF\n",
+    ".dwg": b"AC1032" + b"\x00" * 122,
+    ".dxf": b"  0\nSECTION\n  2\nHEADER\n  0\nENDSEC\n  0\nEOF\n",
+    ".jpg": _MOCK_JPEG,
+    ".bmp": (
+        b"BM:\x00\x00\x00\x00\x00\x00\x006\x00\x00\x00(\x00\x00\x00"
+        b"\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x18\x00\x00\x00\x00\x00"
+        b"\x04\x00\x00\x00\x13\x0b\x00\x00\x13\x0b\x00\x00\x00\x00\x00\x00"
+        b"\x00\x00\x00\x00\xff\xff\xff\x00"
+    ),
+    ".tif": b"II*\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    ".glb": b"glTF\x02\x00\x00\x00\x0c\x00\x00\x00",
+    ".gltf": b'{"asset": {"version": "2.0"}}\n',
+}
+_MOCK_EXPORTS[".stp"] = _MOCK_EXPORTS[".step"]
+_MOCK_EXPORTS[".iges"] = _MOCK_EXPORTS[".igs"]
+_MOCK_EXPORTS[".jpeg"] = _MOCK_EXPORTS[".jpg"]
+_MOCK_EXPORTS[".tiff"] = _MOCK_EXPORTS[".tif"]
+
+
+def _mock_export_bytes(file_path: str) -> bytes | None:
+    """What the mock writes for an export to ``file_path`` (None: nothing)."""
+    return _MOCK_EXPORTS.get(os.path.splitext(file_path)[1].lower())
+
 
 #: Orientations the mock accepts for a drawing view. Kept in step with
 #: ``_NAMED_VIEWS`` in ``adapters/solidworks/io.py`` by a test — the two lists
@@ -462,6 +525,26 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             data=model,
             execution_time=self._delays["model_operation"],
         )
+
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Mock opening a model read-only: ``open_model``, marked read-only.
+
+        As in SolidWorks, a document already open stays as it was: one the
+        mock opened for writing comes back with ``read_only`` False.
+        """
+        already = self._models.get(file_path)
+        writable = already is not None and not (already.properties or {}).get(
+            "read_only"
+        )
+        result = await self.open_model(file_path)
+        if result.is_success and result.data is not None:
+            result.data.properties = {
+                **(result.data.properties or {}),
+                "read_only": not writable,
+            }
+        return result
 
     async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
         """Mock minimize/restore: changes the simulated window state.
@@ -1412,6 +1495,252 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "remaining": [],
             },
             execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    def _mock_sketch_definition(self, name: str) -> dict[str, Any]:
+        """A mock sketch as ``get_sketch`` reads it: its plane, no geometry kept."""
+        # The tree name of the plane it was made on, as create_sketch chose it.
+        key, names = plane_candidates_for(self._sketches[name])
+        return {
+            "sketch": name,
+            "kind": "2D",
+            "plane": names[0],
+            "references": [{"name": names[0], "type": "RefPlane"}],
+            "axes": default_plane_axes(key) if key else None,
+            "segments": [],
+            "segment_counts": {},
+        }
+
+    def _mock_parameters(self, kind: str, values: dict[str, Any]) -> dict[str, Any]:
+        """A mock feature's parameters in ``get_feature_definition``'s shape."""
+        if kind in ("Extrusion", "Cut"):
+            draft = values.get("draft_angle") or 0
+            return {
+                "direction1": {
+                    "depth_mm": values.get("depth"),
+                    "end_condition": values.get("end_condition"),
+                    "draft": bool(draft),
+                    **({"draft_angle_deg": draft} if draft else {}),
+                },
+                "both_directions": bool(values.get("both_directions")),
+                "reverse_direction": bool(values.get("reverse_direction")),
+                "thin": bool(values.get("thin_feature")),
+            }
+        if kind == "Revolution":
+            return {
+                "angle_deg": values.get("angle"),
+                "reverse_direction": bool(values.get("reverse_direction")),
+            }
+        edges = len(values.get("edges") or [])
+        if kind == "Fillet":
+            return {"radius_mm": values.get("size"), "edge_count": edges}
+        return {"distance_mm": values.get("size"), "edge_count": edges}
+
+    async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock reading a feature's parameters, in the live reply's shape.
+
+        Extrudes, cuts, revolves, fillets and chamfers give the values the
+        mock kept when it made them; a sketch gives its plane; any other
+        feature its type, as the live adapter does for types it doesn't read.
+        """
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        dimensions = [
+            {"name": key, "value": value, "units": "mm"}
+            for key, value in self._dimensions.items()
+            if key.endswith(f"@{name}")
+        ]
+        reply: dict[str, Any] = {
+            "feature": name,
+            "suppressed": name in self._suppressed_features,
+            "parameters": {},
+            "dimensions": dimensions,
+        }
+        feature = next((f for f in self._features.values() if f.name == name), None)
+        if name in self._sketches:
+            reply.update(type="ProfileFeature", known_type=True)
+            reply["parameters"] = {
+                "plane": self._mock_sketch_definition(name)["plane"],
+                "segment_counts": {},
+                "texts": [],
+            }
+        elif feature is not None:
+            kind = self._MOCK_TYPE_NAMES.get(feature.type, feature.type)
+            reply.update(type=kind, known_type=kind in self._MOCK_TYPE_NAMES.values())
+            if reply["known_type"]:
+                reply["parameters"] = self._mock_parameters(
+                    kind, feature.parameters or {}
+                )
+            else:
+                reply["note"] = f"A {kind} gives its dimensions only."
+        elif self._mock_feature_kind(name) is not None:
+            reply.update(type=self._mock_feature_kind(name), known_type=False)
+            reply["note"] = f"A {reply['type']} gives its dimensions only."
+        else:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Feature {name!r} not found; list_features names them.",
+            )
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=reply,
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock reading a sketch without opening it: its plane, no geometry kept."""
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if name not in self._sketches:
+            kind = self._mock_feature_kind(name)
+            error = (
+                f"Feature {name!r} not found; list_features names them."
+                if kind is None
+                else f"{name!r} is a {kind}, not a sketch; get_feature_definition "
+                "reads other features."
+            )
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=self._mock_sketch_definition(name),
+            execution_time=self._delays["sketch_operation"],
+        )
+
+    def _mock_references(self, path: str) -> list[tuple[str, str]]:
+        """What a file references in the mock, as ``(name, path)``.
+
+        Tests set ``document_references``: a file's path -> the paths it
+        references, as ``GetDocumentDependencies2`` would read them.
+        """
+        from .solidworks.references import normalize
+
+        table = self.__dict__.get("document_references", {})
+        for key, paths in table.items():
+            if normalize(key) == normalize(path):
+                return [(os.path.splitext(os.path.basename(p))[0], p) for p in paths]
+        return []
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock listing a file's references from ``document_references``.
+
+        The file must be on disk, as for the live adapter; each reference is
+        checked on disk the same way (``references.describe_reference``).
+        """
+        from .solidworks.references import (
+            check_document,
+            describe_reference,
+            normalize,
+        )
+
+        if not self._connected:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        resolved = os.path.abspath(file_path)
+        try:
+            check_document(resolved)
+        except (LookupError, ValueError) as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        pairs = self._mock_references(resolved)
+        seen = {normalize(path) for _name, path in pairs}
+        index = 0
+        while traverse and index < len(pairs):
+            for name, path in self._mock_references(pairs[index][1]):
+                if normalize(path) not in seen:
+                    seen.add(normalize(path))
+                    pairs.append((name, path))
+            index += 1
+        references = [describe_reference(n, p, resolved) for n, p in pairs]
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "file": resolved,
+                "traverse": bool(traverse),
+                "references": references,
+                "count": len(references),
+                "missing": [r["path"] for r in references if not r["exists"]],
+            },
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving a file: the live plan, then the file moved on disk.
+
+        The plan is the live one (``references.plan_move``) over
+        ``document_references``; every model the mock has open counts as
+        open in SolidWorks. A move moves the file and repoints the
+        documents' entries in ``document_references``.
+        """
+        from .solidworks.references import (
+            blocked_message,
+            dry_run_reply,
+            normalize,
+            plan_move,
+        )
+
+        if not self._connected:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        try:
+            plan = plan_move(
+                source,
+                destination,
+                referencing,
+                search_folders,
+                self._mock_references,
+                {normalize(path): False for path in self._models},
+            )
+        except (LookupError, ValueError) as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        if dry_run:
+            return AdapterResult(
+                status=AdapterResultStatus.SUCCESS, data=dry_run_reply(plan)
+            )
+        if plan["blocked"]:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=blocked_message(plan)
+            )
+        src, dst = plan["source"], plan["destination"]
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(src, dst)
+        table = self.__dict__.setdefault("document_references", {})
+        users = {
+            normalize(u["path"]): normalize(u["references_as"]) for u in plan["users"]
+        }
+        for key in list(table):
+            old = users.get(normalize(key))
+            if old is not None:
+                table[key] = [dst if normalize(p) == old else p for p in table[key]]
+            if normalize(key) == normalize(src):
+                table[dst] = table.pop(key)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                **plan,
+                "dry_run": False,
+                "moved": True,
+                "method": "mock move",
+                "updated": [
+                    {"path": u["path"], "verified": True} for u in plan["users"]
+                ],
+            },
         )
 
     async def check_printability(
@@ -3086,7 +3415,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             b"\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff\xff\x00\x05\xfe\x02\xfe\xdc\xcaY\xe7"  # IDAT
             b"\x00\x00\x00\x00IEND\xaeB`\x82"  # IEND
         )
-        out.write_bytes(_PNG_1X1_WHITE)
+        # A .jpg or .bmp gets that format's bytes, as SolidWorks writes it.
+        out.write_bytes(_mock_export_bytes(file_path) or _PNG_1X1_WHITE)
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
@@ -3235,6 +3565,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             }
             if document_type == "assembly":
                 data["mesh"] = {"applied": [_STL_ONE_FILE[3]], "restored": True}
+        elif (written := _mock_export_bytes(file_path)) is not None:
+            # The smallest file of its format, so the export tools' read-back
+            # check (utils/export_check) sees what a real export leaves.
+            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+            with open(file_path, "wb") as handle:
+                handle.write(written)
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
@@ -5616,7 +5952,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     async def export_flat_pattern(
         self, file_path: str
     ) -> AdapterResult[dict[str, Any]]:
-        """Mock flat-pattern export: validates the target, writes nothing."""
+        """Mock flat-pattern export: validates the target, writes the smallest DXF/DWG."""
         guard = self._mock_doc_error({"Part"}, "export_flat_pattern")
         if guard is not None:
             return guard
@@ -5625,9 +5961,13 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error="file_path must end in .dxf or .dwg",
             )
+        written = _MOCK_EXPORTS[os.path.splitext(file_path)[1].lower()]
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "wb") as handle:
+            handle.write(written)
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"file_path": file_path, "size_bytes": 0, "mock": True},
+            data={"file_path": file_path, "size_bytes": len(written), "mock": True},
         )
 
     async def insert_model_dimensions(

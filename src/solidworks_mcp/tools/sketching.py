@@ -14,6 +14,7 @@ from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
+    require_capability,
     require_success,
     with_tool_boundary,
 )
@@ -431,6 +432,21 @@ class EditSketchInput(CompatInput):
     """
 
     name: str = Field(description="The sketch to open, e.g. 'Sketch3'")
+
+    def model_post_init(self, __context: Any) -> None:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name is required")
+
+
+class GetSketchInput(CompatInput):
+    """Input schema for reading a sketch without opening it.
+
+    Attributes:
+        name (str): The sketch's tree name.
+    """
+
+    name: str = Field(description="The sketch to read, e.g. 'Sketch3'")
 
     def model_post_init(self, __context: Any) -> None:
         self.name = self.name.strip()
@@ -1066,6 +1082,51 @@ async def register_sketching_tools(
             "status": "success",
             "message": f"Opened {input_data.name} for editing ({len(segments)} segments)",
             "sketch": {"name": input_data.name, "segments": segments},
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def get_sketch(input_data: GetSketchInput) -> dict[str, Any]:
+        """Read a sketch's segments, plane and text without opening it for editing.
+
+        Use it to see how an existing profile is drawn before changing it, or to
+        read a sketch's lettering (string, font, height, position). To change the
+        sketch, use `edit_sketch`, which opens it and gives each segment an id.
+        Needs: an open part with the sketch. Read-only. The sketch isn't opened, so
+        the part isn't marked changed. Returns: `sketch` with `name`, `kind` (2D or
+        3D), `plane` (the reference plane it is on; null on a face), `references`,
+        `axes` (where sketch x, y and the normal point in the model, and its
+        origin), `segments` (each with `index`, `type`, `start_mm`, `end_mm` or
+        `center_mm` in sketch coordinates, `construction`, and for text `text`,
+        `font`, `height_mm`, `position_mm` and `angle_deg`) and `segment_counts`.
+
+        Args:
+            input_data: The sketch. `name` is required.
+
+        Returns:
+            dict[str, Any]: The sketch and its segments.
+        """
+        input_data = normalize_input(input_data, GetSketchInput)
+        require_capability(
+            adapter,
+            "get_sketch",
+            "The active adapter cannot read sketches; nothing was read.",
+        )
+        result = await adapter.get_sketch(input_data.name)
+        require_success(result, context=f"Failed to read {input_data.name}")
+        data = result.data if isinstance(result.data, dict) else {}
+        segments = data.get("segments") or []
+        plane = data.get("plane")
+        return {
+            "status": "success",
+            "message": (
+                f"{input_data.name}: {len(segments)} segment(s)"
+                + (f" on {plane}" if plane else "")
+            ),
+            "sketch": {
+                "name": input_data.name,
+                **{k: v for k, v in data.items() if k != "sketch"},
+            },
             "execution_time": result.execution_time,
         }
 

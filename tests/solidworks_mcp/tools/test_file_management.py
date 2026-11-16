@@ -522,7 +522,7 @@ class TestFileManagementTools:
 
     @pytest.mark.asyncio
     async def test_save_as_and_get_file_properties_success(
-        self, mcp_server, mock_adapter, mock_config
+        self, mcp_server, mock_adapter, mock_config, tmp_path
     ):
         """Test save_as and get_file_properties simulated success branches."""
         await register_file_management_tools(mcp_server, mock_adapter, mock_config)
@@ -541,7 +541,8 @@ class TestFileManagementTools:
 
         save_as_result = await save_as_tool(
             input_data=SaveAsInput(
-                file_path="exports/new_part.step",
+                # The mock writes the exported file, so keep it out of the repo.
+                file_path=str(tmp_path / "exports" / "new_part.step"),
                 format_type="step",
                 overwrite=True,
             )

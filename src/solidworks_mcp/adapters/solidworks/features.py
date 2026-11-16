@@ -230,6 +230,41 @@ class SolidWorksFeaturesMixin:
             self, "set_rollback", lambda: set_rollback(self, before, after)
         )
 
+    async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a feature's parameters without editing it (``inspection``).
+
+        Args:
+            name: The feature's tree name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``type``,
+            ``suppressed``, ``known_type``, ``parameters``, ``dimensions``,
+            and ``sketch`` or ``note`` when they apply.
+        """
+        from .inspection import feature_definition
+
+        return _feature_edit_operation(
+            self,
+            "get_feature_definition",
+            lambda: feature_definition(self, name),
+        )
+
+    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a sketch's plane and segments without opening it (``inspection``).
+
+        Args:
+            name: The sketch's tree name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``sketch``, ``kind``, ``plane``,
+            ``references``, ``axes``, ``segments`` and ``segment_counts``.
+        """
+        from .inspection import read_sketch
+
+        return _feature_edit_operation(
+            self, "get_sketch", lambda: read_sketch(self, name)
+        )
+
     async def rename_feature(
         self, old_name: str, new_name: str
     ) -> AdapterResult[dict[str, Any]]:

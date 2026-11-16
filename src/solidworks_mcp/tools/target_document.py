@@ -40,9 +40,11 @@ CHOOSE_THEIR_OWN = frozenset(
         "create_part",
         "generate_drawing_package",
         "list_open_documents",
+        "list_references",
         "load_assembly",
         "load_part",
         "manage_file_properties",
+        "move_document",
         "open_model",
         "pack_and_go_assembly",
     }

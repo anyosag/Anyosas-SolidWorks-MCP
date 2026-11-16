@@ -231,6 +231,72 @@ class PackAndGoInput(CompatInput):
     )
 
 
+class ListReferencesInput(CompatInput):
+    """Input schema for listing a file's references.
+
+    Attributes:
+        file_path (str): The part, assembly or drawing on disk.
+        traverse (bool): Also list what the referenced files reference.
+    """
+
+    file_path: str = Field(
+        min_length=1,
+        description="Full path of the part, assembly or drawing (.sldprt, .sldasm, .slddrw)",
+    )
+    traverse: bool = Field(
+        default=False,
+        description=(
+            "Also list what the referenced files reference, all the way down "
+            "(a drawing's assembly's parts); off lists only the file's own"
+        ),
+    )
+
+
+class MoveDocumentInput(CompatInput):
+    """Input schema for moving or renaming a SolidWorks file.
+
+    Attributes:
+        source (str): The file to move.
+        destination (str): Its new path, or a folder.
+        referencing_documents (list[str] | None): Documents known to use it.
+        search_folders (list[str] | None): Folders searched for documents that use it.
+        dry_run (bool): Only say what would change.
+    """
+
+    source: str = Field(
+        min_length=1,
+        description="Full path of the part, sub-assembly or drawing to move or rename",
+    )
+    destination: str = Field(
+        min_length=1,
+        description=(
+            "Its new full path, with the same extension; or an existing folder to "
+            "move it into under its own name"
+        ),
+    )
+    referencing_documents: list[str] | None = Field(
+        default=None,
+        description=(
+            "Assemblies, drawings or parts you know use it, full paths; they are "
+            "repointed too, wherever they are"
+        ),
+    )
+    search_folders: list[str] | None = Field(
+        default=None,
+        description=(
+            "Folders whose SolidWorks files are checked for references to it "
+            "(not their subfolders). Left out: the source's own folder"
+        ),
+    )
+    dry_run: bool = Field(
+        default=True,
+        description=(
+            "Only say what would move and which documents would be repointed "
+            "(the default); false moves it"
+        ),
+    )
+
+
 class ListFeaturesInput(CompatInput):
     """Input schema for feature tree listing.
 
@@ -1466,6 +1532,125 @@ async def register_file_management_tools(
         return report
 
     @mcp.tool()
+    async def list_references(input_data: ListReferencesInput) -> dict[str, Any]:
+        """List the files a part, assembly or drawing references, read from the file without opening it.
+
+        Use it to see what a file needs before opening, moving or sending it, and
+        which references are broken: each says whether its file is still there and,
+        when it isn't, whether a file of that name sits beside the referencing
+        file, where SolidWorks would find it. To move or rename a file and keep
+        its users working, use `move_document`. Needs: SolidWorks running and the
+        file on disk; it doesn't have to be open. Read-only. Returns: `data` with
+        `file`, `references` (each with `name`, `path` as saved in the file, `type`,
+        `exists`, `read_only` or `found_beside`), `count` and `missing`.
+
+        Args:
+            input_data: The file. `file_path` is required; `traverse` is off.
+
+        Returns:
+            dict[str, Any]: The file's references.
+        """
+        input_data = _coerce_input(ListReferencesInput, input_data)
+        require_capability(
+            adapter,
+            "list_references",
+            "The active adapter cannot read file references; nothing was read.",
+        )
+        result = await adapter.list_references(
+            input_data.file_path, input_data.traverse
+        )
+        require_success(result, context="Failed to list references")
+        data = result.data if isinstance(result.data, dict) else {}
+        missing = data.get("missing") or []
+        return {
+            "status": "success",
+            "message": (
+                f"{data.get('count', 0)} reference(s)"
+                + (f", {len(missing)} missing" if missing else ", all found")
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def move_document(input_data: MoveDocumentInput) -> dict[str, Any]:
+        """Move or rename a part, sub-assembly or drawing file and repoint the documents that use it.
+
+        Use it instead of moving the file in Explorer, which breaks every assembly
+        and drawing that uses it. A dry run by default: it lists the documents that
+        would be repointed and what stops the move; `dry_run: false` moves it. The
+        users are found among `referencing_documents` and the SolidWorks files in
+        `search_folders` (the source's folder when left out); one elsewhere is not
+        found, so name it or its folder. It refuses a source or user open in
+        SolidWorks (close it first), a read-only user, and a destination that
+        exists. Changes: with dry_run false, moves the file (MoveDocument) and
+        rewrites each user's reference (ReplaceReferencedDocument); if a rewrite
+        fails, the move is undone. Returns: `data` with `source`,
+        `destination`, `users`, `blocked`, `would_update` and `can_move` (dry run),
+        or `moved`, `method` and `updated` (each `verified` from the file).
+
+        Args:
+            input_data: The move. `source` and `destination` are required;
+                `dry_run` is on.
+
+        Returns:
+            dict[str, Any]: The plan, or what was moved and repointed.
+        """
+        input_data = _coerce_input(MoveDocumentInput, input_data)
+        require_capability(
+            adapter,
+            "move_document",
+            "The active adapter cannot move documents; nothing was moved.",
+        )
+        result = await adapter.move_document(
+            input_data.source,
+            input_data.destination,
+            input_data.referencing_documents,
+            input_data.search_folders,
+            input_data.dry_run,
+        )
+        require_success(result, context="Failed to move the document")
+        data = result.data if isinstance(result.data, dict) else {}
+        users = data.get("users") or []
+        reply: dict[str, Any] = {
+            "status": "success",
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+        if data.get("dry_run", True):
+            reply["message"] = (
+                f"Dry run: moving {data.get('source')} to {data.get('destination')} "
+                f"would repoint {len(users)} document(s); nothing was changed"
+            )
+        else:
+            reply["message"] = (
+                f"Moved {data.get('source')} to {data.get('destination')} and "
+                f"repointed {len(data.get('updated') or [])} document(s)"
+            )
+        warnings = []
+        if data.get("blocked"):
+            warnings.append(
+                "It can't be moved yet: "
+                + "; ".join(f"{b['path']} {b['reason']}" for b in data["blocked"])
+                + "."
+            )
+        if data.get("scan_truncated"):
+            warnings.append(
+                "The search folders hold too many files: only the first ones were "
+                "checked, so some documents that use it may be missed. Name them in "
+                "referencing_documents, or search a smaller folder."
+            )
+        unverified = [u["path"] for u in data.get("updated") or [] if not u["verified"]]
+        if unverified:
+            warnings.append(
+                "SolidWorks repointed these, but reading them back did not show the "
+                f"new path: {', '.join(unverified)}; open one to check."
+            )
+        if warnings:
+            reply["warning"] = " ".join(warnings)
+        return reply
+
+    @mcp.tool()
     async def list_open_documents() -> dict[str, Any]:
         """List every document open in SolidWorks and say which one is active.
 
@@ -1563,5 +1748,5 @@ async def register_file_management_tools(
             "execution_time": result.execution_time,
         }
 
-    tool_count = 19  # Total number of registered tools in this module
+    tool_count = 21  # Total number of registered tools in this module
     return tool_count

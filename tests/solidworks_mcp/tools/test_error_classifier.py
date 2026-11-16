@@ -182,6 +182,16 @@ def classifier() -> ErrorClassifier:
             "drew stay in the sketch; undo or delete them",
             "operation_stopped",
         ),
+        (
+            "The export reported success, but C:\\out\\part.step is not a valid "
+            "STEP file: it has no END-ISO-10303-21; line, so it was cut short.",
+            "export_invalid",
+        ),
+        (
+            "The export reported success, but C:\\out\\shot.png is not a valid PNG "
+            "file: no file was written there.",
+            "export_invalid",
+        ),
     ],
 )
 def test_known_messages_are_categorised(

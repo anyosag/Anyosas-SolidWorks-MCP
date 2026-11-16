@@ -1455,6 +1455,20 @@ def _opened_after(dialog: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: ``swOpenDocOptions_e`` (SW 2026 swconst): open without dialogs, and open so
+#: that nothing can be saved over the file.
+OPEN_SILENT = 1
+OPEN_READ_ONLY = 2
+
+
+def _opened_read_only(adapter: Any, model: Any) -> bool | None:
+    """``IModelDoc2.IsOpenedReadOnly`` of ``model``; None when it can't be read."""
+    value = adapter._attempt(
+        lambda: adapter._get_attr_or_call(model, "IsOpenedReadOnly"), default=None
+    )
+    return value if isinstance(value, bool) else None
+
+
 class SolidWorksIOMixin:
     """Expose model open/save/create/configuration methods through a mixin."""
 
@@ -1610,6 +1624,39 @@ class SolidWorksIOMixin:
         Returns:
             AdapterResult[SolidWorksModel]: Model metadata for the opened document.
         """
+        return self._open_document(file_path, OPEN_SILENT)
+
+    async def open_model_read_only(
+        self, file_path: str
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a model read-only (``swOpenDocOptions_Silent | ReadOnly``).
+
+        SolidWorks then refuses to save over the file. A document already open
+        for writing is handed back as it is (``OpenDoc6`` warns it is already
+        open), so ``properties["read_only"]`` is read back from the document
+        (``IModelDoc2.IsOpenedReadOnly``) rather than assumed.
+
+        Args:
+            file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
+
+        Returns:
+            AdapterResult[SolidWorksModel]: As :meth:`open_model`.
+        """
+        return self._open_document(file_path, OPEN_SILENT | OPEN_READ_ONLY)
+
+    def _open_document(
+        self, file_path: str, options: int
+    ) -> AdapterResult[SolidWorksModel]:
+        """Open a file with ``OpenDoc6`` ``options`` and make it the active document.
+
+        Args:
+            file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
+            options: ``swOpenDocOptions_e`` flags.
+
+        Returns:
+            AdapterResult[SolidWorksModel]: Model metadata for the opened
+            document; ``properties["read_only"]`` from the document itself.
+        """
         adapter = self._adapter(self)
         if not adapter.is_connected():
             return AdapterResult(
@@ -1670,6 +1717,7 @@ class SolidWorksIOMixin:
                         if callable(getattr(model, "GetSaveTime", None))
                         else None
                     ),
+                    "read_only": _opened_read_only(adapter, adapter.currentModel),
                 },
             )
 
@@ -1686,7 +1734,7 @@ class SolidWorksIOMixin:
             else:
                 errors = 0
                 warnings = 0
-            model = app.OpenDoc6(resolved_path, doc_type, 1, "", errors, warnings)
+            model = app.OpenDoc6(resolved_path, doc_type, options, "", errors, warnings)
             if not model:
                 raise Exception(f"Failed to open model: {resolved_path}")
             return _describe(model, doc_type, model_type)
@@ -2826,6 +2874,84 @@ class SolidWorksIOMixin:
         return cast(
             AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("get_application_info", _read),
+        )
+
+    def _file_operation(
+        self, operation_name: str, operation: Any
+    ) -> AdapterResult[dict[str, Any]]:
+        """Run a ``references`` operation on files; its errors read as sentences.
+
+        Args:
+            operation_name: For ``_handle_com_operation`` and its prefix.
+            operation: The zero-argument closure doing the work.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Its result; ``Not connected`` first
+            when SolidWorks isn't.
+        """
+        from .com_utils import strip_op_prefix
+
+        adapter = self._adapter(self)
+        if not adapter.is_connected():
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        result = cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation(operation_name, operation),
+        )
+        if not result.is_success:
+            result.error = strip_op_prefix(result.error, operation_name)
+        return result
+
+    async def list_references(
+        self, file_path: str, traverse: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """List a file's references without opening it (``references``).
+
+        Args:
+            file_path: The part, assembly or drawing on disk.
+            traverse: Also list what the referenced files reference.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file``, ``traverse``,
+            ``references``, ``count`` and ``missing``.
+        """
+        from .references import list_references
+
+        return self._file_operation(
+            "list_references",
+            lambda: list_references(self, file_path, traverse),
+        )
+
+    async def move_document(
+        self,
+        source: str,
+        destination: str,
+        referencing: list[str] | None = None,
+        search_folders: list[str] | None = None,
+        dry_run: bool = True,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or rename a file and repoint the documents that use it (``references``).
+
+        Args:
+            source: The file to move.
+            destination: Its new path (same extension), or a folder.
+            referencing: Documents known to use it.
+            search_folders: Folders searched for more (the source's when None).
+            dry_run: Only say what would change.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The plan, and for a move what was
+            moved and repointed.
+        """
+        from .references import move_document
+
+        return self._file_operation(
+            "move_document",
+            lambda: move_document(
+                self, source, destination, referencing, search_folders, dry_run
+            ),
         )
 
     async def pack_and_go_assembly(
