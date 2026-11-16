@@ -19,6 +19,7 @@ from solidworks_mcp.tools.tool_boundary import tool_family
 _MODULES = [
     "analysis",
     "automation",
+    "bodies",
     "docs_discovery",
     "drawing",
     "drawing_analysis",

@@ -24,6 +24,7 @@ from .base import (
     SolidWorksAdapter,
 )
 from .solidworks import (
+    SolidWorksBodiesMixin,
     SolidWorksDocumentationMixin,
     SolidWorksDrawingStandardMixin,
     SolidWorksFeaturesMixin,
@@ -175,6 +176,7 @@ _DOCUMENT_OPERATIONS = frozenset(
         "create_drawing",
         "create_part",
         "create_technical_drawing",
+        "insert_part",
         "open_model",
         "pack_and_go_assembly",
         "save_body_as_part",
@@ -200,6 +202,7 @@ def _settle_seconds(variable: str, default: float) -> float:
 #: stay off this list.
 _READ_ONLY_OPERATIONS = frozenset(
     {
+        "body_clearance",
         "get_application_info",
         "get_custom_properties",
         "get_dimension",
@@ -208,6 +211,7 @@ _READ_ONLY_OPERATIONS = frozenset(
         "get_model_info",
         "get_model_update_stamp",
         "list_available_materials",
+        "list_bodies",
         "list_components",
         "list_configurations",
         "list_drawing_views",
@@ -2196,6 +2200,7 @@ class _FeatureSelectionService:
 
 
 class PyWin32Adapter(
+    SolidWorksBodiesMixin,
     SolidWorksDrawingStandardMixin,
     SolidWorksDocumentationMixin,
     SolidWorksSketchMixin,

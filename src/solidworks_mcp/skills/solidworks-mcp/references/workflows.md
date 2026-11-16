@@ -188,6 +188,23 @@ second call can put them back.
    (a plane and an offset) shows it cut open.
 6. `save_assembly`, or `pack_and_go_assembly` for a self-contained folder.
 
+## One part's shape cut into another (a lid over raised labels)
+
+Work in one multibody part, not an assembly:
+
+1. Open the part to cut (the lid) and `insert_part` the mating part (the
+   holder), with `translate_mm` (and `rotate_deg`) to where it sits.
+2. `list_bodies` for the body names: the lid, and the holder's bodies.
+3. `make_mating_negative` with the lid as `target`, the raised features as
+   `tools` and the fit's `clearance_mm` (0.15 for a print). It reports the
+   volume removed and the residual overlap (what of the tools still lies in
+   the lid), which should be about 0. It can take a few seconds per tool.
+4. `body_clearance` between a tool and the lid confirms the gap; then
+   `delete_keep_body` removes the holder's bodies.
+
+`combine_bodies` adds, subtracts (no clearance) or intersects bodies;
+`move_copy_body` places them; `split_body` cuts a body along a plane or sketch.
+
 ## A drawing
 
 The whole drawing in one call: `generate_drawing_package` with the saved

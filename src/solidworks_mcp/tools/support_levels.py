@@ -97,6 +97,15 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "generate_vba_code": _UNCHECKED,
     "manage_design_table": _PLANNED,
     "optimize_performance": _PLANNED,
+    # bodies
+    "body_clearance": _UNCHECKED,
+    "combine_bodies": _UNCHECKED,
+    "delete_keep_body": _UNCHECKED,
+    "insert_part": _UNCHECKED,
+    "list_bodies": _UNCHECKED,
+    "make_mating_negative": _UNCHECKED,
+    "move_copy_body": _UNCHECKED,
+    "split_body": _UNCHECKED,
     # docs_discovery
     "discover_solidworks_docs": _STABLE,
     "find_related_api_members": _STABLE,

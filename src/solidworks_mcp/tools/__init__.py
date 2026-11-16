@@ -10,6 +10,7 @@ from loguru import logger
 
 from .analysis import register_analysis_tools
 from .automation import register_automation_tools
+from .bodies import register_bodies_tools
 from .docs_discovery import register_docs_discovery_tools
 from .drawing import register_drawing_tools
 from .drawing_analysis import register_drawing_analysis_tools
@@ -54,6 +55,7 @@ async def register_tools(mcp: FastMCP, adapter: Any, config: Any) -> int:
     await register_macro_recording_tools(mcp, adapter, config)
     await register_docs_discovery_tools(mcp, adapter, config)
     await register_server_admin_tools(mcp, adapter, config)
+    await register_bodies_tools(mcp, adapter, config)
 
     tool_count = len(await mcp.list_tools())
 
