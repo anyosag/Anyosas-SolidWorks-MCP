@@ -100,6 +100,8 @@ SUPPORT_LEVELS: dict[str, Support] = {
     # docs_discovery
     "discover_solidworks_docs": _STABLE,
     "find_related_api_members": _STABLE,
+    "get_api_remarks": _UNCHECKED,
+    "lookup_api_enum": _UNCHECKED,
     "lookup_api_interface": _STABLE,
     "lookup_api_method": _STABLE,
     "search_solidworks_api_help": _STABLE,
@@ -178,6 +180,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "create_macro_library": _PLANNED,
     "execute_macro": _STABLE,
     "optimize_macro": _PLANNED,
+    "run_api_snippet": _UNCHECKED,
     "start_macro_recording": _PLANNED,
     "stop_macro_recording": _PLANNED,
     # modeling

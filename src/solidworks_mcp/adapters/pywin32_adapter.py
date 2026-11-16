@@ -3982,3 +3982,56 @@ class PyWin32Adapter(
             return self._invoke_run_macro2(macro_path, module_name, proc_name)
 
         return self._handle_com_operation("execute_macro", _run)
+
+    async def run_api_snippet(
+        self, code: str, timeout_s: float = 60.0, compile_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Run a C# snippet on the running SolidWorks, in its own process.
+
+        The snippet's process attaches to SolidWorks itself
+        (``solidworks.api_snippets``), so no COM call is made here and the
+        connect-thread rule holds. A run still goes through
+        ``_handle_com_operation`` (a compile-only one doesn't touch
+        SolidWorks and skips it) for the busy check, the dialog watchdog, the
+        minimized window and the settle pause, and so the document it leaves
+        active is remembered. The client going away, or the operation limit,
+        stops it (``limits.check`` while it runs).
+
+        Args:
+            code (str): The snippet.
+            timeout_s (float): Seconds before its process tree is killed.
+            compile_only (bool): Compile and find ``Run`` only.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The outcome; on failure, ``data``
+            holds the compile errors or exception, stdout and stderr.
+        """
+        from .solidworks import api_snippets
+
+        try:
+            runner = api_snippets.SnippetRunner.for_install(
+                self.config_dict.get("solidworks_year")
+            )
+        except api_snippets.SnippetSetupError as exc:
+            return api_snippets.setup_failure(exc)
+
+        def _run() -> dict[str, Any]:
+            """Run the snippet, stopping when the client goes or time runs out."""
+            return runner.run(
+                code,
+                timeout_s,
+                compile_only,
+                should_stop=lambda: limits.check("running the API snippet"),
+            )
+
+        if compile_only:
+            started = time.time()
+            try:
+                outcome = _run()
+            except limits.OperationStopped as exc:
+                return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+            return api_snippets.snippet_result(outcome, time.time() - started)
+        ran = self._handle_com_operation("run_api_snippet", _run)
+        if ran.is_error or not isinstance(ran.data, dict):
+            return ran
+        return api_snippets.snippet_result(ran.data, ran.execution_time)

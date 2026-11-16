@@ -158,3 +158,6 @@ once it is saved and you are done with it.
 Only when no tool does the job (a shell, an option a tool doesn't expose):
 [references/vba-fallback.md](references/vba-fallback.md). The `generate_vba_*`
 tools return macro text for the user to run; they don't change the model.
+To call the API yourself (its Remarks, enum values, and C# run on the live
+session with `run_api_snippet`, if the user turned it on):
+[references/api-escape-hatches.md](references/api-escape-hatches.md).

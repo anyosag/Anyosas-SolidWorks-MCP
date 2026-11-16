@@ -1430,6 +1430,39 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
         return await check_part(self, build_direction, support_angle_deg, min_bridge_mm)
 
+    async def run_api_snippet(
+        self, code: str, timeout_s: float = 60.0, compile_only: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a snippet run: nothing is compiled or run; a canned result echoes it.
+
+        Args:
+            code: The snippet; only its form is read.
+            timeout_s: Unused.
+            compile_only: Reply as a compile-only run.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Shaped like the live adapter's.
+        """
+        from .solidworks.api_snippets import prepare_source
+
+        form = prepare_source(code).form
+        data: dict[str, Any] = {
+            "ok": True,
+            "stage": "compiled" if compile_only else "done",
+            "compiled": True,
+            "entry_point": "Snippet.Run(SldWorks)",
+            "source_form": form,
+            "stdout": "",
+            "stderr": "",
+            "mock": True,
+        }
+        if not compile_only:
+            data["result"] = {"mock": True, "code_chars": len(code)}
+            data["result_type"] = "System.Collections.Generic.Dictionary"
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data=data, execution_time=0.01
+        )
+
     async def check_wall_thickness(
         self,
         min_wall_mm: float = 0.8,

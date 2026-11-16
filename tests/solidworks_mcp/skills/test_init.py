@@ -10,6 +10,7 @@ def test_the_skill_folder_ships_with_the_package() -> None:
     assert (SKILL_DIR / "SKILL.md").is_file()
     references = sorted(p.name for p in (SKILL_DIR / "references").glob("*.md"))
     assert references == [
+        "api-escape-hatches.md",
         "errors-and-limits.md",
         "selection-and-units.md",
         "vba-fallback.md",

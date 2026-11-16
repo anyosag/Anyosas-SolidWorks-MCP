@@ -33,7 +33,7 @@ class TestMacroRecordingTools:
         tool_count = await register_macro_recording_tools(
             mcp_server, mock_adapter, mock_config
         )
-        assert tool_count == 8
+        assert tool_count == 9
 
     @pytest.mark.asyncio
     async def test_start_macro_recording_success(

@@ -123,6 +123,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "lookup_api_method": _reads("Look Up API Method"),
     "lookup_api_interface": _reads("Look Up API Interface"),
     "find_related_api_members": _reads("Find Related API Members"),
+    "lookup_api_enum": _reads("Look Up API Enum Value"),
+    "get_api_remarks": _reads("Read API Help Remarks"),
     # drawing
     "create_drawing_view": _adds("Create Drawing View"),
     "add_dimension": _adds("Add Drawing Dimension"),
@@ -196,6 +198,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "start_macro_recording": _adds("Start Macro Recording"),
     "stop_macro_recording": _discards("Stop Macro Recording"),
     "execute_macro": _discards("Run Macro"),
+    "run_api_snippet": _discards("Run C# API Snippet"),
     "analyze_macro": _reads("Analyze Macro"),
     "batch_execute_macros": _discards("Run Macros in Batch"),
     "optimize_macro": _reads("Optimize Macro"),

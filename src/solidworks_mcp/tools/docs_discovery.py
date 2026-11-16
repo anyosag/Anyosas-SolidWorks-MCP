@@ -13,6 +13,7 @@ every other tool in the package.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import platform
 import re
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
+from .swconst_enums import load_enum_index, search_enums
 from .tool_boundary import ToolOperationError, normalize_input, with_tool_boundary
 from .type_library import (
     Access,
@@ -445,6 +447,81 @@ class FindRelatedApiInput(ApiIndexInput):
     )
     max_results: int = Field(
         default=25, ge=1, le=200, description="Maximum related members to return"
+    )
+
+
+class LookupApiEnumInput(CompatInput):
+    """Input schema for ``lookup_api_enum``.
+
+    Attributes:
+        query (str): An enum or member name, part of one, or a value.
+        max_results (int): How many enums, and how many members, to return.
+    """
+
+    query: str = Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "An enum name ('swBodyOperationType_e'), a member ('SWBODYCUT'), "
+            "part of either ('swInsertPart'), 'Enum.Member', or a number to "
+            "find the members with that value; case does not matter"
+        ),
+    )
+    max_results: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Most enums, and most members, to return",
+    )
+
+
+class GetApiRemarksInput(CompatInput):
+    """Input schema for ``get_api_remarks``.
+
+    Attributes:
+        interface (str): The COM interface.
+        member (str | None): The method or property; None for the interface.
+        example (str | None): A language or example topic whose code to add.
+        build_if_missing (bool): Build the index when there is none.
+        year (int | None): The SolidWorks release whose help to read.
+    """
+
+    interface: str = Field(
+        min_length=2,
+        description=(
+            "COM interface, e.g. 'IFeatureManager' (the leading I may be left "
+            "out); case does not matter"
+        ),
+    )
+    member: str | None = Field(
+        default=None,
+        description=(
+            "Method or property, e.g. 'InsertCombineFeature'. Unset: the "
+            "interface's own page (how to get it, its remarks, its members)"
+        ),
+    )
+    example: str | None = Field(
+        default=None,
+        description=(
+            "Also return one example's code: a language (csharp, vbnet, vba, "
+            "cpp) for the first example in it, or a topic from `examples`"
+        ),
+    )
+    build_if_missing: bool = Field(
+        default=True,
+        description=(
+            "Build the index when there is none or the help changed (about a "
+            "minute, once). False: say how to build it instead"
+        ),
+    )
+    year: int | None = Field(
+        default=None,
+        ge=1995,
+        le=2100,
+        description=(
+            "SolidWorks year whose help to read, e.g. 2026. Unset: the "
+            "server's --year, else the newest installed"
+        ),
     )
 
 
@@ -1216,6 +1293,210 @@ def _rebuild_rag_index(index_file: Path) -> bool:
     return True
 
 
+RemarksStatus = Literal["ready", "built", "stale", "missing", "unavailable"]
+
+#: The longest text field ``get_api_remarks`` returns, and the longest code.
+_REMARKS_TEXT_LIMIT = 12_000
+_EXAMPLE_CODE_LIMIT = 15_000
+
+
+@dataclass(frozen=True)
+class _RemarksIndex:
+    """The help index a ``get_api_remarks`` call answers from.
+
+    Attributes:
+        status (RemarksStatus): ``ready``, ``built`` (for this call),
+            ``stale`` (the help changed since; answered anyway), ``missing``
+            (not built) or ``unavailable`` (no help to build it from).
+        folder (Path): The index folder.
+        manifest (dict[str, Any] | None): Its manifest, when there is one.
+        chm (Path | None): The help file, when found.
+        year (int | None): The SolidWorks release.
+        note (str | None): Why there is no index, or how to refresh it.
+    """
+
+    status: RemarksStatus
+    folder: Path
+    manifest: dict[str, Any] | None
+    chm: Path | None
+    year: int | None
+    note: str | None = None
+
+    def payload(self) -> dict[str, Any]:
+        """The fields every ``get_api_remarks`` reply carries about its index."""
+        return {
+            "index_status": self.status,
+            "index_dir": str(self.folder),
+            "source_chm": str(self.chm) if self.chm else None,
+            "year": self.year,
+        }
+
+
+def _locate_remarks_index(requested_year: int | None, config: Any) -> _RemarksIndex:
+    """Find the help and its index, without building anything.
+
+    Args:
+        requested_year (int | None): The year the call asked for.
+        config (Any): Server configuration (its ``--year``).
+
+    Returns:
+        _RemarksIndex: ``ready``, ``stale``, ``missing`` or ``unavailable``.
+    """
+    # Imported here, not at the top: ``python -m solidworks_mcp.tools.api_remarks``
+    # (the build command) warns when the package has already imported it.
+    from . import api_remarks
+
+    year = _resolve_solidworks_year(requested_year, config)
+    try:
+        year, chm = api_remarks.find_api_chm(year)
+    except api_remarks.RemarksIndexError as exc:
+        folder = api_remarks.index_dir(year)
+        manifest = api_remarks.read_manifest(folder)
+        if manifest is not None:
+            # An index built earlier still answers without its help file.
+            return _RemarksIndex("ready", folder, manifest, None, year)
+        return _RemarksIndex("unavailable", folder, None, None, year, str(exc))
+    folder = api_remarks.index_dir(year)
+    manifest = api_remarks.read_manifest(folder)
+    build = api_remarks.build_command(year)
+    if manifest is None:
+        note = (
+            f"The API help index isn't built yet. Call again with "
+            f"build_if_missing true (about a minute, once), or run: {build}"
+        )
+        return _RemarksIndex("missing", folder, None, chm, year, note)
+    if not api_remarks.is_current(manifest, chm):
+        note = f"{chm} changed since the index was built; rebuild it with: {build}"
+        return _RemarksIndex("stale", folder, manifest, chm, year, note)
+    return _RemarksIndex("ready", folder, manifest, chm, year)
+
+
+def _capped(text: str | None, limit: int, field: str, cut: list[str]) -> str | None:
+    """``text`` cut to ``limit`` characters; ``field`` is noted in ``cut`` when cut."""
+    if text is None or len(text) <= limit:
+        return text
+    cut.append(field)
+    return text[:limit] + " [...]"
+
+
+def _pick_example(
+    folder: Path, topic: dict[str, Any], wanted: str
+) -> dict[str, Any] | None:
+    """The code of the example a call asked for, or a reason it has none.
+
+    Args:
+        folder (Path): The index folder.
+        topic (dict[str, Any]): The member's (or interface's) saved topic.
+        wanted (str): A language, or an example topic file.
+
+    Returns:
+        dict[str, Any] | None: ``topic``, ``title``, ``description``,
+        ``code`` (and ``code_truncated``), or ``None`` when nothing matches.
+    """
+    from . import api_remarks
+
+    examples = topic.get("examples", [])
+    lowered = wanted.strip().lower()
+    chosen = next(
+        (e for e in examples if (e.get("language") or "") == lowered), None
+    ) or next((e for e in examples if e["topic"].lower() == lowered), None)
+    name = chosen["topic"] if chosen else wanted.strip()
+    code = api_remarks.read_example(folder, name)
+    if code is None:
+        return None
+    reply = code.model_dump()
+    if len(code.code) > _EXAMPLE_CODE_LIMIT:
+        reply["code"] = code.code[:_EXAMPLE_CODE_LIMIT] + "\n// [...]"
+        reply["code_truncated"] = True
+    return reply
+
+
+def _remarks_lookup(
+    folder: Path,
+    manifest: dict[str, Any],
+    interface: str,
+    member: str | None,
+    example: str | None,
+) -> dict[str, Any]:
+    """Answer one ``get_api_remarks`` call from a built index.
+
+    Args:
+        folder (Path): The index folder.
+        manifest (dict[str, Any]): Its manifest.
+        interface (str): The interface asked for.
+        member (str | None): The member asked for, if any.
+        example (str | None): The example code asked for, if any.
+
+    Returns:
+        dict[str, Any]: The ``result`` payload: ``found`` and the topic's
+        fields, or a ``note`` saying why nothing was found.
+    """
+    from . import api_remarks
+
+    name = api_remarks.resolve_interface(manifest, interface)
+    if name is None:
+        return {
+            "found": False,
+            "interface": interface,
+            "note": (
+                f"{interface!r} isn't in the API help. Check the name with "
+                "search_solidworks_api_help."
+            ),
+        }
+    record = api_remarks.read_interface(folder, name)
+    members: dict[str, Any] = record.get("members", {})
+    topic = record.get("topic") or {"name": name, "kind": "interface"}
+    result: dict[str, Any] = {"found": True, "interface": name}
+    if member:
+        by_lower = {m.lower(): m for m in members}
+        exact = by_lower.get(member.strip().lower())
+        if exact is None:
+            close = sorted(m for m in members if member.lower() in m.lower())[:15]
+            return {
+                "found": False,
+                "interface": name,
+                "member": member,
+                "note": (
+                    f"{name} has no help topic for {member!r}."
+                    + (f" Similar: {', '.join(close)}." if close else "")
+                ),
+            }
+        topic = members[exact]
+        result["member"] = exact
+    else:
+        result["members"] = sorted(members)
+    cut: list[str] = []
+    for field_name in (
+        "kind",
+        "summary",
+        "parameters",
+        "returns",
+        "remarks",
+        "accessors",
+        "examples",
+        "see_also",
+        "availability",
+    ):
+        if field_name not in topic:
+            continue
+        value = topic[field_name]
+        if isinstance(value, str):
+            value = _capped(value, _REMARKS_TEXT_LIMIT, field_name, cut)
+        result[field_name] = value
+    if example:
+        picked = _pick_example(folder, topic, example)
+        if picked is None:
+            result["example_note"] = (
+                f"No example matches {example!r}; pick a language or a topic "
+                "from `examples`."
+            )
+        else:
+            result["example"] = picked
+    if cut:
+        result["truncated"] = cut
+    return result
+
+
 async def register_docs_discovery_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -1525,7 +1806,153 @@ async def register_docs_discovery_tools(
             "execution_time": time.time() - start_time,
         }
 
+    @mcp.tool()
+    async def lookup_api_enum(
+        input_data: LookupApiEnumInput | None = None,
+    ) -> dict[str, Any]:
+        """Find SolidWorks API enum values (swconst) by enum or member name, or members by value.
+
+        Use it for the integer an API call takes, e.g. SWBODYCUT (15902) for
+        InsertCombineFeature, or the swInsertPartOptions_e bits. Matching
+        ignores case: an exact enum name lists its members, part of a name
+        finds the enums and members containing it, Enum.Member finds one
+        member, and a number finds the members with that value. Answers from
+        an index of SolidWorks.Interop.swconst built by reflection and shipped
+        with the server, so SolidWorks need not be installed; values hold for
+        older releases, which may lack newer members. Read-only.
+
+        Returns: `enums` (name, member_count and, for the best matches,
+        `members`), `members` (enum, member, value), `source` (the SolidWorks
+        release and assembly version the index came from) and `note`.
+
+        Example input: ``{"query": "swBodyOperationType_e"}``
+
+        Args:
+            input_data (LookupApiEnumInput | None): What to find. `query` (a
+                name, part of one, Enum.Member or a number) is required;
+                `max_results` defaults to 20.
+
+        Returns:
+            dict[str, Any]: ``enums``, ``members``, ``source`` and ``note``,
+            plus ``status``/``message``/``execution_time``.
+        """
+        start_time = time.time()
+        normalized = normalize_input(input_data, LookupApiEnumInput)
+        try:
+            index = load_enum_index()
+        except (OSError, ValueError) as exc:
+            raise ToolOperationError(
+                f"The swconst enum index can't be read ({exc}); regenerate it "
+                "with python src/utils/generate_swconst_enums.py."
+            ) from exc
+        found = search_enums(index, normalized.query, normalized.max_results)
+        source = index.get("source", {})
+        if found.enums or found.members:
+            message = (
+                f"{len(found.enums)} enum(s) and {len(found.members)} member(s) "
+                f"match, from {source.get('solidworks_version', 'swconst')}"
+            )
+        else:
+            message = f"No swconst enum or member matches {normalized.query!r}"
+        return {
+            "status": "success",
+            "message": message,
+            "query": normalized.query,
+            "enums": [e.model_dump(exclude_none=True) for e in found.enums],
+            "members": [m.model_dump() for m in found.members],
+            "source": source,
+            "note": found.note,
+            "execution_time": time.time() - start_time,
+        }
+
+    # Two calls building the help index at once would race over its folder.
+    remarks_build_lock = asyncio.Lock()
+
+    @mcp.tool()
+    async def get_api_remarks(
+        input_data: GetApiRemarksInput | None = None,
+    ) -> dict[str, Any]:
+        """Read a SolidWorks API member's help page: summary, parameters, Remarks, examples.
+
+        Use it before calling a member you haven't used: the Remarks hold
+        the rules the signature doesn't show, such as which selection mark
+        each argument takes (InsertIndent: target body 1, tool regions 4) or
+        when to pass null. Without `member` it returns the interface's page:
+        how to get the interface, and its members. For signatures and types,
+        use lookup_api_method. SolidWorks must be installed, not running.
+        Read-only. Answers from an index of the installed API help
+        (api/sldworksapi.chm), which the first call builds (about a minute)
+        under %LOCALAPPDATA%/solidworks_mcp/api_remarks.
+
+        Returns: `result` (summary, parameters, returns, remarks, examples,
+        see_also, availability, and `example` code when asked), and
+        `index_status` with the help file and index folder. When no index can
+        be built, `result.note` says why and how.
+
+        Example input: ``{"interface": "IFeatureManager", "member": "InsertCombineFeature", "example": "csharp"}``
+
+        Args:
+            input_data (GetApiRemarksInput | None): The page. `interface` is
+                required; `member` (unset for the interface's page),
+                `example`, `build_if_missing` (true) and `year` are optional.
+
+        Returns:
+            dict[str, Any]: ``result``, ``index_status``, ``index_dir``,
+            ``source_chm`` and ``year``, plus ``status``/``message``/``execution_time``.
+        """
+        start_time = time.time()
+        normalized = normalize_input(input_data, GetApiRemarksInput)
+        source = _locate_remarks_index(normalized.year, config)
+        if (
+            source.chm is not None
+            and source.status in ("missing", "stale")
+            and normalized.build_if_missing
+        ):
+            from . import api_remarks
+
+            async with remarks_build_lock:
+                manifest = await asyncio.to_thread(
+                    api_remarks.build_index, source.chm, source.folder, source.year
+                )
+            source = _RemarksIndex(
+                "built", source.folder, manifest, source.chm, source.year
+            )
+        if source.manifest is None:
+            return {
+                "status": "success",
+                "message": "The API help index isn't available",
+                **source.payload(),
+                "result": {
+                    "found": False,
+                    "interface": normalized.interface,
+                    "note": source.note,
+                },
+                "execution_time": time.time() - start_time,
+            }
+        result = _remarks_lookup(
+            source.folder,
+            source.manifest,
+            normalized.interface,
+            normalized.member,
+            normalized.example,
+        )
+        if source.note:
+            result["index_note"] = source.note
+        target = ".".join(
+            str(part) for part in (result["interface"], result.get("member")) if part
+        )
+        return {
+            "status": "success",
+            "message": (
+                f"Help for {target}" if result["found"] else "No help topic found"
+            ),
+            **source.payload(),
+            "result": result,
+            "execution_time": time.time() - start_time,
+        }
+
     # discover_solidworks_docs, search_solidworks_api_help, lookup_api_method,
-    # lookup_api_interface, find_related_api_members
-    tool_count = 5
+    # lookup_api_interface, find_related_api_members, lookup_api_enum,
+    # get_api_remarks
+    tool_count = 7
     return tool_count

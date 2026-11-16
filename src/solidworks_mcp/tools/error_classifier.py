@@ -67,6 +67,7 @@ SOLIDWORKS_RECONNECTED = "solidworks_reconnected"
 ACTIVE_DOCUMENT_CHANGED = "active_document_changed"
 SOLIDWORKS_BUSY = "solidworks_busy"
 OPERATION_STOPPED = "operation_stopped"
+API_SNIPPET_FAILED = "api_snippet_failed"
 
 DEFAULT_RULES: tuple[ErrorRule, ...] = (
     # First: a dialog's own text can contain anything ("file not found",
@@ -93,6 +94,23 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "again with `overwrite_modified_references: true`."
         ),
         patterns=(r"would overwrite \d+ modified file",),
+    ),
+    # Before the COM rules: a snippet's own exception text can name any
+    # COM error, and the snippet, not the server, is what to fix.
+    ErrorRule(
+        error_type=API_SNIPPET_FAILED,
+        hint=(
+            "The C# snippet failed; what it did in SolidWorks before failing "
+            "stays. `data` says where: compile_errors (line numbers count from "
+            "the snippet's first line; the compiler is C# 5), exception (type, "
+            "message, HRESULT and the snippet line), stdout and stderr. Fix the "
+            "snippet and check it with compile_only true. For an argument rule "
+            "(selection marks, nulls) read the member's Remarks with "
+            "get_api_remarks; for an enum value use lookup_api_enum. A timeout "
+            "kills the snippet's process, but a SolidWorks call already running "
+            "finishes."
+        ),
+        patterns=(r"api snippet failed \(",),
     ),
     # Before solidworks_unavailable: the message says the old SolidWorks
     # has exited, which that rule also matches.
