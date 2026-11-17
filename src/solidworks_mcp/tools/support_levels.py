@@ -87,6 +87,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "check_printability": _UNCHECKED,
     "get_mass_properties": _STABLE,
     "get_material_properties": _PLANNED,
+    "query_geometry": _UNCHECKED,
     "rotation_clearance": _UNCHECKED,
     "verify_model": _STABLE,
     "volume_by_plane": _UNCHECKED,

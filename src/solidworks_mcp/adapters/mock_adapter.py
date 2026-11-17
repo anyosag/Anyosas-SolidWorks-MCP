@@ -240,6 +240,67 @@ def _mock_convex(_edge: Any, info: dict[str, Any]) -> str:
     return "convex"
 
 
+def _mock_nearest_on_segment(
+    point: list[float], a: list[float], b: list[float]
+) -> list[float]:
+    """The point of segment ``ab`` nearest ``point`` (mm)."""
+    ab = [q - p for p, q in zip(a, b, strict=True)]
+    length = sum(c * c for c in ab)
+    t = 0.0
+    if length:
+        t = sum((p - s) * d for p, s, d in zip(point, a, ab, strict=True)) / length
+    t = min(1.0, max(0.0, t))
+    return [s + t * d for s, d in zip(a, ab, strict=True)]
+
+
+def _mock_nearest_on_circle(
+    point: list[float], center: list[float], radius: float
+) -> list[float]:
+    """The point of a circle about Z (the mock hole's rim) nearest ``point`` (mm)."""
+    dx, dy = point[0] - center[0], point[1] - center[1]
+    reach = math.hypot(dx, dy) or 1.0
+    if not (dx or dy):
+        dx = 1.0
+    return [center[0] + radius * dx / reach, center[1] + radius * dy / reach, center[2]]
+
+
+def _mock_block_faces(has_hole: bool) -> list[dict[str, Any]]:
+    """The canned block's faces, each with how to find its point nearest another."""
+    faces: list[dict[str, Any]] = []
+    for axis in range(3):
+        for level in (0.0, 10.0):
+            low, high = [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]
+            low[axis] = high[axis] = level
+            normal = [0.0, 0.0, 0.0]
+            normal[axis] = 1.0 if level else -1.0
+            area = 100.0 - (math.pi * 4.0 if has_hole and axis == 2 else 0.0)
+            faces.append(
+                {
+                    "kind": "plane",
+                    "normal": normal,
+                    "area_mm2": round(area, 6),
+                    "box_mm": low + high,
+                    "nearest": lambda p, lo=low, hi=high: [
+                        min(max(c, a), b) for c, a, b in zip(p, lo, hi, strict=True)
+                    ],
+                }
+            )
+    if has_hole:
+        faces.append(
+            {
+                "kind": "cylinder",
+                "axis": [0.0, 0.0, 1.0],
+                "radius_mm": 2.0,
+                "area_mm2": round(2 * math.pi * 2.0 * 10.0, 6),
+                "box_mm": [3.0, 3.0, 0.0, 7.0, 7.0, 10.0],
+                "nearest": lambda p: _mock_nearest_on_circle(
+                    p, [5.0, 5.0, min(max(p[2], 0.0), 10.0)], 2.0
+                ),
+            }
+        )
+    return faces
+
+
 class MockSolidWorksAdapter(SolidWorksAdapter):
     """Mock adapter that simulates SolidWorks operations.
 
@@ -1183,6 +1244,127 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             data["edge_ids"] = [
                 encode(f"mock:{edge_key(info)}".encode()) for _edge, info in kept
             ]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=data,
+            execution_time=self._delays["feature_operation"] / 4,
+        )
+
+    async def query_geometry(
+        self,
+        point_mm: list[float],
+        radius_mm: float = 2.0,
+        kinds: str = "both",
+        limit: int = 10,
+        read_all: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock: the canned 10 mm block's faces and edges near a point, measured exactly.
+
+        The block ``select_edges`` uses: six flat faces and twelve straight
+        edges, and once any circle has been sketched, a 2 mm hole along Z
+        through (5, 5) with its two rims. The validation and reply shape are
+        the real adapter's. The mock reads the whole block, so ``method`` is
+        ``index`` and ``complete`` true whatever ``read_all`` says; an edge's
+        id is one the mock's ``select_edges`` takes back as ``edge_ids``.
+        """
+        from .solidworks.edge_rules import edge_key
+        from .solidworks.geometry_query import query_problem
+        from .solidworks.persist_ids import encode
+
+        problem = query_problem(point_mm, radius_mm, kinds, limit)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        model = self._current_model
+        if model is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if model.type != "Part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "query_geometry needs an active part document (active "
+                    f"document is {model.type.lower()})."
+                ),
+            )
+        await asyncio.sleep(self._delays["feature_operation"] / 4)
+        self._operation_count += 1
+        point = [float(c) for c in point_mm]
+        body = next(iter(self._mock_bodies()), None)
+        has_hole = any(e.startswith("Circle") for e in self._sketch_entity_ids)
+
+        def placed(closest: list[float]) -> dict[str, Any]:
+            return {
+                "distance_mm": round(math.dist(point, closest), 6),
+                "closest_mm": [round(c, 6) + 0.0 for c in closest],
+            }
+
+        faces = []
+        for number, face in enumerate(_mock_block_faces(has_hole)):
+            entry = {"kind": face["kind"], **placed(face["nearest"](point))}
+            entry.update(
+                {k: v for k, v in face.items() if k not in ("kind", "nearest")}
+            )
+            if face["kind"] == "cylinder":
+                entry["center_mm"] = [5.0, 5.0, min(max(point[2], 0.0), 10.0)]
+            entry["body"] = body
+            entry["id"] = encode(f"mock-face:{number}".encode())
+            faces.append(entry)
+        edges = []
+        for info in self._mock_block_edges():
+            if info["curve"] == "linear":
+                entry = {
+                    "kind": "line",
+                    **placed(
+                        _mock_nearest_on_segment(
+                            point, info["start_mm"], info["end_mm"]
+                        )
+                    ),
+                }
+                entry.update(start_mm=info["start_mm"], end_mm=info["end_mm"])
+                entry["length_mm"] = info["length_mm"]
+            else:
+                entry = {
+                    "kind": "circle",
+                    **placed(
+                        _mock_nearest_on_circle(
+                            point, info["center_mm"], info["radius_mm"]
+                        )
+                    ),
+                }
+                entry.update(
+                    center_mm=info["center_mm"],
+                    axis=info["axis"],
+                    radius_mm=info["radius_mm"],
+                    length_mm=round(2 * math.pi * info["radius_mm"], 6),
+                )
+            entry["body"] = body
+            entry["id"] = encode(f"mock:{edge_key(info)}".encode())
+            edges.append(entry)
+
+        data: dict[str, Any] = {
+            "point_mm": point,
+            "radius_mm": float(radius_mm),
+            "kinds": kinds,
+            "method": "index",
+            "complete": True,
+        }
+        for key, every in (("faces", faces), ("edges", edges)):
+            if kinds not in (key, "both"):
+                continue
+            near = sorted(
+                (e for e in every if e["distance_mm"] <= radius_mm),
+                key=lambda e: e["distance_mm"],
+            )
+            data[key], data[f"{key}_found"] = near[:limit], len(near)
+        data["read"] = {
+            "kept_from_earlier_call": False,
+            "bodies_near": 1,
+            "picks": 0,
+            "face_boxes": 0,
+            "measured": len(faces) + len(edges),
+            "described": len(faces) + len(edges),
+        }
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=data,
@@ -5321,7 +5503,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         return [list(r) for r in rows], list(held.get("origin_mm") or [0.0, 0.0, 0.0])
 
     async def measure_clearance(
-        self, component_a: str, component_b: str
+        self,
+        component_a: str,
+        component_b: str,
+        coarse: bool = False,
+        timeout_s: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock clearance between two components, each standing in for its box.
 
@@ -5330,11 +5516,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         origin when a test set none), placed where ``insert_component`` put
         it. The refusals are the real adapter's: not an assembly, the same
         component twice, one not in the assembly, one with no solid body
-        (a box of ``None``).
+        (a box of ``None``). One pair, measured exactly, so ``coarse`` and
+        ``timeout_s`` change nothing: the reply is always complete.
 
         Args:
             component_a (str): An instance name, as ``list_components`` gives it.
             component_b (str): Another one.
+            coarse (bool): Accepted; one pair is always complete.
+            timeout_s (float | None): Accepted, likewise.
 
         Returns:
             AdapterResult[dict[str, Any]]: The real adapter's reply shape.
@@ -5422,6 +5611,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "face_b": {"kind": "plane", "box_mm": [round(v, 4) for v in b]},
                 "pairs_checked": 1,
                 "pairs_total": 1,
+                "complete": True,
+                "at_least_mm": 0.0 if touching else round(clearance, 6),
             },
             execution_time=self._delays["model_operation"],
         )

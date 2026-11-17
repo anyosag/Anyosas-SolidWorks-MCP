@@ -2124,6 +2124,23 @@ class MeasureClearanceInput(CompatInput):
     component_b: str = Field(
         description="The other component's instance name, e.g. 'latch-1'"
     )
+    coarse: bool = Field(
+        default=False,
+        description=(
+            "Measure only the 12 nearest face pairs by box, for a fast answer in "
+            "a sweep: clearance_mm is then at most the gap's true value and "
+            "at_least_mm what it is at least; complete says when they agree"
+        ),
+    )
+    timeout_s: float | None = Field(
+        default=None,
+        gt=0,
+        le=900,
+        description=(
+            "Stop measuring face pairs after this many seconds and return the "
+            "best found so far, with at_least_mm and complete: false"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         """Refuse a blank name, or the same component twice."""
@@ -4194,35 +4211,45 @@ async def register_modeling_tools(
         components' solid faces pair by pair, nearest first, a cylinder to its
         surface (not its axis), and gives where the gap is. Touching or overlapping
         components read 0 with `touching: true`; for an overlap's volume, use
-        `check_interference`. To see the gap, take `export_image` with `section`.
-        Needs: an open assembly whose two components are unsuppressed and hold a
-        solid body. Read-only. Returns: `data` with `clearance_mm`, `touching`,
-        `point_a_mm` and `point_b_mm` (the nearest points, assembly coordinates),
-        `face_a` and `face_b` (`kind`: plane, cylinder or other, and `box_mm`),
-        `pairs_checked` and `pairs_total`.
+        `check_interference`. For speed in a sweep, `coarse` or `timeout_s` stop
+        early with bounds. Needs: an open assembly whose two components are
+        unsuppressed and hold a solid body. Read-only. Returns: `data` with
+        `clearance_mm`, `at_least_mm`, `complete`, `touching`, `point_a_mm` and
+        `point_b_mm` (assembly coordinates), `face_a` and `face_b` (`kind`,
+        `box_mm`), `pairs_checked` and `pairs_total`.
 
         Args:
             input_data: The two components, by instance name as `list_components`
                 reports them: `component_a` and `component_b`, both required and
-                different.
+                different; `coarse` (off) and `timeout_s` (none) have defaults.
 
         Returns:
             dict[str, Any]: The clearance found.
         """
         input_data = normalize_input(input_data, MeasureClearanceInput)
         result = await adapter.measure_clearance(
-            input_data.component_a, input_data.component_b
+            input_data.component_a,
+            input_data.component_b,
+            input_data.coarse,
+            input_data.timeout_s,
         )
         require_success(result, context="Failed to measure the clearance")
         data = result.data if isinstance(result.data, dict) else {}
         pair = f"{input_data.component_a} and {input_data.component_b}"
+        if data.get("touching"):
+            message = f"{pair} touch or overlap"
+        elif data.get("complete") is False:
+            message = (
+                f"Clearance between {pair}: at most {data.get('clearance_mm')} mm "
+                f"and at least {data.get('at_least_mm')} mm "
+                f"({data.get('pairs_checked')} of {data.get('pairs_total')} face "
+                "pairs measured)"
+            )
+        else:
+            message = f"Clearance between {pair}: {data.get('clearance_mm')} mm"
         reply: dict[str, Any] = {
             "status": "success",
-            "message": (
-                f"{pair} touch or overlap"
-                if data.get("touching")
-                else f"Clearance between {pair}: {data.get('clearance_mm')} mm"
-            ),
+            "message": message,
             "data": data,
             "execution_time": result.execution_time,
         }
@@ -4230,6 +4257,13 @@ async def register_modeling_tools(
             reply["warning"] = (
                 f"{pair} touch or overlap, so there is no clearance to report; "
                 "use check_interference for the overlap's volume."
+            )
+        elif data.get("complete") is False:
+            why = "coarse" if data.get("stopped_by") == "coarse" else "timeout_s"
+            reply["warning"] = (
+                f"Stopped early ({why}): the gap is between at_least_mm and "
+                "clearance_mm. Call again without coarse, or with a longer "
+                "timeout_s, for the exact value."
             )
         return reply
 

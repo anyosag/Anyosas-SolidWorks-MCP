@@ -17,6 +17,20 @@ async def test_the_breaker_passes_both_components() -> None:
     result = await CircuitBreakerAdapter(adapter=inner).measure_clearance(
         "tongue-1", "slot-1"
     )
+    coarse = await CircuitBreakerAdapter(adapter=inner).measure_clearance(
+        "tongue-1", "slot-1", True, 3.0
+    )
 
-    assert result is ok
-    inner.measure_clearance.assert_awaited_once_with("tongue-1", "slot-1")
+    assert result is ok and coarse is ok
+    assert inner.measure_clearance.await_args_list[0].args == (
+        "tongue-1",
+        "slot-1",
+        False,
+        None,
+    )
+    assert inner.measure_clearance.await_args_list[1].args == (
+        "tongue-1",
+        "slot-1",
+        True,
+        3.0,
+    )

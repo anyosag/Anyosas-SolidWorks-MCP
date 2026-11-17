@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastmcp import FastMCP
 
+from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
 from solidworks_mcp.tools.modeling import (
     MeasureClearanceInput,
@@ -111,3 +113,70 @@ def test_the_input_strips_the_names() -> None:
     parsed = MeasureClearanceInput(component_a=" tongue-1 ", component_b="slot-1")
 
     assert (parsed.component_a, parsed.component_b) == ("tongue-1", "slot-1")
+
+
+async def test_the_mock_reply_is_complete_and_bounded(latch: Any) -> None:
+    _adapter, tool = latch
+
+    result = await tool.fn(
+        {"component_a": "component-1", "component_b": "component-2", "coarse": True}
+    )
+
+    assert result["data"]["complete"] is True
+    assert result["data"]["at_least_mm"] == pytest.approx(0.25)
+
+
+async def test_a_coarse_answer_gives_both_bounds(latch: Any) -> None:
+    adapter, tool = latch
+    mock = AsyncMock(
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "clearance_mm": 0.6,
+                "at_least_mm": 0.2,
+                "complete": False,
+                "stopped_by": "coarse",
+                "touching": False,
+                "pairs_checked": 12,
+                "pairs_total": 2304,
+            },
+        )
+    )
+    adapter.measure_clearance = mock  # type: ignore[method-assign]
+
+    result = await tool.fn(
+        {
+            "component_a": "component-1",
+            "component_b": "component-2",
+            "coarse": True,
+            "timeout_s": 5,
+        }
+    )
+
+    mock.assert_awaited_once_with("component-1", "component-2", True, 5.0)
+    assert result["message"] == (
+        "Clearance between component-1 and component-2: at most 0.6 mm and at "
+        "least 0.2 mm (12 of 2304 face pairs measured)"
+    )
+    assert result["warning"].startswith("Stopped early (coarse)")
+
+
+async def test_a_timed_out_answer_names_the_timeout(latch: Any) -> None:
+    adapter, tool = latch
+    adapter.measure_clearance = AsyncMock(  # type: ignore[method-assign]
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"clearance_mm": 1.0, "at_least_mm": 0.5, "complete": False},
+        )
+    )
+
+    result = await tool.fn(
+        {"component_a": "component-1", "component_b": "component-2", "timeout_s": 1}
+    )
+
+    assert "Stopped early (timeout_s)" in result["warning"]
+
+
+def test_a_timeout_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="greater than 0"):
+        MeasureClearanceInput(component_a="a-1", component_b="b-1", timeout_s=0)

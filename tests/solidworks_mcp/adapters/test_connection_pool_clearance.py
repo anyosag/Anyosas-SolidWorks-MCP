@@ -20,5 +20,19 @@ async def test_the_pool_passes_both_components() -> None:
     pool._execute_with_pool = AsyncMock(side_effect=passthrough)  # type: ignore[method-assign]
 
     assert (await pool.measure_clearance("tongue-1", "slot-1")) is ok
-    stub.measure_clearance.assert_awaited_once_with("tongue-1", "slot-1")
+    stub.measure_clearance.assert_awaited_once_with("tongue-1", "slot-1", False, None)
     assert pool._execute_with_pool.await_args.args[0] == "measure_clearance"
+
+
+async def test_the_pool_passes_coarse_and_the_timeout() -> None:
+    ok = AdapterResult(status=AdapterResultStatus.SUCCESS, data={})
+    stub = SimpleNamespace(measure_clearance=AsyncMock(return_value=ok))
+    pool = ConnectionPoolAdapter(adapter_factory=lambda: stub, pool_size=1)
+
+    async def passthrough(_name: str, operation: object) -> object:
+        return await operation(stub)  # type: ignore[operator]
+
+    pool._execute_with_pool = AsyncMock(side_effect=passthrough)  # type: ignore[method-assign]
+
+    assert (await pool.measure_clearance("a-1", "b-1", True, 2.5)) is ok
+    stub.measure_clearance.assert_awaited_once_with("a-1", "b-1", True, 2.5)

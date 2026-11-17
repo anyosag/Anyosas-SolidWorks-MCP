@@ -880,6 +880,29 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             error_results_are_failures=False,
         )
 
+    async def query_geometry(
+        self,
+        point_mm: list[float],
+        radius_mm: float = 2.0,
+        kinds: str = "both",
+        limit: int = 10,
+        read_all: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the faces and edges near a point through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "query_geometry",
+            lambda: self.adapter.query_geometry(
+                point_mm, radius_mm, kinds, limit, read_all
+            ),
+            input_dict={
+                "point_mm": point_mm,
+                "radius_mm": radius_mm,
+                "kinds": kinds,
+                "limit": limit,
+                "read_all": read_all,
+            },
+        )
+
     async def set_visibility(
         self,
         names: list[str] | None = None,
@@ -2245,13 +2268,24 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         )
 
     async def measure_clearance(
-        self, component_a: str, component_b: str
+        self,
+        component_a: str,
+        component_b: str,
+        coarse: bool = False,
+        timeout_s: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the clearance between two components through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "measure_clearance",
-            lambda: self.adapter.measure_clearance(component_a, component_b),
-            input_dict={"component_a": component_a, "component_b": component_b},
+            lambda: self.adapter.measure_clearance(
+                component_a, component_b, coarse, timeout_s
+            ),
+            input_dict={
+                "component_a": component_a,
+                "component_b": component_b,
+                "coarse": coarse,
+                "timeout_s": timeout_s,
+            },
         )
 
     async def rotation_clearance(

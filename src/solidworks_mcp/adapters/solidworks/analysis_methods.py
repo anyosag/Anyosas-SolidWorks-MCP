@@ -1,7 +1,8 @@
 """The analysis methods of ``PyWin32Adapter`` from "The Dipper" build.
 
 ``rotation_clearance`` (``rotation_clearance.py``), ``volume_by_plane``
-(``plane_volume.py``) and ``set_density`` (``density.py``). Each checks the
+(``plane_volume.py``), ``set_density`` (``density.py``) and
+``query_geometry`` (``geometry_query.py``). Each checks the
 active document's type, then runs its work through ``_handle_com_operation``
 (one STA thread, the settle pause, the time limit) and drops the
 ``Error in <op>:`` prefix from expected failures.
@@ -24,7 +25,7 @@ DEFAULT_RANGE_DEG = (-180.0, 180.0)
 
 
 class SolidWorksAnalysisMixin:
-    """``rotation_clearance``, ``volume_by_plane`` and ``set_density``."""
+    """``rotation_clearance``, ``volume_by_plane``, ``set_density``, ``query_geometry``."""
 
     if TYPE_CHECKING:
         currentModel: Any
@@ -132,4 +133,31 @@ class SolidWorksAnalysisMixin:
         return self._run_on(
             "set_density",
             {_PART: lambda: set_density(self, density_g_cm3, remove_material)},
+        )
+
+    async def query_geometry(
+        self,
+        point_mm: list[float],
+        radius_mm: float = 2.0,
+        kinds: str = "both",
+        limit: int = 10,
+        read_all: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """The active part's faces and edges near a point (see ``geometry_query``).
+
+        A malformed query is refused before SolidWorks is called; the
+        selection is left as it was.
+        """
+        from .geometry_query import query_geometry, query_problem
+
+        problem = query_problem(point_mm, radius_mm, kinds, limit)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        return self._run_on(
+            "query_geometry",
+            {
+                _PART: lambda: query_geometry(
+                    self, point_mm, radius_mm, kinds, limit, read_all
+                )
+            },
         )

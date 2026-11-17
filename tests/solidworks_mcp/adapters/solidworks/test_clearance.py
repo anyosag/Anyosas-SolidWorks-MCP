@@ -432,3 +432,137 @@ def test_limits_are_checked_between_measurements(
         cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1")
     assert model.measured == 2
     assert checked.count("reading faces for the clearance") == 12
+
+
+# ---- coarse and timeout_s ------------------------------------------------------
+
+
+def test_coarse_order_breaks_ties_by_the_box_centres() -> None:
+    boxes_a = [[0, 0, 0, 10, 10, 10]]
+    # Both overlap the first box (bound 0); the second's centre is nearer.
+    boxes_b = [[8, 8, 8, 30, 30, 30], [4, 4, 4, 6, 6, 6]]
+
+    assert [(i, j) for _d, i, j in cl.pair_order(boxes_a, boxes_b)] == [(0, 0), (0, 1)]
+    assert [(i, j) for _d, i, j in cl.coarse_order(boxes_a, boxes_b)] == [
+        (0, 1),
+        (0, 0),
+    ]
+
+
+def test_max_pairs_stops_with_the_next_box_as_the_bound() -> None:
+    boxes_a = [[0, 0, 0, 1, 1, 1]]
+    boxes_b = [[2, 0, 0, 3, 1, 1], [3, 0, 0, 4, 1, 1], [4, 0, 0, 5, 1, 1]]
+
+    # Every true distance is 2.5 beyond its box: 3.5, 4.5, 5.5.
+    nearest = cl.nearest_pair(
+        boxes_a,
+        boxes_b,
+        lambda i, j: (cl.box_distance(boxes_a[i], boxes_b[j]) + 2.5, [], []),
+        max_pairs=1,
+    )
+
+    assert nearest is not None
+    assert (nearest.distance, nearest.pairs_checked) == (3.5, 1)
+    assert nearest.complete is False and nearest.stopped_by == "coarse"
+    # The next pair's box is 2 away: nothing unmeasured is nearer than that.
+    assert nearest.lower_bound == nearest.at_least == 2.0
+
+
+def test_a_search_that_runs_to_its_stop_is_complete() -> None:
+    boxes_a = [[0, 0, 0, 1, 1, 1]]
+    boxes_b = [[2, 0, 0, 3, 1, 1], [9, 0, 0, 10, 1, 1]]
+
+    nearest = cl.nearest_pair(
+        boxes_a, boxes_b, lambda i, j: (1.0 + j, [], []), max_pairs=1
+    )
+
+    assert nearest is not None and nearest.complete is True
+    assert nearest.at_least == 1.0 and nearest.stopped_by is None
+
+
+def test_the_time_stops_only_after_a_pair_has_a_distance() -> None:
+    boxes_a = [[0, 0, 0, 1, 1, 1]]
+    boxes_b = [[2, 0, 0, 3, 1, 1], [2.5, 0, 0, 3, 1, 1], [3, 0, 0, 4, 1, 1]]
+    measured: list[int] = []
+
+    def measure(i: int, j: int) -> tuple[float, list[float], list[float]] | None:
+        measured.append(j)
+        return None if j == 0 else (9.0, [], [])
+
+    nearest = cl.nearest_pair(boxes_a, boxes_b, measure, out_of_time=lambda: True)
+
+    # The first pair gave nothing, so the second was measured before stopping.
+    assert measured == [0, 1]
+    assert nearest is not None and nearest.stopped_by == "timeout"
+    assert nearest.lower_bound == 2.0
+
+
+def _comb(name: str, teeth: int, origin_x: float) -> _Component:
+    """A component of ``teeth`` 2 mm cubes along Y, 4 mm apart."""
+    component = _Component(name, [0, 0, 0, 2, 2, 2], origin_mm=[origin_x, 0, 0])
+    component.faces = [
+        _Face(face)
+        for k in range(teeth)
+        for face in _faces_of([0, 4 * k, 0, 2, 4 * k + 2, 2])
+    ]
+    return component
+
+
+def test_coarse_measures_a_dozen_pairs_and_bounds_the_rest() -> None:
+    full = cl.measure_clearance(
+        _Adapter(_Model(_comb("a-1", 8, 0), _comb("b-1", 8, 2.5))), "a-1", "b-1"
+    )
+    model = _Model(_comb("a-1", 8, 0), _comb("b-1", 8, 2.5))
+
+    coarse = cl.measure_clearance(_Adapter(model), "a-1", "b-1", coarse=True)
+
+    assert full["complete"] is True and full["clearance_mm"] == pytest.approx(0.5)
+    assert full["at_least_mm"] == full["clearance_mm"]
+    assert full["pairs_checked"] > cl.COARSE_PAIRS
+    assert coarse["pairs_checked"] == model.measured == cl.COARSE_PAIRS
+    assert coarse["pairs_total"] == 48 * 48
+    assert coarse["complete"] is False and coarse["stopped_by"] == "coarse"
+    # The true gap lies between the two bounds.
+    assert coarse["at_least_mm"] <= 0.5 + 1e-9 <= coarse["clearance_mm"] + 1e-9
+
+
+def test_coarse_measures_the_facing_pair_first() -> None:
+    """Many latch pairs have overlapping boxes; the centres put the facing one first."""
+    reply = cl.measure_clearance(_Adapter(_latch()), "tongue-1", "slot-1", coarse=True)
+
+    assert reply["clearance_mm"] == pytest.approx(0.25)
+    assert reply["pairs_checked"] <= cl.COARSE_PAIRS
+    assert reply["at_least_mm"] <= reply["clearance_mm"]
+
+
+def test_a_timeout_returns_the_best_so_far() -> None:
+    model = _Model(_comb("a-1", 8, 0), _comb("b-1", 8, 2.5))
+    ticks = iter(range(10_000))
+
+    reply = cl.measure_clearance(
+        _Adapter(model),
+        "a-1",
+        "b-1",
+        timeout_s=2.5,
+        clock=lambda: float(next(ticks)),
+    )
+
+    # Started at tick 0; before the 2nd, 3rd and 4th pair the clock reads
+    # 1, 2 and 3: the fourth is past 2.5 s.
+    assert reply["pairs_checked"] == model.measured == 3
+    assert reply["complete"] is False and reply["stopped_by"] == "timeout"
+    assert reply["at_least_mm"] <= reply["clearance_mm"]
+
+
+def test_touching_is_complete_however_it_was_asked() -> None:
+    model = _Model(
+        _Component("a-1", [0, 0, 0, 10, 10, 10]),
+        _Component("b-1", [0, 0, 0, 10, 10, 10], origin_mm=[9, 0, 0]),
+    )
+
+    reply = cl.measure_clearance(
+        _Adapter(model), "a-1", "b-1", coarse=True, timeout_s=0.001
+    )
+
+    assert reply["touching"] is True and reply["complete"] is True
+    assert reply["at_least_mm"] == 0.0

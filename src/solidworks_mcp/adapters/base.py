@@ -1324,6 +1324,34 @@ class SolidWorksAdapter(ABC):
             error="select_edges is not implemented by this adapter",
         )
 
+    async def query_geometry(
+        self,
+        point_mm: list[float],
+        radius_mm: float = 2.0,
+        kinds: str = "both",
+        limit: int = 10,
+        read_all: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the active part's faces and edges near a point, nearest first.
+
+        Args:
+            point_mm (list[float]): ``[x, y, z]`` in the part's mm.
+            radius_mm (float): How far from the point, mm.
+            kinds (str): ``faces``, ``edges`` or ``both``.
+            limit (int): The most faces, and the most edges, listed.
+            read_all (bool): Read every face box near the point (kept until
+                the next rebuild) instead of starting from SolidWorks' picks.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``method``, ``complete``, ``faces``
+            and ``faces_found``, ``edges`` and ``edges_found``, and ``read``;
+            the selection is left as it was.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="query_geometry is not implemented by this adapter",
+        )
+
     async def set_visibility(
         self,
         names: list[str] | None = None,
@@ -2292,18 +2320,26 @@ class SolidWorksAdapter(ABC):
         )
 
     async def measure_clearance(
-        self, component_a: str, component_b: str
+        self,
+        component_a: str,
+        component_b: str,
+        coarse: bool = False,
+        timeout_s: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the minimum distance between two components of the active assembly.
 
         Args:
             component_a (str): An instance name, as ``list_components`` gives it.
             component_b (str): Another one.
+            coarse (bool): Measure only the nearest few face pairs by box, and
+                give the bound the rest guarantee.
+            timeout_s (float | None): Stop measuring pairs after this many
+                seconds, with the best found so far.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``clearance_mm``, ``touching``,
-            ``point_a_mm``, ``point_b_mm``, ``face_a``, ``face_b`` and
-            ``pairs_checked``, or error.
+            ``point_a_mm``, ``point_b_mm``, ``face_a``, ``face_b``,
+            ``pairs_checked``, ``complete`` and ``at_least_mm``, or error.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

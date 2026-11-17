@@ -104,6 +104,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "check_printability": _reads("Check Printability"),
     "rotation_clearance": _sets("Sweep Clearance Through a Turn"),
     "volume_by_plane": _reads("Measure Volume By Plane"),
+    "query_geometry": _reads("Query Geometry Near a Point"),
     "analyze_geometry": _reads("Analyze Geometry"),
     "get_material_properties": _reads("Get Material Properties"),
     "verify_model": _reads("Verify Model Against Expectations"),
