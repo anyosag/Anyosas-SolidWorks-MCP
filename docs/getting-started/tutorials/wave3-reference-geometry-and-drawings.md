@@ -133,12 +133,11 @@ The wrong-name call is not a trick — the response **always** lists every solid
 body it found, so a bad guess tells you the real options. Success is confirmed by
 the file existing on disk afterwards (here: a ~53 KB `.sldprt`).
 
-!!! note "Save Bodies opens a linked assembly"
-    SolidWorks' *Save Bodies* feature also creates and opens a linked assembly of
-    the split bodies (standard behaviour — the "Create assembly" box). After the
-    call you will have an extra `Assem…` document open. Close it without saving;
-    add *"then close any assembly that Save Bodies opened"* to the prompt if you
-    want the assistant to tidy up.
+!!! note "Save Bodies opens an untitled assembly"
+    SolidWorks' *Save Bodies* feature also opens an untitled assembly of the
+    saved bodies, even when none is asked for. `save_body_as_part` closes it and
+    makes the part active again; its reply names it in `closed_documents`. Pass
+    `assembly_path` to keep an assembly on purpose.
 
 ![The extracted body opened as its own part — its own origin, no reference points (those stay with the parent)](../../assets/images/tutorials/wave3/03_saved_body_part.png)
 

@@ -1494,6 +1494,52 @@ From the same probe:
 
 ---
 
+## 54. Save Bodies raises a Yes/No task dialog and leaves an untitled assembly
+
+Reported by The Dipper build (SOLIDWORKS 2026 SP4.1), every call of six:
+`IFeatureManager.CreateSaveBodyFeature(Bodies, FilePaths, "", False, True)`
+showed a "SOLIDWORKS Design" task dialog with Yes and No. The watchdog cancelled
+it and the call returned `solidworks_dialog`, yet the part file was written
+correctly and an untitled assembly (Assem3, Assem5, ...) was left open and active.
+Two such calls, and the wrong-document errors after them, opened the circuit
+breaker.
+
+- **The dialog's text** is drawn in a `DirectUIHWND`, which `GetWindowText` and
+  `WM_GETTEXT` can't read. The watchdog now reads a task dialog with UI
+  Automation (`dialogs.read_accessible`: `comtypes` and `UIAutomationCore.dll`,
+  on a thread with its own COM apartment).
+- **The API:** `CreateSaveBodyFeature(Bodies, FilePaths, AssemName, ConsumeBody,
+  CopyCustomProperty)` (gen_py DISPID 150). Save Bodies has no
+  `swFeatureNameID_e` value, so `CreateDefinition` can't make one, and no swconst
+  enum or toggle names it. `ISaveBodyFeatureData` (`GetDefinition`) has
+  `GetSaveBodies(Bodies, FilePaths, Flags)`, `AddSaveBodies` (which "saves them
+  as part documents on disk"), `RemoveSaveBodies`, and `AssemblyPath`,
+  `ConsumeBody`, `CopyCustomProperties`.
+- **What the tools do** (`adapters/solidworks/save_bodies.py`): they read the
+  file back (there, fresh, holding a solid of the body's volume), close any
+  untitled assembly that appeared during the call, make the part active again,
+  and treat a cancelled dialog as a `warning` when the file checks out. A
+  `solidworks_dialog` no longer counts toward the circuit breaker
+  (`error_classifier.NOT_BREAKER_FAILURES`).
+- **Not measured yet**, for `tests/scripts/probe_save_bodies.py`: what the
+  dialog says; whether `CopyCustomProperty` False or a `None` `AssemName` avoids
+  it; the Save Bodies feature's `GetTypeName2`; whether `GetSaveBodies` needs
+  `AccessSelections`; whether a derived part rebuilt with its master open takes
+  the master's new body (`resplit_bodies`).
+
+**Parts a closed assembly leaves loaded.** The same build found two `~$` lock
+files beside parts after closing the assembly that loaded them, and
+`list_open_documents` gave no way to close them. `CloseDoc` "closes the document
+without saving it" when it is modified, and for a document other loaded
+documents use it only releases the window (API help). So `close_model` with
+`close_leftovers` closes only documents with no window, not active, used by no
+open document (its components, or its file references), and without unsaved
+changes, then checks they went (`adapters/solidworks/loaded_documents.py`). The
+probe settles whether `GetDocuments` or the `GetFirstDocument` walk lists them,
+and whether the open master is what keeps them.
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests
