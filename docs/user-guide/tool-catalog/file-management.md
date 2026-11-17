@@ -496,7 +496,7 @@ Read the active part's Save Bodies features: each body and the part file it is s
 
 ### `edit_save_bodies`
 
-Change a Save Bodies feature: the file a body is saved to, its assembly, or its options.
+Change a Save Bodies feature's options: its assembly, consuming bodies, properties.
 
 **Prerequisite:** SolidWorks running
 
@@ -505,7 +505,7 @@ Change a Save Bodies feature: the file a body is saved to, its assembly, or its 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `feature_name` | `str` | ✅ | `` | The Save Bodies feature, e.g. 'Save Bodies1' |
-| `files` | `Dict[str, str]?` | — | `None` | Body name to the new .sldprt path its part is saved to; the folder must exist and the file must not |
+| `files` | `Dict[str, str]?` | — | `None` | Not supported: SolidWorks ignores a body's new file, so this is refused; delete the feature and use save_body_as_part instead |
 | `assembly_path` | `str?` | — | `None` | The .sldasm the feature makes of its parts; '' for none |
 | `consume_body` | `bool?` | — | `None` | Remove the saved bodies from the master part |
 | `copy_custom_properties` | `bool?` | — | `None` | Copy the master's custom properties to the parts |
