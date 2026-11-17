@@ -2110,18 +2110,26 @@ def _create_cut_extrude_impl(
         # Not for a mid-plane cut or one started off the plane: a closed
         # pocket's ceiling faces along the normal too, and would count twice.
         floor_mm2 = None
+        sketch_feature = adapter._attempt(
+            lambda: adapter.currentModel.FeatureByName(target_sketch)
+        )
         if (
             not (through_one or through_both or mid_plane)
             and not normalized.draft_angle
             and not normalized.start_offset
+            and sketch_feature is not None
         ):
-            sketch_feature = adapter._attempt(
-                lambda: adapter.currentModel.FeatureByName(target_sketch)
+            floor_mm2 = cut_check.measure_floor(
+                adapter, feature, sketch_feature, used_reverse == _ALONG_NORMAL
             )
-            if sketch_feature is not None:
-                floor_mm2 = cut_check.measure_floor(
-                    adapter, feature, sketch_feature, used_reverse == _ALONG_NORMAL
-                )
+        # Which way it cut in the model, for the message ("cut toward -Y").
+        toward = cut_check.cut_toward(
+            cut_check.sketch_normal(adapter, sketch_feature)
+            if sketch_feature is not None
+            else None,
+            used_reverse == _ALONG_NORMAL,
+            both=through_both or mid_plane,
+        )
 
         flipped = used_reverse != wanted
         if through_both:
@@ -2154,6 +2162,9 @@ def _create_cut_extrude_impl(
                 # How the side was picked; see _create_cut_extrude_choosing_side.
                 "direction_choice": choice,
                 "floor_area_mm2": floor_mm2,
+                # The side cut in model terms: "-Y" and its unit vector.
+                "cut_toward": toward[0] if toward else None,
+                "cut_direction": toward[1] if toward else None,
                 "mid_plane": mid_plane,
                 "start_offset": normalized.start_offset,
                 "draft_outward": normalized.draft_outward,

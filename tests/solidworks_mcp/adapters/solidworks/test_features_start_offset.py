@@ -232,14 +232,25 @@ def test_a_cut_starts_off_its_plane_and_drafts_outward() -> None:
     assert result.data.parameters["draft_outward"] is True
 
 
-def test_a_cut_started_off_its_plane_has_no_floor_measured() -> None:
+def _no_floor(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    measured: list[Any] = []
+    monkeypatch.setattr(
+        features.cut_check, "measure_floor", lambda *a: measured.append(a) or 1.0
+    )
+    return measured
+
+
+def test_a_cut_started_off_its_plane_has_no_floor_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A closed pocket's ceiling faces along the normal too: it would count twice."""
     calls: list[tuple] = []
+    measured = _no_floor(monkeypatch)
 
-    adapter, result = _cut(calls, reverse_direction=True, start_offset=-1.0)
+    _adapter, result = _cut(calls, reverse_direction=True, start_offset=-1.0)
 
     assert result.data.parameters["floor_area_mm2"] is None
-    assert adapter.currentModel.floors == []
+    assert measured == []
 
 
 @pytest.mark.parametrize("spelling", ["MidPlane", "mid_plane", "Mid Plane", "midplane"])
@@ -252,10 +263,13 @@ def test_other_end_conditions_are_not_mid_plane(other: str | None) -> None:
     assert not features._cut_mid_plane(SimpleNamespace(end_condition=other))
 
 
-def test_a_mid_plane_cut_is_one_single_ended_call_with_its_depth_in_total() -> None:
+def test_a_mid_plane_cut_is_one_single_ended_call_with_its_depth_in_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple] = []
+    measured = _no_floor(monkeypatch)
 
-    adapter, result = _cut(calls, depth=6.0, end_condition="MidPlane")
+    _adapter, result = _cut(calls, depth=6.0, end_condition="MidPlane")
 
     assert result.is_success, result.error
     assert len(calls) == 1
@@ -265,7 +279,7 @@ def test_a_mid_plane_cut_is_one_single_ended_call_with_its_depth_in_total() -> N
     assert result.data.parameters["direction_choice"] == "mid_plane"
     assert result.data.parameters["mid_plane"] is True
     assert result.data.parameters["direction_flipped"] is False
-    assert adapter.currentModel.floors == []
+    assert measured == []
 
 
 def test_a_mid_plane_cut_that_builds_nothing_is_not_tried_the_other_way() -> None:

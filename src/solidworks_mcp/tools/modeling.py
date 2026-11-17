@@ -2817,9 +2817,9 @@ async def register_modeling_tools(
         `draft_angle` narrows it with depth unless `draft_outward`. A text sketch
         (`add_sketch_text`) cuts too. Needs: an open part with a solid body.
         Changes: adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`,
-        `sketch_name`, `direction_flipped`, and the options set) and
-        `measured_change` (volume, bounding box and solid-body count before and
-        after; left out when the model can't be read).
+        `sketch_name`, `direction_flipped`, `cut_toward`, the model direction cut,
+        e.g. "-Y", and the options set) and `measured_change` (volume, box and
+        solid-body count before and after, when the model reads).
 
         Args:
             input_data: The cut. `depth` (mm) is required; `sketch_name`,
@@ -2863,9 +2863,15 @@ async def register_modeling_tools(
             isinstance(feature_params, dict) and feature_params.get("direction_flipped")
         )
         name = _result_value(feature, "feature_name", "name", default="Cut-Extrude")
+        toward = (
+            feature_params.get("cut_toward")
+            if isinstance(feature_params, dict)
+            else None
+        )
         reply = {
             "status": "success",
             "message": f"Created cut-extrude: {name}"
+            + (f", cut toward {toward}" if toward else "")
             + _cut_direction_note(feature_params),
             "cut_extrude": {
                 "name": name,
@@ -2875,6 +2881,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        if toward:
+            reply["cut_extrude"]["cut_toward"] = toward
         if isinstance(feature_params, dict) and feature_params.get("mid_plane"):
             reply["cut_extrude"]["end_condition"] = "MidPlane"
         reply["cut_extrude"].update(_offset_and_draft(input_data))
