@@ -37,6 +37,22 @@ def _to_input_dict(params: Any) -> dict[str, Any]:
     return cast(dict[str, Any], params) if isinstance(params, dict) else {}
 
 
+def _counts_as_failure(result: AdapterResult[Any]) -> bool:
+    """Whether an ERROR result should count toward its operation's breaker.
+
+    A cancelled SolidWorks dialog, a confirmation, a guard that ran nothing
+    and a caller's mistake are answers, not a failing SolidWorks; they count
+    as a working round trip (``error_classifier.NOT_BREAKER_FAILURES``).
+    Imported here, at call time, because the tools package imports the
+    adapters.
+    """
+    if not result.is_error:
+        return True  # a timeout or warning counts, as before
+    from ..tools.error_classifier import counts_toward_breaker
+
+    return counts_toward_breaker(result.error or "")
+
+
 class CircuitState(Enum):
     """Circuit breaker states.
 
@@ -292,7 +308,11 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         try:
             result = await operation()
             latency_ms = (time.time() - t0) * 1000.0
-            if result.is_success or not error_results_are_failures:
+            if (
+                result.is_success
+                or not error_results_are_failures
+                or not _counts_as_failure(result)
+            ):
                 self._record_success(bucket)
             else:
                 self._record_failure(bucket)

@@ -331,6 +331,48 @@ _FALLBACK_HINTS = {
 }
 
 
+#: Outcomes that say nothing about SolidWorks or the operation failing, so the
+#: circuit breaker (``adapters/circuit_breaker.py``) counts them as a round
+#: trip that worked: SolidWorks answered with a dialog the server cancelled;
+#: nothing ran by design (a confirmation, a switched document, a busy or
+#: restarted or closed SolidWorks); or the caller asked for something that
+#: isn't there or can't be done. Counting them locked tools out when they
+#: worked: two Save Bodies calls whose files were written but whose dialog was
+#: cancelled, and the wrong-document errors that followed, opened
+#: ``save_body_as_part``'s breaker on the next good call (The Dipper,
+#: SOLIDWORKS 2026 SP4.1). A new category counts unless it is added here.
+NOT_BREAKER_FAILURES = frozenset(
+    {
+        SOLIDWORKS_DIALOG,
+        CONFIRMATION_REQUIRED,
+        SOLIDWORKS_RECONNECTED,
+        "solidworks_unavailable",
+        ACTIVE_DOCUMENT_CHANGED,
+        SOLIDWORKS_BUSY,
+        "circuit_open",
+        NOT_SUPPORTED,
+        "wrong_document_type",
+        "no_active_sketch",
+        "no_active_document",
+        INVALID_INPUT,
+        "not_found",
+    }
+)
+
+
+def counts_toward_breaker(message: str) -> bool:
+    """Whether a failed operation with this error should trip its circuit breaker.
+
+    Args:
+        message: The adapter's error text.
+
+    Returns:
+        bool: False for the outcomes in :data:`NOT_BREAKER_FAILURES`.
+    """
+    error_type = ErrorClassifier().classify(message).error_type
+    return error_type not in NOT_BREAKER_FAILURES
+
+
 def extract_hresult(message: str, exc: BaseException | None = None) -> int | None:
     """Return the COM HRESULT from a ``com_error`` or from flattened text."""
     if exc is not None:
