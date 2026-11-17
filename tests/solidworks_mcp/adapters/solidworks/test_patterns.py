@@ -287,6 +287,16 @@ def test_a_grid_takes_both_directions_and_their_senses() -> None:
     assert result.data["instances"] == 16
 
 
+def test_a_named_axis_in_the_tree_is_selected_as_a_feature() -> None:
+    part = _Part(features_by_name=("Axis2", "Slot"))
+
+    result = _run(part, ["Slot"], "Axis2", 2, 5.0)
+
+    assert result.is_success, result.error
+    assert part.selected[0] == ("feature", "Axis2", False, 1)
+    assert result.data["direction"]["follows"] == "Axis2"
+
+
 def test_a_named_plane_or_edge_is_found_by_type_too() -> None:
     part = _Part(by_id=(("Plane3", "PLANE"), ("Cut2", "BODYFEATURE")))
 
