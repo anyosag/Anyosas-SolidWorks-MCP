@@ -17,7 +17,7 @@ from ..base import (
     SolidWorksFeature,
     SweepParameters,
 )
-from . import cut_check, edge_feature_check, limits
+from . import cut_check, edge_feature_check, limits, sketch_contours
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -29,7 +29,18 @@ class SolidWorksFeaturesMixin:
     async def create_extrusion(
         self, params: ExtrusionParameters
     ) -> AdapterResult[SolidWorksFeature]:
-        return _create_extrusion_impl(self, params)
+        """Extrude a sketch; a failure says when the sketch's contours cross.
+
+        Args:
+            params: The extrusion; see :func:`_create_extrusion_impl`.
+
+        Returns:
+            AdapterResult[SolidWorksFeature]: See :func:`_create_extrusion_impl`,
+            and :func:`_explain_profile_failure` for a failure.
+        """
+        return _explain_profile_failure(
+            self, _create_extrusion_impl(self, params), params
+        )
 
     async def create_revolve(
         self, params: RevolveParameters
@@ -56,9 +67,11 @@ class SolidWorksFeaturesMixin:
 
         Returns:
             AdapterResult[SolidWorksFeature]: See
-            :func:`_create_cut_extrude_choosing_side`.
+            :func:`_create_cut_extrude_choosing_side`, and
+            :func:`_explain_profile_failure` for a failure.
         """
-        return await _create_cut_extrude_choosing_side(self, params)
+        result = await _create_cut_extrude_choosing_side(self, params)
+        return _explain_profile_failure(self, result, params)
 
     async def add_fillet(
         self, radius: float, edge_names: list[str]
@@ -2084,6 +2097,41 @@ def _edge_facts(
         "selection_other": selected["other"] if selected else None,
         **edge_feature_check.feature_facts(adapter, feature),
     }
+
+
+def _explain_profile_failure(
+    adapter: Any, result: AdapterResult[SolidWorksFeature], params: Any
+) -> AdapterResult[SolidWorksFeature]:
+    """Say why an extrude or a cut built nothing when its sketch's contours cross.
+
+    The Dipper's overlapping rings gave a bare "Failed to create extrusion
+    feature". The sketch (``params.sketch_name``, else the one closed last)
+    is read only after a failure (``sketch_contours``), and its finding is
+    added to the error, where the classifier gives it its ``error_type``.
+
+    Args:
+        adapter: A connected adapter.
+        result: The extrude's or cut's result.
+        params: Its parameters.
+
+    Returns:
+        AdapterResult[SolidWorksFeature]: ``result``, its error extended when
+        contours cross.
+    """
+    if result.is_success or not getattr(adapter, "currentModel", None):
+        return result
+    name = getattr(params, "sketch_name", None) or getattr(
+        adapter, "_last_sketch_name", None
+    )
+    if not isinstance(name, str) or not name:
+        return result
+    read = adapter._handle_com_operation(
+        "read_sketch_contours", lambda: sketch_contours.crossings_in(adapter, name)
+    )
+    found = read.data if read.is_success and isinstance(read.data, list) else []
+    if found:
+        result.error = f"{result.error}. {sketch_contours.message(name, found)}"
+    return result
 
 
 def _facts_by_name(adapter: Any, feature: SolidWorksFeature) -> None:
