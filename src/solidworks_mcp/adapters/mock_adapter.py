@@ -223,6 +223,23 @@ class _BoolCallable:
         return bool(self._getter())
 
 
+def _mock_on_face(edge: dict[str, Any], normal: tuple[float, float, float]) -> bool:
+    """Whether a canned block edge lies on the block face facing ``normal``."""
+    axis = next(i for i in range(3) if normal[i] != 0)
+    level = 10.0 if normal[axis] > 0 else 0.0
+    return all(
+        abs(p[axis] - level) < 1e-9
+        for p in (edge.get("start_mm"), edge.get("end_mm"), edge.get("center_mm"))
+        if p is not None
+    )
+
+
+def _mock_convex(_edge: Any, info: dict[str, Any]) -> str:
+    """Every edge of the canned block (and its hole's rims) is convex."""
+    info["convexity"] = "convex"
+    return "convex"
+
+
 class MockSolidWorksAdapter(SolidWorksAdapter):
     """Mock adapter that simulates SolidWorks operations.
 
@@ -1107,15 +1124,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         The same validation, rules (``edge_rules.filter_edges``), messages
         and payload as the live adapter. Any feature in the mock tree made
         the whole block; a face source keeps the edges lying on that face.
+        Every edge of the block is convex, and ``with_ids`` gives ids the
+        mock's ``edge_ids`` takes back.
         """
         from .solidworks.edge_rules import (
             MAX_DESCRIBED_EDGES,
             describe_sources,
+            edge_key,
             expand_query,
             match_rules,
             no_match_message_rules,
             validate_edge_query,
         )
+        from .solidworks.persist_ids import encode
 
         problem = validate_edge_query(query)
         if problem:
@@ -1133,7 +1154,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         rules = expand_query(query)
         try:
-            kept, counts = match_rules(rules, self._mock_rule_edges)
+            kept, counts = match_rules(rules, self._mock_rule_edges, _mock_convex)
         except LookupError as exc:
             return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
         if not kept:
@@ -1141,18 +1162,30 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error=no_match_message_rules(rules, counts),
             )
+        # The block has 14 edges at most, under with_ids' 100: no refusal here.
+        with_ids = bool(query.get("with_ids"))
         if not append:
             self._selection.clear()
         self._selection.extend(f"Edge{i}" for i in range(len(kept)))
+        data: dict[str, Any] = {
+            "source": describe_sources(rules),
+            "matched": counts[0] if len(rules) == 1 else {"rules": counts},
+            "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
+            "selected_edges": len(kept),
+            "selection_count": len(self._selection),
+            "read": {
+                "kept_from_earlier_call": False,
+                "edges_described": len(self._mock_block_edges()),
+                "face_boxes": 0,
+            },
+        }
+        if with_ids:
+            data["edge_ids"] = [
+                encode(f"mock:{edge_key(info)}".encode()) for _edge, info in kept
+            ]
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={
-                "source": describe_sources(rules),
-                "matched": counts[0] if len(rules) == 1 else {"rules": counts},
-                "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
-                "selected_edges": len(kept),
-                "selection_count": len(self._selection),
-            },
+            data=data,
             execution_time=self._delays["feature_operation"] / 4,
         )
 
@@ -1162,12 +1195,45 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         """The canned block's edges for one rule's source.
 
         Any feature in the mock tree made the whole block; a face source
-        keeps the edges lying on that face.
+        keeps the edges lying on that face, ``between_faces`` those lying on
+        both, and ``edge_ids`` those the mock's ids name. The block is the
+        part's one body.
 
         Raises:
-            LookupError: The feature, face or plane isn't there.
+            LookupError: The feature, face, plane, body or an edge id isn't
+                there.
         """
+        from .solidworks.edge_rules import edge_key
         from .solidworks.face_selection import side_vector
+        from .solidworks.persist_ids import decode, missing_ids_message
+
+        if rule.get("body") and rule["body"] not in self._mock_bodies():
+            names = ", ".join(self._mock_bodies()) or "none"
+            raise LookupError(
+                f"No solid body named {rule['body']!r}; the part's bodies are "
+                f"{names}. A feature renames the bodies it changes, so "
+                "list_bodies names them as they are now."
+            )
+        if rule.get("edge_ids"):
+            by_id = {
+                f"mock:{edge_key(e)}".encode(): e for e in self._mock_block_edges()
+            }
+            wanted = [by_id.get(decode(text)) for text in rule["edge_ids"]]
+            missing = [i for i, edge in enumerate(wanted) if edge is None]
+            if missing:
+                raise LookupError(missing_ids_message(missing))
+            return [(None, e) for e in wanted if e is not None]
+        if rule.get("between_faces") is not None:
+            normals = [self._mock_face_at(p) for p in rule["between_faces"]]
+            for point, normal in zip(rule["between_faces"], normals, strict=True):
+                if normal is None:
+                    raise LookupError(f"No face found at point {list(point)} mm.")
+            on_both = [
+                e
+                for e in self._mock_block_edges()
+                if all(_mock_on_face(e, n) for n in normals if n is not None)
+            ]
+            return [(None, e) for e in on_both]
 
         normal: tuple[float, float, float] | None = None
         if rule.get("feature"):
@@ -1191,17 +1257,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         edges = self._mock_block_edges()
         if normal is not None:
-            axis = next(i for i in range(3) if normal[i] != 0)
-            level = 10.0 if normal[axis] > 0 else 0.0
-            edges = [
-                e
-                for e in edges
-                if all(
-                    abs(p[axis] - level) < 1e-9
-                    for p in (e.get("start_mm"), e.get("end_mm"), e.get("center_mm"))
-                    if p is not None
-                )
-            ]
+            edges = [e for e in edges if _mock_on_face(e, normal)]
         return [(None, e) for e in edges]
 
     def _mock_feature_kind(self, name: str) -> str | None:
@@ -1327,6 +1383,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
+        if name in self._reference_planes:
+            return self._mock_edit_plane(name, changes)
         feature = next((f for f in self._features.values() if f.name == name), None)
         if feature is None:
             return AdapterResult(
@@ -1367,6 +1425,39 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["feature_operation"],
         )
 
+    def _mock_edit_plane(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving an offset plane, with the live adapter's rules and messages.
+
+        A plane made at an angle (or on a face) is not an offset plane.
+        """
+        from .solidworks.feature_editing import check_changes
+        from .solidworks.ref_plane_edit import REF_PLANE, not_offset_message
+
+        problem = check_changes(REF_PLANE, changes, name)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        definitions = self.__dict__.setdefault("_plane_definitions", {})
+        plane = definitions.setdefault(name, {"offset": None, "flip": False})
+        if plane["offset"] is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=not_offset_message(name)
+            )
+        before = dict(plane)
+        plane.update(changes)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": name,
+                "type": REF_PLANE,
+                "before": before,
+                "after": dict(plane),
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
     def _mock_new_edges(self, name: str, changes: dict[str, Any]) -> list[str] | None:
         """The edge names ``changes`` gives a mock fillet or chamfer, or None.
 
@@ -1388,7 +1479,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         if "edge_rules" in changes:
             rules = expand_query(edge_query(changes["edge_rules"]))
-            kept, counts = match_rules(rules, self._mock_rule_edges)
+            kept, counts = match_rules(rules, self._mock_rule_edges, _mock_convex)
             if not kept:
                 raise ValueError(no_edges_message(name, rules_reason(rules, counts)))
             return [f"Edge{i}" for i in range(len(kept))]
@@ -5753,6 +5844,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         after = self._feature_tree_count
 
         self._reference_planes.append(f"Plane{len(self._reference_planes) + 1}")
+        # What edit_feature reads back from an IRefPlaneFeatureData.
+        self.__dict__.setdefault("_plane_definitions", {})[
+            self._reference_planes[-1]
+        ] = {"offset": abs(offset) if offset and not angle else None, "flip": flip}
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,

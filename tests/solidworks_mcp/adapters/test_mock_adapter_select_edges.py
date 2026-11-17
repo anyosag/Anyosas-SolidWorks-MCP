@@ -127,3 +127,65 @@ async def test_any_of_with_a_missing_feature_is_an_error(
     result = await part.select_edges({"any_of": [{"side": "top"}, {"feature": "Nope"}]})
 
     assert result.error == "Feature 'Nope' not found; list_features names the features."
+
+
+# ---- the Dipper's predicates -------------------------------------------------------
+
+
+async def test_the_edge_two_faces_share(part: MockSolidWorksAdapter) -> None:
+    result = await part.select_edges({"between_faces": [[5, 5, 10], [10, 5, 5]]})
+
+    assert result.is_success, result.error
+    edges = (result.data or {})["edges"]
+    assert len(edges) == 1
+    assert {edges[0]["start_mm"][0], edges[0]["end_mm"][0]} == {10.0}
+    assert {edges[0]["start_mm"][2], edges[0]["end_mm"][2]} == {10.0}
+
+
+async def test_between_faces_needs_a_face_at_each_point(
+    part: MockSolidWorksAdapter,
+) -> None:
+    result = await part.select_edges({"between_faces": [[5, 5, 10], [50, 5, 5]]})
+
+    assert result.error == "No face found at point [50, 5, 5] mm."
+
+
+async def test_every_block_edge_is_convex(part: MockSolidWorksAdapter) -> None:
+    convex = await part.select_edges({"side": "top", "convexity": "convex"})
+    concave = await part.select_edges({"side": "top", "convexity": "concave"})
+
+    assert (convex.data or {})["selected_edges"] == 4
+    assert (convex.data or {})["edges"][0]["convexity"] == "convex"
+    assert concave.error == (
+        "No matching edges found: the top face has 4 edge(s); 0 pass convexity."
+    )
+
+
+async def test_ids_out_and_back_in(part: MockSolidWorksAdapter) -> None:
+    first = await part.select_edges({"side": "top", "with_ids": True})
+    ids = (first.data or {})["edge_ids"]
+
+    again = await part.select_edges({"edge_ids": ids})
+
+    assert len(ids) == 4
+    assert (again.data or {})["edges"] == (first.data or {})["edges"]
+    assert (again.data or {})["source"] == "4 edge id(s)"
+
+
+async def test_an_id_the_block_does_not_have(part: MockSolidWorksAdapter) -> None:
+    result = await part.select_edges({"edge_ids": ["bm90LWFuLWVkZ2U="]})
+
+    assert (result.error or "").startswith("edge_ids 0 no longer name an edge")
+
+
+async def test_one_body_by_its_name(part: MockSolidWorksAdapter) -> None:
+    name = next(iter(part._mock_bodies()))
+
+    kept = await part.select_edges({"body": name, "parallel_to": "x"})
+    missing = await part.select_edges({"body": "Body-Move/Copy1"})
+
+    assert (kept.data or {})["selected_edges"] == 4
+    assert (kept.data or {})["source"] == f"body {name!r}"
+    assert (missing.error or "").startswith(
+        "No solid body named 'Body-Move/Copy1'; the part's bodies are"
+    )

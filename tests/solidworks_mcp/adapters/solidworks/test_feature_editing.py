@@ -221,8 +221,13 @@ def test_end_conditions_by_any_spelling() -> None:
     ("kind", "changes", "fragment"),
     [
         ("Cut", {}, "Give at least one change"),
-        ("Shell", {"depth": 1}, "changes extrudes, cuts, revolves, fillets and"),
+        (
+            "Shell",
+            {"depth": 1},
+            "changes extrudes, cuts, revolves, fillets, chamfers and offset planes",
+        ),
         ("Fillet", {"depth": 1}, "it takes edge_rules, edges, radius, not depth"),
+        ("RefPlane", {"depth": 1}, "it takes flip, offset, not depth"),
         ("Cut", {"end_condition": "sideways"}, "end_condition must be one of"),
     ],
 )
@@ -372,7 +377,8 @@ def test_after_falls_back_to_the_changes_when_unreadable() -> None:
         ("Chamfer", {"edge_rules": {"sides": "top"}}, "unknown key(s) sides; it"),
         ("Chamfer", {"edge_rules": {"append": True}}, "unknown key(s) append"),
         ("Fillet", {"edge_rules": {"edge_type": "round"}}, "edge_rules: edge_type"),
-        ("Fillet", {"edge_rules": {"face_point": 5}}, "the wrong type"),
+        ("Fillet", {"edge_rules": {"inside_box": 5}}, "the wrong type"),
+        ("Fillet", {"edge_rules": {"face_point": 5}}, "face_point must be [x, y, z]"),
         (
             "Fillet",
             {"edge_rules": {"any_of": [{"side": "top"}, {"color": "red"}]}},

@@ -78,7 +78,8 @@ would pass that tool (its fields, or `{"input_data": {...}}`). A step's
 2-5) fit in one call; up to 100 steps per call. An argument that is exactly
 `"$steps.<i>.<path>"` takes the value at that path in step i's reply, e.g.
 `"old_name": "$steps.4.fillet.name"`, so a later step needn't guess a
-feature's name. It stops at the first failed step and reports that step's
+feature's name. Give a step an `"id"` (`"plane_x"`) and write
+`"$steps.plane_x.plane.name"` instead of counting steps. It stops at the first failed step and reports that step's
 `error_type` and `hint`; the error's `data.steps` shows what ran. With
 `rollback_on_error` it then deletes the features and sketches the earlier
 steps added. Each step's entry is a summary (status, message, small facts

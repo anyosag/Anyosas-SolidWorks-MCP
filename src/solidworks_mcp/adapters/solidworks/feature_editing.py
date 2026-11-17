@@ -41,6 +41,7 @@ from .edge_rules import (
     no_match_message_rules,
     validate_edge_query,
 )
+from .ref_plane_edit import PLANE_EDITS, REF_PLANE, edit_plane
 
 #: ``swEndConditions_e`` by the name the tool takes (lower case, no spaces).
 END_CONDITIONS: dict[str, tuple[str, int]] = {
@@ -79,6 +80,7 @@ EDITABLE: dict[str, frozenset[str]] = {
     "RevCut": frozenset({"angle", "reverse_direction"}),
     "Fillet": frozenset({"radius"}) | EDGE_CHANGES,
     "Chamfer": EDGE_CHANGES,
+    REF_PLANE: PLANE_EDITS,
 }
 
 #: ``swSelectType_e.swSelEDGES``: what ``GetSelectedObjectType3`` says of an edge.
@@ -190,14 +192,14 @@ def check_changes(kind: str, changes: dict[str, Any], name: str) -> str | None:
     if not changes:
         return (
             "Give at least one change: depth, end_condition, reverse_direction, "
-            "angle, radius, edges or edge_rules."
+            "angle, radius, edges, edge_rules, offset or flip."
         )
     allowed = EDITABLE.get(kind)
     if allowed is None:
         return (
             f"{name!r} is a {kind or 'feature'}; edit_feature changes extrudes, "
-            "cuts, revolves, fillets and chamfers. Change other features' "
-            "dimensions with set_dimension."
+            "cuts, revolves, fillets, chamfers and offset planes. Change other "
+            "features' dimensions with set_dimension."
         )
     extra = sorted(set(changes) - allowed)
     if extra:
@@ -302,7 +304,8 @@ def matched_edges(adapter: Any, name: str, rules: dict[str, Any]) -> list[Any]:
         LookupError: A rule's feature, face or plane isn't there.
     """
     expanded = expand_query(edge_query(rules))
-    kept, counts = match_rules(expanded, EdgeRuleSelector(adapter).candidates)
+    selector = EdgeRuleSelector(adapter)
+    kept, counts = match_rules(expanded, selector.candidates, selector.convexity)
     if not kept:
         raise ValueError(no_edges_message(name, rules_reason(expanded, counts)))
     return [edge for edge, _info in kept]
@@ -444,6 +447,8 @@ def edit_feature(
     problem = check_changes(kind, changes, name)
     if problem:
         raise ValueError(problem)
+    if kind == REF_PLANE:
+        return edit_plane(adapter, name, feature, changes, null_component, _feature)
     edges = new_edges(adapter, name, changes)
     data = _attempt(adapter, lambda: feature.GetDefinition())
     if data is None:

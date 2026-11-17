@@ -9,9 +9,11 @@ pieces:
   :func:`validate_edge_query` and :func:`filter_edges`, which work on the
   edge descriptions :func:`face_selection.describe_edge` returns (mm).
 * **COM gathering** (:class:`EdgeRuleSelector`): the candidate edges for a
-  source - a feature's faces (``IFeature.GetFaces``), one face, or every
-  body's edges (``IBody2.GetEdges``) - de-duplicated, because an edge
-  shared by two of a feature's faces is returned by both.
+  source - a feature's faces (``IFeature.GetFaces``), one face, the edges two
+  faces share, edges by persistent id, or every body's edges - each once,
+  read through the part's :class:`edge_index.PartIndex`, which leaves out
+  what ``inside_box`` rules out before reading it and keeps what it read
+  until the next rebuild.
 
 The selection itself is :meth:`FaceEdgeSelector.select`: all or nothing.
 """
@@ -19,16 +21,27 @@ The selection itself is :meth:`FaceEdgeSelector.select`: all or nothing.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
-from . import limits
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
-from .face_selection import EDGE_TYPES, FaceEdgeSelector, describe_edge, side_vector
+from .edge_convexity import CONVEXITIES, ConvexityReader
+from .edge_index import (
+    Box,
+    IndexedBody,
+    IndexedFace,
+    PartIndex,
+    box_from_mm,
+    index_for,
+    reaches,
+)
+from .face_selection import EDGE_TYPES, FaceEdgeSelector, side_vector
+from .persist_ids import ids_problem, missing_ids_message, resolve
 
 #: The sources an edge query may name; none of them means every edge.
-EDGE_SOURCES = ("feature", "face_point", "side", "plane")
+EDGE_SOURCES = ("feature", "face_point", "side", "plane", "between_faces", "edge_ids")
 
 #: Axis names ``parallel_to`` accepts.
 AXIS_VECTORS: dict[str, tuple[float, float, float]] = {
@@ -42,6 +55,11 @@ MAX_DESCRIBED_EDGES = 50
 
 #: How far an edge may stick out of ``inside_box`` and still be inside, mm.
 _BOX_TOLERANCE_MM = 1e-3
+
+#: A source with more edges than this, and an ``inside_box``, is narrowed
+#: through the whole body's face boxes (``PartIndex.edges_in_reach``) before
+#: its edges are read: a face box costs two calls, an edge about a dozen.
+REACH_MIN_EDGES = 60
 
 
 def axis_vector(value: str | list[float]) -> tuple[float, float, float]:
@@ -70,13 +88,18 @@ def axis_vector(value: str | list[float]) -> tuple[float, float, float]:
 #: The keys one rule of ``any_of`` may give.
 RULE_KEYS = (
     *EDGE_SOURCES,
+    "body",
     "edge_type",
     "parallel_to",
     "parallel_tolerance_deg",
     "inside_box",
     "min_length",
     "max_length",
+    "convexity",
 )
+
+#: Keys of a query that are options of the call, not of a rule.
+OPTION_KEYS = ("with_ids",)
 
 #: The most rules one ``any_of`` takes.
 MAX_RULES = 20
@@ -88,7 +111,7 @@ def expand_query(query: dict[str, Any]) -> list[dict[str, Any]]:
     Each ``any_of`` rule is laid over the query's own keys, so a source or
     filter given once applies to every rule that doesn't give its own.
     """
-    shared = {k: v for k, v in query.items() if k != "any_of"}
+    shared = {k: v for k, v in query.items() if k != "any_of" and k not in OPTION_KEYS}
     rules = query.get("any_of")
     if not rules:
         return [shared]
@@ -105,12 +128,12 @@ def validate_edge_query(query: dict[str, Any]) -> str | None:
     """Check an edge query; return what is wrong with it, or None.
 
     Args:
-        query: ``feature``, ``face_point``, ``side`` or ``plane`` (at most
-            one; none means every edge), plus the filters ``edge_type``,
-            ``parallel_to``, ``inside_box``, ``min_length`` and
-            ``max_length`` (mm), and ``parallel_tolerance_deg``. Or
-            ``any_of``: rules with those keys, each laid over the query's
-            own (:func:`expand_query`); an edge any of them matches is kept.
+        query: One source of :data:`EDGE_SOURCES` at most (none means every
+            edge), ``body``, plus the filters ``edge_type``, ``parallel_to``,
+            ``inside_box``, ``min_length`` and ``max_length`` (mm),
+            ``parallel_tolerance_deg`` and ``convexity``. Or ``any_of``:
+            rules with those keys, each laid over the query's own
+            (:func:`expand_query`); an edge any of them matches is kept.
 
     Returns:
         str | None: The problem, in words an agent can act on.
@@ -138,23 +161,58 @@ def validate_edge_query(query: dict[str, Any]) -> str | None:
     return None
 
 
+def _point_problem(name: str, point: Any) -> str | None:
+    if not isinstance(point, list | tuple) or len(point) != 3:
+        return f"{name} must be [x, y, z] in millimetres."
+    return None
+
+
 def _rule_problem(query: dict[str, Any]) -> str | None:
     """What is wrong with one rule (one source and its filters), or None."""
     sources = [s for s in EDGE_SOURCES if query.get(s) not in (None, "")]
     if len(sources) > 1:
         return (
-            "Give at most one of feature, face_point, side or plane "
-            f"(got {', '.join(sources)})."
+            f"Give at most one of {', '.join(EDGE_SOURCES[:-1])} or "
+            f"{EDGE_SOURCES[-1]} (got {', '.join(sources)})."
         )
+    return _source_problem(query) or _filter_problem(query)
+
+
+def _source_problem(query: dict[str, Any]) -> str | None:
+    """What is wrong with the rule's source or ``body``, or None."""
     point = query.get("face_point")
-    if point is not None and len(point) != 3:
-        return "face_point must be [x, y, z] in millimetres."
+    if point is not None:
+        problem = _point_problem("face_point", point)
+        if problem:
+            return problem
     side = query.get("side")
     if side not in (None, ""):
         try:
             side_vector(str(side))
         except ValueError as exc:
             return str(exc)
+    between = query.get("between_faces")
+    if between is not None:
+        if not isinstance(between, list) or len(between) != 2:
+            return "between_faces must be two points, [[x, y, z], [x, y, z]] in mm."
+        for index, corner in enumerate(between):
+            problem = _point_problem(f"between_faces[{index}]", corner)
+            if problem:
+                return problem
+    if query.get("edge_ids") is not None:
+        problem = ids_problem(query["edge_ids"])
+        if problem:
+            return problem
+        if query.get("body"):
+            return "edge_ids name the edges themselves; leave body out."
+    body = query.get("body")
+    if body is not None and (not isinstance(body, str) or not body.strip()):
+        return "body must be a solid body's name, as list_bodies gives it."
+    return None
+
+
+def _filter_problem(query: dict[str, Any]) -> str | None:
+    """What is wrong with the rule's filters, or None."""
     edge_type = query.get("edge_type", "all")
     if edge_type not in EDGE_TYPES:
         return f"edge_type must be one of {', '.join(EDGE_TYPES)} (got {edge_type!r})."
@@ -172,6 +230,9 @@ def _rule_problem(query: dict[str, Any]) -> str | None:
     low, high = query.get("min_length"), query.get("max_length")
     if low is not None and high is not None and low > high:
         return "min_length must not be more than max_length."
+    convexity = query.get("convexity")
+    if convexity is not None and convexity not in CONVEXITIES:
+        return f"convexity must be one of {', '.join(CONVEXITIES)} (got {convexity!r})."
     return None
 
 
@@ -252,14 +313,24 @@ def _length_ok(info: dict[str, Any], low: float | None, high: float | None) -> b
     )
 
 
+#: ``(edge, description) -> "convex" | "concave" | "tangent" | None``.
+Classify = Callable[[Any, dict[str, Any]], str | None]
+
+
 def filter_edges(
-    edges: list[tuple[Any, dict[str, Any]]], query: dict[str, Any]
+    edges: list[tuple[Any, dict[str, Any]]],
+    query: dict[str, Any],
+    classify: Classify | None = None,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], dict[str, int]]:
     """Keep the edges every rule in ``query`` allows.
 
     Args:
-        edges: ``(handle, description)`` pairs, descriptions in mm.
+        edges: ``(handle, description)`` pairs, descriptions in mm. An
+            :class:`EdgeList` a box narrowed also gives ``faces_left_out``.
         query: A query :func:`validate_edge_query` accepted.
+        classify: Reads an edge's convexity, for ``convexity``; only the
+            edges every other rule kept are read. Without it, the
+            description's ``convexity`` is used.
 
     Returns:
         tuple: The kept pairs, and how many were left after each rule that
@@ -267,7 +338,9 @@ def filter_edges(
         removed them.
     """
     counts = {"candidates": len(edges)}
-    kept = edges
+    if getattr(edges, "pruned", False):
+        counts["faces_left_out"] = int(getattr(edges, "faces_left_out", 0))
+    kept = list(edges)
     edge_type = query.get("edge_type", "all")
     if edge_type != "all":
         kept = [e for e in kept if e[1].get("curve") == edge_type]
@@ -284,20 +357,38 @@ def filter_edges(
     if low is not None or high is not None:
         kept = [e for e in kept if _length_ok(e[1], low, high)]
         counts["length"] = len(kept)
+    wanted = query.get("convexity")
+    if wanted is not None:
+        kinds = [
+            classify(edge, info) if classify else info.get("convexity")
+            for edge, info in kept
+        ]
+        unread = sum(1 for kind in kinds if kind is None)
+        kept = [e for e, kind in zip(kept, kinds, strict=True) if kind == wanted]
+        counts["convexity"] = len(kept)
+        if unread:
+            counts["convexity_unread"] = unread
     return kept, counts
 
 
 def describe_source(query: dict[str, Any]) -> str:
     """The source in words, for messages: ``"feature 'Cut-Extrude2'"`` etc."""
+    body = query.get("body")
+    on = f" on body {body!r}" if body else ""
     if query.get("feature"):
-        return f"feature {query['feature']!r}"
+        return f"feature {query['feature']!r}{on}"
     if query.get("face_point") is not None:
-        return f"the face at {list(query['face_point'])} mm"
+        return f"the face at {list(query['face_point'])} mm{on}"
     if query.get("side"):
-        return f"the {query['side']} face"
+        return f"the {query['side']} face{on}"
     if query.get("plane"):
-        return f"the face(s) on {query['plane']!r}"
-    return "the part"
+        return f"the face(s) on {query['plane']!r}{on}"
+    if query.get("between_faces") is not None:
+        first, second = (list(p) for p in query["between_faces"])
+        return f"the join of the faces at {first} mm and {second} mm{on}"
+    if query.get("edge_ids"):
+        return f"{len(query['edge_ids'])} edge id(s)"
+    return f"body {body!r}" if body else "the part"
 
 
 def describe_sources(rules: list[dict[str, Any]]) -> str:
@@ -307,8 +398,18 @@ def describe_sources(rules: list[dict[str, Any]]) -> str:
 
 
 def _steps(query: dict[str, Any], counts: dict[str, int]) -> str:
-    steps = [f"{describe_source(query)} has {counts['candidates']} edge(s)"]
-    steps += [f"{counts[rule]} pass {rule}" for rule in counts if rule != "candidates"]
+    near = ""
+    if "faces_left_out" in counts:
+        near = (
+            f" near inside_box ({counts['faces_left_out']} face(s) left out by "
+            "their boxes)"
+        )
+    steps = [f"{describe_source(query)} has {counts['candidates']} edge(s){near}"]
+    for rule, count in counts.items():
+        if rule == "convexity_unread":
+            steps.append(f"{count} whose convexity didn't read")
+        elif rule not in ("candidates", "faces_left_out"):
+            steps.append(f"{count} pass {rule}")
     return "; ".join(steps)
 
 
@@ -330,15 +431,22 @@ def no_match_message_rules(
     return "No matching edges found for any rule: " + " | ".join(parts) + "."
 
 
+def _frozen(value: Any) -> Any:
+    """``value`` with its lists made tuples, so it can be a key."""
+    if isinstance(value, list | tuple):
+        return tuple(_frozen(v) for v in value)
+    return value
+
+
 def _source_key(rule: dict[str, Any]) -> tuple[Any, ...]:
-    """Equal for rules that read the same edges."""
+    """Equal for rules that read the same edges.
 
-    def hashable(value: Any) -> Any:
-        return tuple(value) if isinstance(value, list) else value
-
+    A rule's ``body`` and ``inside_box`` narrow what is read, so they are
+    part of its source.
+    """
     return tuple(
-        (s, hashable(rule.get(s)))
-        for s in EDGE_SOURCES
+        (s, _frozen(rule.get(s)))
+        for s in (*EDGE_SOURCES, "body", "inside_box")
         if rule.get(s) not in (None, "")
     )
 
@@ -346,6 +454,7 @@ def _source_key(rule: dict[str, Any]) -> tuple[Any, ...]:
 def match_rules(
     rules: list[dict[str, Any]],
     candidates: Any,
+    classify: Classify | None = None,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], list[dict[str, int]]]:
     """The edges any rule keeps, each once, reading each source once.
 
@@ -357,6 +466,7 @@ def match_rules(
     Args:
         rules: From :func:`expand_query`.
         candidates: ``(rule) -> [(handle, description)]``, the source's edges.
+        classify: Reads an edge's convexity (:func:`filter_edges`).
 
     Returns:
         tuple: The kept pairs in rule order, and each rule's counts
@@ -370,7 +480,7 @@ def match_rules(
         source = _source_key(rule)
         if source not in read:
             read[source] = candidates(rule)
-        kept, counts = filter_edges(read[source], rule)
+        kept, counts = filter_edges(read[source], rule, classify)
         every_count.append(counts)
         for edge, info in kept:
             key = edge_key(info)
@@ -411,40 +521,135 @@ def edge_key(info: dict[str, Any]) -> tuple[Any, ...] | None:
     )
 
 
+class EdgeList(list[tuple[Any, dict[str, Any]]]):
+    """A source's ``(edge, description)`` pairs.
+
+    Attributes:
+        pruned: An ``inside_box`` narrowed them before they were read.
+        faces_left_out: How many faces that box left out unread.
+    """
+
+    pruned = False
+    faces_left_out = 0
+
+
 class EdgeRuleSelector:
     """Gather the candidate edges for an edge query on the active part.
 
     Args:
         adapter: A connected ``PyWin32Adapter``.
+        index: The part's index; by default the one kept on the adapter
+            while the part is unchanged (:func:`edge_index.index_for`).
     """
 
-    def __init__(self, adapter: Any) -> None:
+    def __init__(self, adapter: Any, index: PartIndex | None = None) -> None:
         self._adapter = adapter
         self._faces = FaceEdgeSelector(adapter)
+        self.index = index if index is not None else index_for(adapter)
+        self._convexity = ConvexityReader(adapter, self.index.flag_once)
+        # (feature, body) -> its faces: rules with other boxes share one read.
+        self._feature_reads: dict[tuple[str, str | None], list[IndexedFace]] = {}
 
-    def candidates(self, query: dict[str, Any]) -> list[tuple[Any, dict[str, Any]]]:
+    def candidates(self, query: dict[str, Any]) -> EdgeList:
         """The source's edges, each once, with their descriptions.
 
         Raises:
-            LookupError: The feature, face or plane isn't there, or the part
-                has no edges.
+            LookupError: The feature, face, plane, body or an edge id isn't
+                there, or the part has no edges.
         """
+        body = self.index.body_named(str(query["body"])) if query.get("body") else None
+        bodies = None if body is None else [body]
+        box = (
+            box_from_mm(query["inside_box"])
+            if query.get("inside_box") is not None
+            else None
+        )
+        if query.get("edge_ids"):
+            return self._listed(self._by_ids(list(query["edge_ids"])))
         if query.get("feature"):
-            faces = self._feature_faces(str(query["feature"]))
-            return self._unique(edge for face in faces for edge in self._edges_of(face))
-        if any(query.get(s) not in (None, "") for s in ("face_point", "side", "plane")):
-            faces = self._faces.resolve(
-                query.get("face_point"), query.get("side"), query.get("plane")
+            key = (str(query["feature"]), None if body is None else body.name)
+            if key not in self._feature_reads:
+                faces = self._feature_faces(key[0], body)
+                self._feature_reads[key] = [IndexedFace(face) for face in faces]
+            return self._from_faces(self._feature_reads[key], box, bodies)
+        if query.get("between_faces") is not None:
+            return self._listed(self._between(query["between_faces"], bodies))
+        if query.get("face_point") is not None:
+            face = self.index.face_at(query["face_point"], bodies)
+            return self._from_faces([face], box, bodies)
+        if any(query.get(s) not in (None, "") for s in ("side", "plane")):
+            resolved = self._faces.resolve(
+                None,
+                query.get("side"),
+                query.get("plane"),
+                None if body is None else [body.handle],
             )
-            return self._unique(
-                edge for face in faces for edge in self._edges_of(face.handle)
+            return self._from_faces(
+                [IndexedFace(face.handle) for face in resolved], box, bodies
             )
-        edges = self._unique(self._body_edges())
-        if not edges:
-            raise LookupError("The active part has no solid body edges.")
-        return edges
+        return self._whole(bodies, box)
 
-    def _feature_faces(self, name: str) -> list[Any]:
+    def convexity(self, edge: Any, info: dict[str, Any]) -> str | None:
+        """An edge's convexity (``edge_convexity``), read once and kept in ``info``."""
+        return self._convexity.read(edge, info)
+
+    def _whole(self, bodies: list[IndexedBody] | None, box: Box | None) -> EdgeList:
+        """Every edge of the part (or ``bodies``), or those a box can hold."""
+        every = self.index.bodies() if bodies is None else bodies
+        if not every:
+            raise LookupError("The active part has no solid body edges.")
+        if box is None:
+            handles = [edge for body in every for edge in self.index.body_edges(body)]
+            if not handles:
+                raise LookupError("The active part has no solid body edges.")
+            return self._listed(handles)
+        reach = self.index.edges_in_reach(box, every)
+        out = self._listed(reach.edges)
+        out.pruned, out.faces_left_out = True, reach.faces_left_out
+        return out
+
+    def _from_faces(
+        self,
+        faces: list[IndexedFace],
+        box: Box | None,
+        bodies: list[IndexedBody] | None,
+    ) -> EdgeList:
+        """The edges of ``faces``; with a box, of those whose box reaches it.
+
+        A source with more than :data:`REACH_MIN_EDGES` edges is narrowed
+        further through the body's faces (``PartIndex.edges_in_reach``).
+        """
+        left_out = 0
+        if box is not None:
+            near = [face for face in faces if reaches(self.index.face_box(face), box)]
+            left_out = len(faces) - len(near)
+            faces = near
+        self.index.read_edges(faces)
+        handles = _once([edge for face in faces for edge in face.edges or []])
+        if box is None:
+            return self._listed(handles)
+        if len(handles) > REACH_MIN_EDGES and self.index.edge_identity:
+            reach = {id(e) for e in self.index.edges_in_reach(box, bodies).edges}
+            handles = [edge for edge in handles if id(edge) in reach]
+        out = self._listed(handles)
+        out.pruned, out.faces_left_out = True, left_out
+        return out
+
+    def _listed(self, handles: list[Any]) -> EdgeList:
+        """``(edge, description)`` for each handle, the same edge kept once."""
+        out = EdgeList()
+        seen: set[tuple[Any, ...]] = set()
+        for edge in _once(handles):
+            info = self.index.describe(edge)
+            key = edge_key(info)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append((edge, info))
+        return out
+
+    def _feature_faces(self, name: str, body: IndexedBody | None) -> list[Any]:
         model = self._adapter.currentModel
         feature = _attempt(self._adapter, lambda: model.FeatureByName(name))
         if feature is None:
@@ -458,39 +663,64 @@ class EdgeRuleSelector:
                 f"Feature {name!r} has no faces in the body (a sketch, plane or "
                 "suppressed feature has none)."
             )
-        return faces
+        if body is None:
+            return faces
+        wanted = self.index.body_name(body)
+        names = [self._body_name_of(face) for face in faces]
+        on = [face for face, named in zip(faces, names, strict=True) if named == wanted]
+        if not on:
+            made = sorted({n for n in names if n}) or ["no body that reads"]
+            raise LookupError(
+                f"Feature {name!r} made no faces on body {wanted!r}; its faces are "
+                f"on {', '.join(made)}. A feature renames the bodies it changes, "
+                "so list_bodies names them as they are now."
+            )
+        return on
 
-    def _edges_of(self, face: Any) -> list[Any]:
-        _flag(self._adapter, face, "GetEdges")
-        return as_list(_attempt(self._adapter, lambda: face.GetEdges()))
+    def _body_name_of(self, face: Any) -> str | None:
+        """The name of the body a face is on (``IFace2.GetBody``, ``IBody2.Name``)."""
+        self.index.flag_once(face, "GetBody")
+        body = _attempt(self._adapter, lambda: face.GetBody())
+        name = _attempt(self._adapter, lambda: body.Name)
+        return str(name) if name else None
 
-    def _body_edges(self) -> list[Any]:
-        model = self._adapter.currentModel
-        _flag(self._adapter, model, "GetBodies2")
-        edges: list[Any] = []
-        for body in as_list(
-            _attempt(self._adapter, lambda: model.GetBodies2(0, False))
-        ):
-            _flag(self._adapter, body, "GetEdges")
-            edges += as_list(_attempt(self._adapter, lambda b=body: b.GetEdges()))
-        return edges
+    def _between(
+        self, points: list[list[float]], bodies: list[IndexedBody] | None
+    ) -> list[Any]:
+        """The edges both faces through ``points`` bound."""
+        first = self.index.face_at(points[0], bodies)
+        second = self.index.face_at(points[1], bodies)
+        if first is second:
+            raise LookupError(
+                f"Both points of between_faces are on one face (at {list(points[0])} "
+                "mm); give a point on each of the two faces."
+            )
+        a, b = self.index.face_edges(first), self.index.face_edges(second)
+        if self.index.edge_identity:
+            in_b = {id(edge) for edge in b}
+            return [edge for edge in a if id(edge) in in_b]
+        keys = {edge_key(self.index.describe(edge)) for edge in b} - {None}
+        return [edge for edge in a if edge_key(self.index.describe(edge)) in keys]
 
-    def _unique(self, edges: Any) -> list[tuple[Any, dict[str, Any]]]:
-        seen: set[tuple[Any, ...]] = set()
-        out = []
-        for edge in edges:
-            limits.check("reading edges")
-            info = describe_edge(self._adapter, edge)
-            key = edge_key(info)
-            if key is not None:
-                if key in seen:
-                    continue
-                seen.add(key)
-            out.append((edge, info))
-        return out
+    def _by_ids(self, ids: list[str]) -> list[Any]:
+        found, missing = resolve(self._adapter, self._adapter.currentModel, ids)
+        if missing:
+            raise LookupError(missing_ids_message(missing))
+        return [self.index.canonical(edge) for edge in found]
 
     def select(
         self, edges: list[tuple[Any, dict[str, Any]]], append: bool
     ) -> int | None:
         """Select every edge, all or nothing (see ``FaceEdgeSelector.select``)."""
         return self._faces.select(edges, append)
+
+
+def _once(handles: list[Any]) -> list[Any]:
+    """``handles`` without repeats of one handle, in order."""
+    seen: set[int] = set()
+    out = []
+    for handle in handles:
+        if id(handle) not in seen:
+            seen.add(id(handle))
+            out.append(handle)
+    return out

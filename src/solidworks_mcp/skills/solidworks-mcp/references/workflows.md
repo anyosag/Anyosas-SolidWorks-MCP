@@ -187,6 +187,10 @@ that `sketch_name`.
    takes its dependents (fillets, patterns) with it:
    - an extrude's or cut's depth, end condition or direction, a revolve's
      angle, a fillet's radius: `edit_feature` with `name` and the change;
+   - a feature that stands on an offset plane, to move it: move the plane
+     with `edit_feature` (`offset` in mm, `flip` for the other side) rather
+     than cutting or adding material; its reply gives a point of the plane
+     before and after;
    - any other dimension: `set_dimension` with the full name (e.g.
      "D1@Boss-Extrude1") and the new value in its `units` (mm, degrees, or
      a count);
