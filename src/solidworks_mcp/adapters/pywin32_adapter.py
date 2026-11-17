@@ -24,6 +24,7 @@ from .base import (
     SolidWorksAdapter,
 )
 from .solidworks import (
+    SolidWorksAnalysisMixin,
     SolidWorksBodiesMixin,
     SolidWorksDocumentationMixin,
     SolidWorksDrawingStandardMixin,
@@ -229,6 +230,7 @@ _READ_ONLY_OPERATIONS = frozenset(
         "list_model_dimensions",
         "list_open_documents",
         "list_references",
+        "volume_by_plane",
     }
 )
 
@@ -2255,6 +2257,7 @@ class _FeatureSelectionService:
 
 
 class PyWin32Adapter(
+    SolidWorksAnalysisMixin,
     SolidWorksBodiesMixin,
     SolidWorksDrawingStandardMixin,
     SolidWorksDocumentationMixin,

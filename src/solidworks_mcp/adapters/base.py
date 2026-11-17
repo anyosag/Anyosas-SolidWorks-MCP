@@ -1379,22 +1379,28 @@ class SolidWorksAdapter(ABC):
 
     async def check_printability(
         self,
-        build_direction: str | list[float],
+        build_direction: str | list[float] | None,
         support_angle_deg: float = 45.0,
         min_bridge_mm: float = 5.0,
+        orientations: int = 0,
+        min_feature_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Check the active part for printing in one orientation.
 
         Args:
-            build_direction (str | list[float]): The direction the part
-                grows from the build plate: ``x``, ``-z`` ... or a vector.
+            build_direction (str | list[float] | None): The direction the part
+                grows from the build plate: ``x``, ``-z`` ... or a vector; None
+                to check in the best of ``orientations``.
             support_angle_deg (float): Down-facing surfaces under this angle
                 from horizontal need supports.
             min_bridge_mm (float): Only longer bridges are listed.
+            orientations (int): How many build directions to try (0: none).
+            min_feature_mm (float | None): Report regions thinner than this.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``down_facing``, ``islands``,
-            ``bridges``, ``suction_cups``, ``ok``, ``triangles`` and ``mesh``.
+            ``bridges``, ``suction_cups``, ``ok``, ``triangles`` and ``mesh``;
+            ``orientations`` and ``thin_features`` when asked.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
@@ -1806,6 +1812,9 @@ class SolidWorksAdapter(ABC):
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Place a component of the active assembly: origin, axes and fixed state.
 
@@ -1817,6 +1826,10 @@ class SolidWorksAdapter(ABC):
                 assembly coordinates; None keeps them.
             fixed (bool | None): Fix (True) or float (False) it afterwards;
                 None keeps its state.
+            turn_axis (list[float] | None): After that, turn it about this
+                direction (assembly coordinates).
+            turn_pivot_mm (list[float] | None): A point on the turn's axis, mm.
+            turn_deg (float): The turn, degrees (right-hand rule).
 
         Returns:
             AdapterResult[dict[str, Any]]: ``placed``, ``moved``, ``fixed``,
@@ -2295,6 +2308,83 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="measure_clearance is not implemented by this adapter",
+        )
+
+    async def rotation_clearance(
+        self,
+        moving: str,
+        other: str,
+        axis: list[float],
+        pivot_mm: list[float] | None = None,
+        range_deg: list[float] | None = None,
+        step_deg: float = 5.0,
+        tolerance_deg: float = 0.1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Turn a body (part) or component (assembly) through an angle range.
+
+        Args:
+            moving (str): The body or component that turns.
+            other (str): The one it must clear.
+            axis (list[float]): The turn's axis direction (unit vector).
+            pivot_mm (list[float] | None): A point on the axis, mm; the origin.
+            range_deg (list[float] | None): ``[from, to]``, 0 inside it.
+            step_deg (float): The coarse step.
+            tolerance_deg (float): How finely contacts and minima are found.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``min_clearance_mm`` and where,
+            ``positive`` and ``negative`` first contacts, and the samples, or
+            error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="rotation_clearance is not implemented by this adapter",
+        )
+
+    async def volume_by_plane(
+        self,
+        plane: str | None = None,
+        point_mm: list[float] | None = None,
+        normal: list[float] | None = None,
+        bodies: list[str] | None = None,
+        enclosed: bool = False,
+        density_g_cm3: float | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the active part's volume on each side of a plane.
+
+        Args:
+            plane (str | None): A reference plane's name.
+            point_mm (list[float] | None): Or a point on the plane, mm.
+            normal (list[float] | None): And its normal.
+            bodies (list[str] | None): Only these bodies; all when None.
+            enclosed (bool): Also the space the bodies enclose on each side.
+            density_g_cm3 (float | None): The density for the masses.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``above`` and ``below`` volumes and
+            masses, per body, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="volume_by_plane is not implemented by this adapter",
+        )
+
+    async def set_density(
+        self, density_g_cm3: float, remove_material: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Give the active part a density without a library material.
+
+        Args:
+            density_g_cm3 (float): The density, g/cm³.
+            remove_material (bool): Take an assigned material off first.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The density read back and whether
+            the mass properties use it, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_density is not implemented by this adapter",
         )
 
     # Feature Editing

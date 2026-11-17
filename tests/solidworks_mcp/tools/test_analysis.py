@@ -188,9 +188,9 @@ class TestAnalysisTools:
         assert "Assembly failed to load" in result["message"]
 
     @pytest.mark.unit
-    def test_mass_properties_input_has_no_fields(self):
-        """It always measures the active model, so it takes nothing."""
-        assert MassPropertiesInput.model_fields == {}
+    def test_mass_properties_input_takes_only_a_density(self):
+        """It always measures the active model; only a density can be named."""
+        assert set(MassPropertiesInput.model_fields) == {"density_g_cm3"}
 
     @pytest.mark.unit
     def test_interference_check_input_validation(self):

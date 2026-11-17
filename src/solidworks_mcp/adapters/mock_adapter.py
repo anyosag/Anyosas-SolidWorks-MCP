@@ -1868,9 +1868,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
     async def check_printability(
         self,
-        build_direction: str | list[float],
+        build_direction: str | list[float] | None,
         support_angle_deg: float = 45.0,
         min_bridge_mm: float = 5.0,
+        orientations: int = 0,
+        min_feature_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock the print check: the real check on the mock's STL (a tetrahedron).
 
@@ -1879,6 +1881,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             support_angle_deg: Down-facing surfaces under this angle need
                 supports.
             min_bridge_mm: Only longer bridges are listed.
+            orientations: How many build directions to try (0: none).
+            min_feature_mm: Report regions thinner than this (None: don't).
 
         Returns:
             AdapterResult[dict[str, Any]]: As the live adapter's.
@@ -1890,7 +1894,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error="check_printability requires an active part document.",
             )
-        return await check_part(self, build_direction, support_angle_deg, min_bridge_mm)
+        return await check_part(
+            self,
+            build_direction,
+            support_angle_deg,
+            min_bridge_mm,
+            orientations,
+            min_feature_mm,
+        )
 
     async def run_api_snippet(
         self, code: str, timeout_s: float = 60.0, compile_only: bool = False
@@ -5415,6 +5426,251 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["model_operation"],
         )
 
+    def _mock_turned_boxes(
+        self, moving: str, other: str
+    ) -> tuple[str, list[float], list[float], list[float] | None] | str:
+        """The sweep's two boxes (mm) and the moving one's placement, or the refusal."""
+        from .solidworks.clearance import transform_box
+
+        model = self._current_model
+        if model.type == "Part":
+            missing = self._mock_missing([moving, other])
+            if missing is not None:
+                return str(missing.error)
+            store = self._mock_bodies()
+            return "bodies", store[moving]["box"], store[other]["box"], None
+        absent = [n for n in (moving, other) if n not in self._components]
+        if absent:
+            return (
+                f"Component(s) not found: {', '.join(absent)}. "
+                f"The assembly holds: {', '.join(self._components)}."
+            )
+        boxes = []
+        for role, name in (("moving", moving), ("other", other)):
+            box = self.component_boxes_mm.get(name, self._DEFAULT_COMPONENT_BOX_MM)
+            if box is None:
+                return (
+                    f"Invalid request: {role} {name!r} holds no solid body, so "
+                    "there is nothing of it to measure."
+                )
+            boxes.append([float(v) for v in box])
+        rows, origin = self._mock_placement(moving)
+        start = [x for row in rows for x in row] + list(origin) + [1.0, 0, 0, 0]
+        placed_other = transform_box(boxes[1], *self._mock_placement(other))
+        return "components", boxes[0], placed_other, start
+
+    async def rotation_clearance(
+        self,
+        moving: str,
+        other: str,
+        axis: list[float],
+        pivot_mm: list[float] | None = None,
+        range_deg: list[float] | None = None,
+        step_deg: float = 5.0,
+        tolerance_deg: float = 0.1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a turn's clearance: the real sweep, on each one's box.
+
+        A part's bodies and an assembly's components stand in for their boxes
+        (``part_bodies_mm``, ``component_boxes_mm``); nothing moves.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.rotation_clearance import box_sweep, range_problem
+
+        model = self._current_model
+        if model is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if model.type not in ("Part", "Assembly"):
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "rotation_clearance needs an active assembly or part document "
+                    f"(active document is {model.type.lower()})."
+                ),
+            )
+        if moving == other:
+            return self._mock_invalid(
+                f"moving and other are both {moving!r}; give two different ones."
+            )
+        span = list(range_deg or (-180.0, 180.0))
+        problem = range_problem(span, step_deg, tolerance_deg)
+        if problem:
+            return self._mock_invalid(problem)
+        found = self._mock_turned_boxes(moving, other)
+        if isinstance(found, str):
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=found)
+        kind, moving_box, other_box, start = found
+        await asyncio.sleep(self._delays["model_operation"])
+        data = box_sweep(
+            moving_box,
+            other_box,
+            axis,
+            list(pivot_mm or (0.0, 0.0, 0.0)),
+            span,
+            step_deg,
+            tolerance_deg,
+            start,
+        )
+        extra = {"body_frame": "part", "restored": True} if start else {}
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"kind": kind, "moving": moving, "other": other, **data, **extra},
+            execution_time=self._delays["model_operation"],
+        )
+
+    #: The mock's default planes: a point on each (mm) and its normal.
+    _MOCK_PLANES: dict[str, tuple[list[float], list[float]]] = {
+        "Front Plane": ([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        "Top Plane": ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        "Right Plane": ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+    }
+
+    def _mock_density_g_cm3(self) -> float | None:
+        """The density the mock part has: its material's, else its own."""
+        assigned = getattr(self, "_materials", {}).get(self._mock_doc_key())
+        if assigned:
+            return self._MOCK_DENSITIES.get(assigned["name"], 1000.0) / 1000.0
+        return getattr(self, "_mock_densities", {}).get(self._mock_doc_key())
+
+    async def volume_by_plane(
+        self,
+        plane: str | None = None,
+        point_mm: list[float] | None = None,
+        normal: list[float] | None = None,
+        bodies: list[str] | None = None,
+        enclosed: bool = False,
+        density_g_cm3: float | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock the volume on each side of a plane: each body is its box.
+
+        Only the default planes are known by name; a mock box encloses nothing.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.placement import unit_vector
+        from .solidworks.plane_volume import box_volume_below, mass_g
+        from .solidworks.sketch import plane_candidates_for
+
+        refused = self._bodies_refusal("volume_by_plane")
+        if refused is not None:
+            return refused
+        if plane:
+            names = plane_candidates_for(plane)[1]
+            known = next((n for n in names if n in self._MOCK_PLANES), None)
+            if known is None:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        f"Plane not found: {plane}. Use a plane's name from "
+                        "list_features, such as Top Plane, or give point_mm and "
+                        "normal."
+                    ),
+                )
+            origin, direction = self._MOCK_PLANES[known]
+        else:
+            known, origin = None, [float(v) for v in point_mm or (0.0, 0.0, 0.0)]
+            direction = unit_vector(normal or (0.0, 1.0, 0.0))
+        store = self._mock_bodies()
+        names = list(bodies or store)
+        refused = self._mock_missing(names)
+        if refused is not None:
+            return refused
+        offset = sum(o * n for o, n in zip(origin, direction, strict=True))
+        rows = []
+        for name in names:
+            body = store[name]
+            box_share = box_volume_below(body["box"], direction, offset)
+            full = max(
+                1e-12, math.prod(body["box"][k + 3] - body["box"][k] for k in range(3))
+            )
+            below = round(body["volume"] * box_share / full, 6) + 0.0
+            rows.append(
+                {
+                    "name": name,
+                    "volume_mm3": round(body["volume"], 6) + 0.0,
+                    "above_mm3": round(body["volume"] - below, 6) + 0.0,
+                    "below_mm3": below,
+                }
+            )
+        density, source = density_g_cm3, "input" if density_g_cm3 is not None else None
+        if density is None:
+            density = self._mock_density_g_cm3()
+            source = "solidworks" if density is not None else None
+        sides: dict[str, dict[str, Any]] = {}
+        for side in ("above", "below"):
+            volume = round(sum(r[f"{side}_mm3"] for r in rows), 6) + 0.0
+            sides[side] = {"volume_mm3": volume, "mass_g": mass_g(volume, density)}
+            if enclosed:
+                sides[side].update(enclosed_mm3=0.0, enclosed_ml=0.0, pockets=0)
+        total = round(sum(r["volume_mm3"] for r in rows), 6) + 0.0
+        check = sides["above"]["volume_mm3"] + sides["below"]["volume_mm3"] - total
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "plane": {"name": known, "origin_mm": origin, "normal": direction},
+                **sides,
+                "bodies": rows,
+                "total_volume_mm3": total,
+                "check_mm3": round(check, 6) + 0.0,
+                "check_ok": True,
+                "density_g_cm3": density,
+                "density_source": source,
+            },
+            execution_time=self._delays["model_operation"],
+        )
+
+    async def set_density(
+        self, density_g_cm3: float, remove_material: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a document density: kept per part, refused over a material.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.density import METHOD, PERSISTS, material_message
+
+        guard = self._mock_doc_error({"Part"}, "set_density")
+        if guard is not None:
+            return guard
+        key = self._mock_doc_key()
+        materials = getattr(self, "_materials", {})
+        assigned = materials.get(key)
+        if assigned and not remove_material:
+            return self._mock_invalid(
+                material_message(assigned["name"], assigned["database"])
+            )
+        if assigned:
+            del materials[key]
+        if not hasattr(self, "_mock_densities"):
+            self._mock_densities: dict[str, float] = {}
+        self._mock_densities[key] = float(density_g_cm3)
+        self._operation_count += 1
+        volume = round(sum(b["volume"] for b in self._mock_bodies().values()), 4)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "density_g_cm3": float(density_g_cm3),
+                "density_kg_m3": float(density_g_cm3) * 1000.0,
+                "read_back_kg_m3": float(density_g_cm3) * 1000.0,
+                "mass_properties_density_g_cm3": float(density_g_cm3),
+                "applied": True,
+                "volume_mm3": volume,
+                "mass_g": round(volume * float(density_g_cm3) / 1000.0, 6),
+                "material_removed": (
+                    {"material": assigned["name"], "database": assigned["database"]}
+                    if assigned
+                    else None
+                ),
+                "method": METHOD,
+                "persists": PERSISTS,
+            },
+        )
+
     # Feature Editing
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False
@@ -5620,6 +5876,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock placing a component: its stored origin, rotation and fixed state.
 
@@ -5629,6 +5888,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             rotation_rows (list[list[float]] | None): The new axes; None
                 keeps them.
             fixed (bool | None): Fix or float it; None keeps it.
+            turn_axis (list[float] | None): Then turn it about this direction.
+            turn_pivot_mm (list[float] | None): A point on that axis, mm.
+            turn_deg (float): The turn, degrees.
 
         Returns:
             AdapterResult[dict[str, Any]]: As the live adapter's.
@@ -5655,6 +5917,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             held["origin_mm"] = [float(c) for c in origin_mm]
         if rotation_rows is not None:
             held["rotation"] = [[float(x) for x in row] for row in rotation_rows]
+        if turn_axis is not None and turn_deg:
+            from .solidworks.placement import turned
+
+            data = turned(
+                [x for row in held["rotation"] for x in row]
+                + held["origin_mm"]
+                + [1.0, 0.0, 0.0, 0.0],
+                turn_axis,
+                turn_pivot_mm or [0.0, 0.0, 0.0],
+                turn_deg,
+            )
+            held["rotation"] = [data[0:3], data[3:6], data[6:9]]
+            held["origin_mm"] = [round(v, 9) + 0.0 for v in data[9:12]]
         state = self._component_states.setdefault(
             component, {"fixed": False, "flexible": False}
         )

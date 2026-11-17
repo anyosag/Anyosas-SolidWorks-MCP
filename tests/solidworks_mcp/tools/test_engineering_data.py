@@ -30,6 +30,7 @@ _TOOLS = (
     "measure_entities",
     "get_material",
     "set_material",
+    "set_density",
     "list_available_materials",
     "get_custom_properties",
     "set_custom_property",

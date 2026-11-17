@@ -1138,7 +1138,7 @@ async def test_placing_a_component_passes_through_the_breaker() -> None:
 
     assert placed.data == {"placed": True}
     inner.set_component_transform.assert_awaited_once_with(
-        "a-1", [0, 137, 0], rows, True
+        "a-1", [0, 137, 0], rows, True, None, None, 0.0
     )
     inner.insert_component.assert_awaited_once_with("a.sldprt", 1, 2, 3, False)
     assert inserted.is_success

@@ -789,9 +789,11 @@ class SolidWorksDocumentationMixin:
 
     async def check_printability(
         self,
-        build_direction: str | list[float],
+        build_direction: str | list[float] | None,
         support_angle_deg: float = 45.0,
         min_bridge_mm: float = 5.0,
+        orientations: int = 0,
+        min_feature_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Check the active part for printing: its STL mesh, read back.
 
@@ -800,10 +802,13 @@ class SolidWorksDocumentationMixin:
         user's STL options are put back.
 
         Args:
-            build_direction: The direction the part grows from the plate.
+            build_direction: The direction the part grows from the plate; None
+                to check in the best of ``orientations``.
             support_angle_deg: Down-facing surfaces under this angle need
                 supports.
             min_bridge_mm: Only longer bridges are listed.
+            orientations: How many build directions to try (0: none).
+            min_feature_mm: Report regions thinner than this (None: don't).
 
         Returns:
             AdapterResult[dict[str, Any]]: The check, and ``mesh``.
@@ -813,7 +818,14 @@ class SolidWorksDocumentationMixin:
         guard = self._require_doc_type({1}, "check_printability")
         if guard is not None:
             return cast("AdapterResult[dict[str, Any]]", guard)
-        return await check_part(self, build_direction, support_angle_deg, min_bridge_mm)
+        return await check_part(
+            self,
+            build_direction,
+            support_angle_deg,
+            min_bridge_mm,
+            orientations,
+            min_feature_mm,
+        )
 
     async def check_wall_thickness(
         self,

@@ -91,7 +91,12 @@ build on it; `undo`, then fix the plane or depth, or use `"UpToNext"` or
    with Y up). It lists islands, bridges, suction cups and the area needing
    supports; try each orientation you might print in and keep the one with
    the fewest. A pocket that opens toward the plate is a suction cup on a
-   resin printer: turn the part over or vent the pocket.
+   resin printer: turn the part over or vent the pocket. To let it choose,
+   give `orientations` (26) instead of `build_direction`: it checks the part
+   in the direction needing the least support and gives `rotate_to_z`, the
+   turn that makes that direction +Z in a slicer. `min_feature_mm` (0.4 on
+   resin) also lists the regions thinner than that, from the mesh; check one
+   with `check_wall_thickness`.
 4. `export_stl`. For a smoother mesh than the user's STL options give, pass
    `deviation_mm` (0.01 is fine for most prints) and `angle_deg`; `units`
    and `binary` set the file's units and format. They apply to this file
@@ -262,6 +267,44 @@ involved must be closed).
    gives the smallest gap and where it is; `export_image` with `section`
    (a plane and an offset) shows it cut open.
 6. `save_assembly`, or `pack_and_go_assembly` for a self-contained folder.
+
+## A hinge, latch or lid that turns: where it stops, how close it passes
+
+1. Find the hinge axis: its direction (`axis`: "z", or [x, y, z]) and a
+   point on it (`pivot_mm`, the pin's centre), in the assembly's coordinates
+   for components or the part's for bodies of one part.
+2. `rotation_clearance` with the part that turns as `moving`, the one it
+   must clear as `other`, and `range_deg` from where it is now (0): [0, 180]
+   for a lid that only opens. It steps out both ways, narrows each contact
+   to `tolerance_deg`, and reports the first-contact angle each way (the
+   open stop), the smallest gap and `closest_pass`, a near miss on the way
+   (a latch clearing a wall). Faces resting together at the start don't
+   count as contact; an overlap does.
+3. A thin wall can be passed between two steps: the reply says how far a
+   point moves per step. Lower `step_deg` for thin parts.
+4. In an assembly the component is moved while it runs and put back after.
+   Mates that fix its angle stop it: suppress them (keep the concentric one)
+   and run again. In a multibody part nothing moves (temporary copies).
+5. To leave a component opened at an angle, `set_component_transform` with
+   `turn_deg`, `turn_axis` and `turn_pivot_mm`; it turns from where the
+   component is.
+
+## Fill lines and volumes by a plane
+
+`volume_by_plane` with a `plane` (or `point_mm` and `normal`) gives the
+volume, and the mass when a density is known, above and below it, per body,
+without cutting the part. Above is the side the normal points to. With
+`enclosed: true` it also gives what the part holds filled to that line, in
+ml (a cup's pocket below a fill line). For fill marks at several heights,
+call it once per plane (`create_reference_plane` with an offset makes them).
+
+## A part's mass without a library material (a resin)
+
+`set_density` with `density_g_cm3` (1.15 for a typical resin) gives the part
+its own density, saved with it; mass properties and `verify_model` then use
+it. A part with a material is refused unless `remove_material` takes it off.
+If the reply says SolidWorks doesn't use it, `get_mass_properties` with
+`density_g_cm3` gives the mass at that density from the volume.
 
 ## One part's shape cut into another (a lid over raised labels)
 
