@@ -305,7 +305,45 @@ async def test_a_document_without_a_title_counts_as_none(part: Any) -> None:
         (
             [_BOX[0], {"tool": "add_line", "arguments": {"x1": "$steps.zero.x"}}],
             {},
-            "steps.1.arguments.x1: '$steps.zero.x' is not a reference",
+            "steps.1.arguments.x1: '$steps.zero.x' names step 'zero', but no step "
+            "has that id; the ids are: none (give a step an id to use one)",
+        ),
+        (
+            [_BOX[0], {"tool": "add_line", "arguments": {"x1": "$steps.0x.x"}}],
+            {},
+            "steps.1.arguments.x1: '$steps.0x.x' is not a reference",
+        ),
+        (
+            [
+                {**_BOX[0], "id": "sketch"},
+                {"tool": "add_line", "arguments": {"x1": "$steps.skech.x"}},
+            ],
+            {},
+            "'$steps.skech.x' names step 'skech', but no step has that id; the "
+            "ids are: sketch",
+        ),
+        (
+            [
+                {**_BOX[0], "id": "sketch"},
+                {**_BOX[1], "id": "sketch"},
+            ],
+            {},
+            "steps.1.id: 'sketch' is already the id of step 0; give each step its "
+            "own id",
+        ),
+        (
+            [{**_BOX[0], "id": "2nd"}],
+            {},
+            "steps.0.id: '2nd' is not an id; use letters, digits and _",
+        ),
+        (
+            [
+                {"tool": "add_line", "arguments": {"x1": "$steps.later.x"}},
+                {**_BOX[0], "id": "later"},
+            ],
+            {},
+            "steps.0.arguments.x1: '$steps.later.x' names step 'later' (step 1), "
+            "which doesn't run before step 0",
         ),
         (
             [_BOX[0], {"tool": "add_line", "arguments": {"x1": "$steps.0"}}],
@@ -494,6 +532,60 @@ async def test_a_step_uses_a_value_from_an_earlier_reply(part: Any) -> None:
         "old_name": "Fillet1",
         "new_name": "Edge $steps.4",
     }
+
+
+async def test_a_step_named_by_its_id_gives_its_reply(part: Any) -> None:
+    """The Dipper session mis-counted an index once; an id can't be mis-counted."""
+    _adapter, run = part
+    steps = [
+        *_BOX,
+        {**_FILLETED[4], "id": "round"},
+        {
+            "tool": "rename_feature",
+            "id": "rename",
+            "arguments": {"old_name": "$steps.round.fillet.name", "new_name": "R1"},
+        },
+        # The numeric form still works next to the named one.
+        {
+            "tool": "add_fillet",
+            "arguments": {"radius": 2, "edge_names": ["$steps.4.fillet.edges.0"]},
+        },
+    ]
+
+    result = await run({"steps": steps})
+
+    assert result["status"] == "success", result
+    assert [s.get("id") for s in result["steps"]] == [
+        None,
+        None,
+        None,
+        None,
+        "round",
+        "rename",
+        None,
+    ]
+    assert result["steps"][5]["data"]["old_name"] == "Fillet1"
+    assert list(result["steps"][4])[:3] == ["index", "id", "tool"]
+
+
+async def test_a_named_reference_to_nothing_names_the_id(part: Any) -> None:
+    _adapter, run = part
+    steps = [
+        *_BOX,
+        {**_FILLETED[4], "id": "round"},
+        {
+            "tool": "rename_feature",
+            "arguments": {"old_name": "$steps.round.fillet.nope", "new_name": "R1"},
+        },
+    ]
+
+    result = await run({"steps": steps})
+
+    assert result["error_type"] == "invalid_input"
+    assert (
+        "'$steps.round.fillet.nope' names 'nope', which $steps.round.fillet "
+        "doesn't have" in result["message"]
+    )
 
 
 async def test_a_reference_reaches_into_lists_both_ways(part: Any) -> None:

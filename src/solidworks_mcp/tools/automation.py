@@ -248,6 +248,7 @@ class WorkflowStep(BaseModel):
 
     Attributes:
         tool (str): The tool's name, e.g. ``create_sketch``.
+        id (str | None): A name later steps' references can use.
         arguments (dict[str, Any]): Its input: the tool's fields, or
             ``{"input_data": {...}}`` as over MCP.
         document (str | None): The open document to run it on.
@@ -256,15 +257,25 @@ class WorkflowStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tool: str = Field(description="The tool to call, e.g. 'create_sketch'")
+    id: str | None = Field(
+        default=None,
+        description=(
+            "A name for this step, so later steps can take values from its reply "
+            "as '$steps.<id>.<path>', e.g. id 'plane_x' and "
+            "'$steps.plane_x.plane.name'. Letters, digits and _, not starting "
+            "with a digit; each id once per workflow"
+        ),
+    )
     arguments: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "The tool's input: its fields, e.g. {'depth': 5}, or wrapped as "
             "{'input_data': {...}} as you would call the tool over MCP. A string "
-            "value that is exactly '$steps.<index>.<path>' becomes the value at "
-            "that dotted path in an earlier step's reply, e.g. "
-            "'$steps.3.fillet.name' (a number picks a list item). A 'document' "
-            "key here is the step's document."
+            "value that is exactly '$steps.<step>.<path>' becomes the value at "
+            "that dotted path in an earlier step's reply; <step> is the step's "
+            "index from 0 or its id, e.g. '$steps.3.fillet.name' or "
+            "'$steps.round.fillet.name' (a number in the path picks a list "
+            "item). A 'document' key here is the step's document."
         ),
     )
     document: str | None = Field(
@@ -319,9 +330,14 @@ class WorkflowInput(CompatInput):
 
 
 #: A step argument that starts with this is a reference to an earlier
-#: step's reply, and must have the form ``$steps.<index>.<dotted.path>``.
+#: step's reply, and must have the form ``$steps.<step>.<dotted.path>``,
+#: ``<step>`` being the step's index or its ``id``.
 _REFERENCE_PREFIX = "$steps."
-_REFERENCE = re.compile(r"\$steps\.([0-9]+)\.([^.]+(?:\.[^.]+)*)")
+#: A step's ``id``: a name that can't be read as an index.
+_STEP_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_REFERENCE = re.compile(
+    r"\$steps\.([0-9]+|[A-Za-z_][A-Za-z0-9_]*)\.([^.]+(?:\.[^.]+)*)"
+)
 _REFERENCE_HINT = (
     "Name a path that is in that step's reply; the message lists what is at "
     "the point it stopped. Run the workflow with detail 'full' to see every "
@@ -333,11 +349,19 @@ _SCALARS = (str, int, float, bool, type(None))
 
 @dataclass(frozen=True)
 class _Reference:
-    """A ``$steps.<index>.<path>`` argument, checked to name an earlier step."""
+    """A ``$steps.<step>.<path>`` argument, checked to name an earlier step.
+
+    Attributes:
+        text: The argument as written.
+        step: The index of the step it names.
+        path: The dotted path into that step's reply.
+        name: The step as written: its index or its id.
+    """
 
     text: str
     step: int
     path: tuple[str, ...]
+    name: str
 
 
 @dataclass(frozen=True)
@@ -349,11 +373,38 @@ class _PlannedStep:
         fn: The registered tool function (inside its boundary).
         call: ``{"arguments": ..., "document": ...}``, with each reference
             parsed into a :class:`_Reference`.
+        id: The step's ``id``, when it has one.
     """
 
     tool: str
     fn: Any
     call: dict[str, Any]
+    id: str | None = None
+
+
+def _step_ids(steps: list[WorkflowStep]) -> dict[str, int]:
+    """Each step ``id`` and the index of its step, checked before anything runs.
+
+    Raises:
+        InvalidInputError: For an id that isn't a name (letters, digits and
+            ``_``, not starting with a digit), or one two steps give.
+    """
+    ids: dict[str, int] = {}
+    for index, step in enumerate(steps):
+        if step.id is None:
+            continue
+        if _STEP_ID.fullmatch(step.id) is None:
+            raise InvalidInputError(
+                f"steps.{index}.id: {step.id!r} is not an id; use letters, digits "
+                "and _, not starting with a digit, e.g. 'plane_x'"
+            )
+        if step.id in ids:
+            raise InvalidInputError(
+                f"steps.{index}.id: {step.id!r} is already the id of step "
+                f"{ids[step.id]}; give each step its own id"
+            )
+        ids[step.id] = index
+    return ids
 
 
 def _map_leaves(value: Any, where: str, change: Callable[[str, Any], Any]) -> Any:
@@ -414,13 +465,22 @@ def _takes_document(fn: Any) -> bool:
     return parameter is not None and parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def _parse_references(value: Any, where: str, index: int) -> Any:
+def _parse_references(
+    value: Any, where: str, index: int, ids: dict[str, int] | None = None
+) -> Any:
     """``value`` with each ``$steps.`` string parsed into a :class:`_Reference`.
 
+    Args:
+        value: A step's call (its arguments and document).
+        where: Its place, for messages: ``steps.<index>``.
+        index: The step's index.
+        ids: Every step's ``id`` and index (:func:`_step_ids`).
+
     Raises:
-        InvalidInputError: For one not of the form ``$steps.<index>.<path>``,
-            or naming step ``index`` or a later one.
+        InvalidInputError: For one not of the form ``$steps.<step>.<path>``,
+            naming an id no step has, or naming step ``index`` or a later one.
     """
+    known = ids or {}
 
     def parse(at: str, leaf: Any) -> Any:
         if not isinstance(leaf, str) or not leaf.startswith(_REFERENCE_PREFIX):
@@ -429,16 +489,29 @@ def _parse_references(value: Any, where: str, index: int) -> Any:
         if match is None:
             raise InvalidInputError(
                 f"{at}: {leaf!r} is not a reference; write "
-                "$steps.<index>.<path>, e.g. $steps.0.sketch.name"
+                "$steps.<step>.<path>, <step> being a step's index or id, e.g. "
+                "$steps.0.sketch.name"
             )
-        step = int(match[1])
+        name = match[1]
+        if name.isdecimal():
+            step = int(name)
+            what = f"step {step}"
+        elif name in known:
+            step = known[name]
+            what = f"step {name!r} (step {step})"
+        else:
+            listed = ", ".join(known) or "none (give a step an id to use one)"
+            raise InvalidInputError(
+                f"{at}: {leaf!r} names step {name!r}, but no step has that id; "
+                f"the ids are: {listed}"
+            )
         if step >= index:
             raise InvalidInputError(
-                f"{at}: {leaf!r} names step {step}, which doesn't run before "
+                f"{at}: {leaf!r} names {what}, which doesn't run before "
                 f"step {index}; a step can use only the replies of the steps "
                 "before it"
             )
-        return _Reference(leaf, step, tuple(match[2].split(".")))
+        return _Reference(leaf, step, tuple(match[2].split(".")), name)
 
     return _map_leaves(value, where, parse)
 
@@ -463,7 +536,7 @@ def _look_up(
         elif isinstance(value, list) and part.isdecimal() and int(part) < len(value):
             value = value[int(part)]
         else:
-            at = ".".join(("$steps", str(reference.step), *reference.path[:depth]))
+            at = ".".join(("$steps", reference.name, *reference.path[:depth]))
             return None, (
                 f"{reference.text!r} names {part!r}, which {at} doesn't have; "
                 + _contents(value)
@@ -892,9 +965,10 @@ End Sub
         Use it for a sequence you already know, e.g. sketch, draw, exit, extrude: give
         `steps`, each a `tool` and the `arguments` you would pass it (its fields, or
         `{"input_data": {...}}`), and `document` to run it on another open document.
-        An argument `"$steps.<i>.<path>"` takes that value from step i's reply, e.g.
-        `"old_name": "$steps.3.fillet.name"`. Steps run one at a time, with progress
-        after each. With `rollback_on_error`, a failing step makes it delete the
+        An argument `"$steps.<i>.<path>"` takes that value from step i's reply (i is
+        its index or `id`), e.g. `"old_name": "$steps.3.fillet.name"`. Steps run one
+        at a time, with progress after each. With `rollback_on_error`, a failing
+        step makes it delete the
         features and sketches the earlier steps added (other changes, such as
         dimensions or saved files, stay). Needs: whatever the steps need. Changes:
         whatever the steps change. Returns: `steps` (each one's `status`, `message`
@@ -913,6 +987,7 @@ End Sub
         """
         input_data = normalize_input(input_data, WorkflowInput)
         registry = {tool.name: tool for tool in await mcp.list_tools()}
+        ids = _step_ids(input_data.steps)
         plan: list[_PlannedStep] = []
         for index, step in enumerate(input_data.steps):
             support = SUPPORT_LEVELS.get(step.tool)
@@ -948,8 +1023,9 @@ End Sub
                 {"arguments": arguments, "document": step_document},
                 f"steps.{index}",
                 index,
+                ids,
             )
-            plan.append(_PlannedStep(step.tool, fn, call))
+            plan.append(_PlannedStep(step.tool, fn, call, step.id))
 
         name = input_data.workflow_name
         document = await _document() if input_data.rollback_on_error else None
@@ -997,12 +1073,14 @@ End Sub
                 _warning_parts(planned.tool, reply.get("warning"))
             ):
                 seen_warnings.setdefault(part, []).append(index)
-            entry: dict[str, Any] = {
-                "index": index,
-                "tool": planned.tool,
-                "status": reply.get("status"),
-                "message": reply.get("message"),
-            }
+            entry: dict[str, Any] = {"index": index}
+            if planned.id is not None:
+                entry["id"] = planned.id
+            entry.update(
+                tool=planned.tool,
+                status=reply.get("status"),
+                message=reply.get("message"),
+            )
             failed = reply.get("status") == "error"
             if failed or input_data.detail == "full":
                 entry["result"] = reply
