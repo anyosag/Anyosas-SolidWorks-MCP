@@ -268,3 +268,46 @@ async def test_a_visible_solidworks_is_focused(
 
     assert frame.focused == 1
     assert not _VIEW_CHANGES & set(doc.names())
+
+
+class _PaneDoc(_Doc):
+    """A document whose FeatureManager pane is shown (311 px wide)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        calls = self.calls
+
+        class _Extension:
+            def HideFeatureManager(self, hide: bool) -> bool:  # noqa: N802
+                calls.append(("HideFeatureManager", hide))
+                return True
+
+        self.Extension = _Extension()
+
+    def GetFeatureManagerWidth(self) -> int:  # noqa: N802 - COM name
+        return 311
+
+
+async def test_the_pane_is_hidden_while_the_view_is_framed(
+    adapter: PyWin32Adapter, tmp_path: Path
+) -> None:
+    """Zoom to fit centres the model beside the pane; SaveBMP draws under it too."""
+    doc = _PaneDoc()
+    _attach(adapter, doc)
+
+    await _export(adapter, tmp_path, view_orientation="front")
+
+    assert doc.calls[1] == ("HideFeatureManager", True)
+    assert doc.calls[-1] == ("HideFeatureManager", False)
+    assert doc.names().index("ViewZoomtofit2") < doc.names().index("SaveBMP")
+
+
+async def test_the_pane_stays_when_the_view_is_kept(
+    adapter: PyWin32Adapter, tmp_path: Path
+) -> None:
+    doc = _PaneDoc()
+    _attach(adapter, doc)
+
+    await _export(adapter, tmp_path, view_orientation="current")
+
+    assert "HideFeatureManager" not in doc.names()

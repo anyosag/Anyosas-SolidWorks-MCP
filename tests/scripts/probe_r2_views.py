@@ -149,16 +149,20 @@ def _view(adapter: PyWin32Adapter) -> Any:
 
 
 def _drawn_box(path: Path) -> dict[str, Any] | None:
-    """The box of pixels unlike the top-left corner's, and its height / width."""
+    """The box of the model's outline (near-black pixels), and its height / width.
+
+    The background is a grey gradient, so a pixel unlike the corner's is not
+    the model (the first run measured the whole picture); the edges are
+    drawn black and nothing else is (a plane's label is blue).
+    """
     if not path.exists():
         return None
     width, height, rows = bitmap.read_bmp(path)
-    background = rows[0][0:3]
     xs, ys = [], []
-    for y in range(0, height, 2):
+    for y in range(height):
         row = rows[y]
-        for x in range(0, width, 2):
-            if row[3 * x : 3 * x + 3] != background:
+        for x in range(width):
+            if max(row[3 * x : 3 * x + 3]) < 64:
                 xs.append(x)
                 ys.append(y)
     if not xs:
@@ -168,6 +172,9 @@ def _drawn_box(path: Path) -> dict[str, Any] | None:
         "box_px": [min(xs), min(ys), max(xs), max(ys)],
         "height_over_width": round(h / w, 3),
         "fills_height": round(h / height, 3),
+        # How far the outline's middle is from the picture's, in picture widths
+        # (the FeatureManager pane shifted it about 0.33 to the right).
+        "off_centre": round(((min(xs) + max(xs)) / 2 - width / 2) / width, 3),
     }
 
 
@@ -267,6 +274,16 @@ def step_up_axis_flyout(adapter: PyWin32Adapter) -> dict[str, Any]:
         report["same_as_z_up"] = bool(rows) and vm.same(
             rows, vm.z_up(vm.standard_rows("isometric")), 1e-4
         )
+        # The isometric differed (it looks from +X +Y +Z); the others settle
+        # which way SolidWorks' own Z-up front faces.
+        for name in ("front", "top", "right"):
+            model.ShowNamedView2("", vm.STANDARD_VIEW_IDS[name])
+            native = vo.read_rows(adapter, model)
+            report[name] = {
+                "axes": vm.axes(native) if native else None,
+                "same_as_z_up": bool(native)
+                and vm.same(native, vm.z_up(vm.standard_rows(name)), 1e-4),
+            }
     except Exception as exc:  # noqa: BLE001 - a probe records every failure
         report["error"] = repr(exc)
     finally:
@@ -301,7 +318,7 @@ async def step_pictures(tools: dict[str, Any], out: Path) -> dict[str, Any]:
         }
     report["expected"] = (
         "height_over_width > 1 for every z_up picture and from_plus_x, < 1 for "
-        "standard_isometric; view_axes up is +Z"
+        "standard_isometric; view_axes up is +Z; off_centre within 0.05"
     )
     return report
 

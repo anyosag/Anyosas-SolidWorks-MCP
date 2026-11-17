@@ -34,6 +34,7 @@ from .solidworks import (
     SolidWorksSketchMixin,
     bitmap,
     feature_editing,
+    feature_pane,
     limits,
     saving,
     stl_settings,
@@ -3597,6 +3598,7 @@ class PyWin32Adapter(
             hidden_now: list[dict[str, Any]] = []
             hidden_components: list[dict[str, Any]] = []
             view_turned: dict[str, Any] | None = None
+            pane_hidden: Any = None
             try:
                 if to_hide:
                     component_visibility.apply(
@@ -3630,6 +3632,9 @@ class PyWin32Adapter(
                 # Zoom to fit so the model fills the viewport before capture;
                 # "current" keeps the view as it is (a close-up stays one).
                 view_box = None
+                if zoom_box is not None or zoom_to_fit:
+                    # The pane would shift the framing (feature_pane).
+                    pane_hidden = feature_pane.hide(self, target_doc)
                 if zoom_box is not None:
                     view_box = self._zoom_to_box(target_doc, zoom_box)
                     zoomed = False
@@ -3677,6 +3682,7 @@ class PyWin32Adapter(
                     "window_state": self._window_state(),
                 }
             finally:
+                feature_pane.show(self, pane_hidden)
                 if applied_section is not None:
                     applied_section["removed"] = section_view.remove(self, target_doc)
                     if not applied_section["removed"]:

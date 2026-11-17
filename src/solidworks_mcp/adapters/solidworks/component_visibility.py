@@ -15,9 +15,10 @@ Two ways to hide a component, both in the active display state:
 the component is selected alone (``IComponent2.Select4`` with a
 ``SelectData``) and hidden or shown with the selection call, then read back
 again, and the selection is cleared. The reply says which call did it
-(``method``); ``tests/scripts/probe_r2_views.py`` settles which one SolidWorks
-2026 takes and whether a hidden component stays hidden after a save and a
-reopen.
+(``method``). On SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_r2_views.py``)
+``Visible`` took (0 read back 0, then 1), ``HideComponent2`` /
+``ShowComponent2`` worked too, and a component hidden this way was still
+hidden after a save, a close and a reopen.
 
 Components are looked up by ``IComponent2.Name2`` among all of the
 assembly's components (``GetComponents(False)``), so a top-level component is
