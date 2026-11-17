@@ -144,6 +144,53 @@ async def test_a_truncated_scan_and_an_unverified_repoint_are_warnings(
     )
 
 
+async def test_a_plain_file_move_and_a_sync_folder_are_said(mock_config) -> None:
+    method = "file move (MoveDocument returned 2 (swMoveCopyErrorFail))"
+    data = {
+        "dry_run": False,
+        "source": "G:/Shared drives/T/a.sldprt",
+        "destination": "G:/Shared drives/T/b.sldprt",
+        "users": [],
+        "blocked": [],
+        "warnings": ["G:/Shared drives/T/a.sldprt is in a Google Drive folder."],
+        "method": method,
+        "updated": [],
+    }
+    stub = SimpleNamespace(
+        move_document=AsyncMock(
+            return_value=AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)
+        )
+    )
+    tools = await _tools(stub, mock_config)
+
+    result = await tools["move_document"](
+        {"source": data["source"], "destination": data["destination"], "dry_run": False}
+    )
+
+    assert result["message"] == (
+        f"Moved {data['source']} to {data['destination']} by {method} and "
+        "repointed 0 document(s)"
+    )
+    assert "is in a Google Drive folder." in result["warning"]
+
+
+async def test_a_dry_run_in_a_sync_folder_warns(mock, mock_config, tmp_path) -> None:
+    drive = tmp_path / "My Drive"
+    drive.mkdir()
+    (drive / "lid.sldprt").write_bytes(b"sw")
+    tools = await _tools(mock, mock_config)
+
+    result = await tools["move_document"](
+        {
+            "source": str(drive / "lid.sldprt"),
+            "destination": str(drive / "lid2.sldprt"),
+        }
+    )
+
+    assert result["data"]["can_move"] is True
+    assert f"{drive / 'lid.sldprt'} is in a Google Drive folder" in result["warning"]
+
+
 async def test_a_bad_input_is_refused(mock, mock_config) -> None:
     tools = await _tools(mock, mock_config)
 

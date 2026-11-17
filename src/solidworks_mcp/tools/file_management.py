@@ -1582,12 +1582,15 @@ async def register_file_management_tools(
         users are found among `referencing_documents` and the SolidWorks files in
         `search_folders` (the source's folder when left out); one elsewhere is not
         found, so name it or its folder. It refuses a source or user open in
-        SolidWorks (close it first), a read-only user, and a destination that
-        exists. Changes: with dry_run false, moves the file (MoveDocument) and
-        rewrites each user's reference (ReplaceReferencedDocument); if a rewrite
-        fails, the move is undone. Returns: `data` with `source`,
-        `destination`, `users`, `blocked`, `would_update` and `can_move` (dry run),
-        or `moved`, `method` and `updated` (each `verified` from the file).
+        SolidWorks, a source another program holds open, a folder it can't
+        write, a read-only user and a destination that exists, and warns about a
+        cloud-sync folder. Changes: with dry_run false, moves the file
+        (MoveDocument, or a plain file move when SolidWorks refuses a closed one)
+        and rewrites each user's reference (ReplaceReferencedDocument); if a
+        rewrite fails, the move is undone. Returns: `data` with `source`,
+        `destination`, `users`, `blocked`, `warnings`, `would_update` and
+        `can_move` (dry run), or `moved`, `method` and `updated` (each `verified`
+        from the file).
 
         Args:
             input_data: The move. `source` and `destination` are required;
@@ -1623,8 +1626,10 @@ async def register_file_management_tools(
                 f"would repoint {len(users)} document(s); nothing was changed"
             )
         else:
+            method = str(data.get("method") or "")
+            how = f" by {method}" if method.startswith("file move") else ""
             reply["message"] = (
-                f"Moved {data.get('source')} to {data.get('destination')} and "
+                f"Moved {data.get('source')} to {data.get('destination')}{how} and "
                 f"repointed {len(data.get('updated') or [])} document(s)"
             )
         warnings = []
@@ -1634,6 +1639,7 @@ async def register_file_management_tools(
                 + "; ".join(f"{b['path']} {b['reason']}" for b in data["blocked"])
                 + "."
             )
+        warnings += [str(w) for w in data.get("warnings") or []]
         if data.get("scan_truncated"):
             warnings.append(
                 "The search folders hold too many files: only the first ones were "

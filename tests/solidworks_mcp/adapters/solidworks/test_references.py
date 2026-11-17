@@ -296,6 +296,84 @@ def test_a_read_only_user_is_blocked(folder: Path) -> None:
     ]
 
 
+def test_a_source_another_program_holds_and_a_closed_folder_are_blocked(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    part = str(folder / "bracket.sldprt")
+    monkeypatch.setattr(
+        refs.file_access,
+        "move_blocker",
+        lambda path: "is held" if path == part else None,
+    )
+    monkeypatch.setattr(refs.file_access, "unwritable_folder", lambda _f: "is closed")
+
+    plan = refs.plan_move(
+        part, str(folder / "out" / "plate.sldprt"), None, None, lambda _p: [], {}
+    )
+
+    assert plan["blocked"] == [
+        {"path": part, "reason": "is held"},
+        {"path": str(folder / "out"), "reason": "is closed"},
+    ]
+    assert refs.dry_run_reply(plan)["can_move"] is False
+
+
+def test_a_source_open_in_solidworks_is_not_also_reported_held(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    part = str(folder / "bracket.sldprt")
+    monkeypatch.setattr(refs.file_access, "move_blocker", lambda _p: "is held")
+
+    plan = refs.plan_move(
+        part,
+        str(folder / "plate.sldprt"),
+        None,
+        None,
+        lambda _p: [],
+        {refs.normalize(part): False},
+    )
+
+    assert [b["path"] for b in plan["blocked"]] == [part]
+    assert plan["blocked"][0]["reason"].startswith("is open in SolidWorks")
+
+
+def test_a_move_in_a_sync_folder_is_warned_about_once(tmp_path: Path) -> None:
+    drive = tmp_path / "Shared drives" / "Team"
+    drive.mkdir(parents=True)
+    (drive / "dipper.sldprt").write_bytes(b"sw")
+    (drive / "old").mkdir()
+
+    plan = refs.plan_move(
+        str(drive / "dipper.sldprt"),
+        str(drive / "old" / "dipper.sldprt"),
+        None,
+        None,
+        lambda _p: [],
+        {},
+    )
+    local = refs.sync_warnings(str(tmp_path / "a.sldprt"), str(tmp_path / "b"))
+
+    assert len(plan["warnings"]) == 1
+    assert plan["warnings"][0].startswith(
+        f"{drive / 'dipper.sldprt'} is in a Google Drive folder."
+    )
+    assert "falls back to a plain file move" in plan["warnings"][0]
+    assert plan["blocked"] == []
+    assert local == []
+
+
+def test_moving_out_of_a_sync_folder_names_each_client(tmp_path: Path) -> None:
+    warnings = refs.sync_warnings(
+        str(tmp_path / "Dropbox" / "a.sldprt"),
+        str(tmp_path / "OneDrive" / "parts" / "a.sldprt"),
+    )
+
+    assert [w.split(" is in a ")[1].split(" folder")[0] for w in warnings] == [
+        "Dropbox",
+        "OneDrive",
+    ]
+
+
 # ---- through SolidWorks ----------------------------------------------------------
 
 
@@ -397,11 +475,85 @@ def test_a_move_late_binding_cannot_make_falls_back_to_a_file_move(
     assert (folder / "plate.sldprt").exists()
 
 
-def test_a_move_solidworks_refuses_changes_nothing(folder: Path) -> None:
+def test_a_closed_file_solidworks_refuses_is_moved_as_a_file(folder: Path) -> None:
+    # The Dipper: MoveDocument returned 2 for a closed part on Google Drive.
+    app = _App(_uses(folder))
+    app.move_code = 2
+    new = str(folder / "parts" / "plate.sldprt")
+
+    data = refs.move_document(
+        _Adapter(app), str(folder / "bracket.sldprt"), new, None, None, False
+    )
+
+    assert data["method"] == "file move (MoveDocument returned 2 (swMoveCopyErrorFail))"
+    assert Path(new).read_bytes() == b"sw"
+    assert not (folder / "bracket.sldprt").exists()
+    assert [u["verified"] for u in data["updated"]] == [True, True]
+
+
+def test_a_refusal_that_moved_the_file_anyway_is_a_move(folder: Path) -> None:
+    app = _App({})
+
+    def move(src: str, dst: str, *_a: Any) -> int:
+        shutil.move(src, dst)
+        return 2
+
+    app.MoveDocument = move  # type: ignore[method-assign]
+
+    data = refs.move_document(
+        _Adapter(app),
+        str(folder / "bracket.sldprt"),
+        str(folder / "plate.sldprt"),
+        None,
+        None,
+        False,
+    )
+
+    assert data["method"] == (
+        "MoveDocument (returned 2 (swMoveCopyErrorFail), yet the file moved)"
+    )
+
+
+def test_a_file_solidworks_holds_open_is_not_moved_behind_its_back(
+    folder: Path,
+) -> None:
+    app = _App(_uses(folder))
+    app.move_code = 2
+    part = str(folder / "bracket.sldprt")
+    original = app.MoveDocument
+
+    def move(*args: Any) -> int:
+        app.documents = [_doc(part)]  # opened since the plan was made
+        return original(*args)
+
+    app.MoveDocument = move  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="it has the file open") as raised:
+        refs.move_document(
+            _Adapter(app), part, str(folder / "plate.sldprt"), None, None, False
+        )
+
+    assert "returned 2 (swMoveCopyErrorFail)" in str(raised.value)
+    assert Path(part).exists() and not (folder / "plate.sldprt").exists()
+    assert not [c for c in app.calls if c[0] == "repoint"]
+
+
+class _Locked(PermissionError):
+    winerror = 32
+
+
+def test_a_file_a_sync_client_holds_says_so(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     app = _App(_uses(folder))
     app.move_code = 2
 
-    with pytest.raises(RuntimeError, match=r"returned 2 \(swMoveCopyErrorFail\)"):
+    def locked(*_a: Any) -> None:
+        raise _Locked(13, "The process cannot access the file")
+
+    monkeypatch.setattr(refs.shutil, "move", locked)
+
+    with pytest.raises(RuntimeError) as raised:
         refs.move_document(
             _Adapter(app),
             str(folder / "bracket.sldprt"),
@@ -410,7 +562,49 @@ def test_a_move_solidworks_refuses_changes_nothing(folder: Path) -> None:
             None,
             False,
         )
+
+    text = str(raised.value)
+    assert "MoveDocument returned 2 (swMoveCopyErrorFail), and a plain file" in text
+    assert "is open in another program" in text and "sync client" in text
+    assert text.endswith("Nothing was changed.")
     assert not [c for c in app.calls if c[0] == "repoint"]
+
+
+@pytest.mark.parametrize(("removable", "left"), [(True, False), (False, True)])
+def test_a_copy_left_by_a_failed_move_to_another_drive_is_removed(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, removable: bool, left: bool
+) -> None:
+    app = _App({})
+    app.move_code = 2
+    dst = folder / "plate.sldprt"
+
+    def copy_then_fail(src: str, to: str) -> None:
+        shutil.copy2(src, to)  # the copy worked; deleting the source didn't
+        raise _Locked(13, "in use")
+
+    def remove(path: str) -> None:
+        if not removable:
+            raise PermissionError("in use")
+        os.unlink(path)
+
+    monkeypatch.setattr(refs.shutil, "move", copy_then_fail)
+    monkeypatch.setattr(refs.os, "remove", remove)
+
+    with pytest.raises(RuntimeError) as raised:
+        refs.move_document(
+            _Adapter(app),
+            str(folder / "bracket.sldprt"),
+            str(dst),
+            None,
+            None,
+            False,
+        )
+
+    assert dst.exists() is left
+    assert (folder / "bracket.sldprt").exists()
+    assert str(raised.value).endswith(
+        f"A copy was left at {dst}." if left else "Nothing was changed."
+    )
 
 
 def test_a_move_that_left_no_file_is_an_error(folder: Path) -> None:
@@ -479,7 +673,10 @@ def test_an_undo_that_cannot_move_back_says_where_the_file_is(folder: Path) -> N
 
     def move(*args: Any) -> int:
         moves["count"] += 1
-        return original(*args) if moves["count"] == 1 else 2
+        if moves["count"] == 1:
+            return original(*args)
+        app.documents = [_doc(str(folder / "plate.sldprt"))]  # SolidWorks has it
+        return 2
 
     app.MoveDocument = move  # type: ignore[method-assign]
 
