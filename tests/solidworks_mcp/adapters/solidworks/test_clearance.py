@@ -251,6 +251,8 @@ class _Model:
         return self.components
 
     def ClosestDistance(self, a: _Twin, b: _Twin, p1: Any, p2: Any) -> float:  # noqa: N802
+        # A component is not measured whole here (``box_m`` raises): the
+        # face search runs; ``_WholeModel`` measures components.
         self.measured += 1
         if self.fails:
             return -1.0
@@ -384,6 +386,13 @@ def test_faces_without_a_twin_or_a_box_are_left_out() -> None:
     component = model.components[1]
     component.GetCorrespondingEntity = lambda _face: None  # type: ignore[method-assign]
 
+    with pytest.raises(RuntimeError, match="measured none of the 36 face pairs"):
+        cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1")
+    assert model.measured == 0  # no pair had both twins
+
+    model = _latch()
+    for face in model.components[1].faces:
+        face.GetBox = lambda: None  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="No face of component_b 'slot-1'"):
         cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1")
 
@@ -519,7 +528,9 @@ def test_coarse_measures_a_dozen_pairs_and_bounds_the_rest() -> None:
     assert full["complete"] is True and full["clearance_mm"] == pytest.approx(0.5)
     assert full["at_least_mm"] == full["clearance_mm"]
     assert full["pairs_checked"] > cl.COARSE_PAIRS
-    assert coarse["pairs_checked"] == model.measured == cl.COARSE_PAIRS
+    # One call asked for the components whole first, and gave nothing here.
+    assert coarse["pairs_checked"] == model.measured - 1 == cl.COARSE_PAIRS
+    assert coarse["method"] == "face_pairs"
     assert coarse["pairs_total"] == 48 * 48
     assert coarse["complete"] is False and coarse["stopped_by"] == "coarse"
     # The true gap lies between the two bounds.
@@ -549,7 +560,7 @@ def test_a_timeout_returns_the_best_so_far() -> None:
 
     # Started at tick 0; before the 2nd, 3rd and 4th pair the clock reads
     # 1, 2 and 3: the fourth is past 2.5 s.
-    assert reply["pairs_checked"] == model.measured == 3
+    assert reply["pairs_checked"] == model.measured - 1 == 3
     assert reply["complete"] is False and reply["stopped_by"] == "timeout"
     assert reply["at_least_mm"] <= reply["clearance_mm"]
 
@@ -566,3 +577,73 @@ def test_touching_is_complete_however_it_was_asked() -> None:
 
     assert reply["touching"] is True and reply["complete"] is True
     assert reply["at_least_mm"] == 0.0
+
+
+# ---- the components measured whole ---------------------------------------------
+
+
+class _WholeModel(_Model):
+    """A model whose ``ClosestDistance`` also measures two components whole."""
+
+    def ClosestDistance(self, a: Any, b: Any, p1: Any, p2: Any) -> float:  # noqa: N802
+        if isinstance(a, _Component):
+            self.measured += 1
+            boxes = [cl.transform_box(_box_of(c), c.rows, c.origin_m) for c in (a, b)]
+            pa, pb = _nearest_points(*boxes)
+            p1.value, p2.value = tuple(pa), tuple(pb)
+            return math.dist(pa, pb)
+        return super().ClosestDistance(a, b, p1, p2)
+
+
+def _box_of(component: _Component) -> list[float]:
+    boxes = [face.box_m for face in component.faces]
+    return [min(b[k] for b in boxes) for k in range(3)] + [
+        max(b[k + 3] for b in boxes) for k in range(3)
+    ]
+
+
+@pytest.mark.parametrize("ask", [{"coarse": True}, {"timeout_s": 5.0}])
+def test_a_fast_answer_measures_the_components_whole_in_one_call(
+    ask: dict[str, Any],
+) -> None:
+    model = _WholeModel(*_latch().components)
+
+    reply = cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", **ask)
+
+    assert model.measured == 1
+    assert reply["clearance_mm"] == pytest.approx(0.25)
+    assert reply["at_least_mm"] == reply["clearance_mm"]
+    assert reply["complete"] is True and reply["method"] == "components"
+    assert reply["face_a"] is None and reply["face_b"] is None
+    assert (reply["pairs_checked"], reply["pairs_total"]) == (0, None)
+    assert reply["point_a_mm"][0] == 10.0 and reply["point_b_mm"][0] == 10.25
+
+
+def test_the_full_search_does_not_measure_the_components_whole() -> None:
+    model = _WholeModel(*_latch().components)
+
+    reply = cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1")
+
+    assert reply["method"] == "face_pairs" and reply["face_a"] is not None
+    assert model.measured == reply["pairs_checked"]
+
+
+def test_components_touching_whole_read_zero() -> None:
+    model = _WholeModel(
+        _Component("a-1", [0, 0, 0, 10, 10, 10]),
+        _Component("b-1", [0, 0, 0, 10, 10, 10], origin_mm=[9, 0, 0]),
+    )
+
+    reply = cl.measure_clearance(_Adapter(model), "a-1", "b-1", coarse=True)
+
+    assert reply["touching"] is True and reply["clearance_mm"] == 0.0
+    assert reply["method"] == "components"
+
+
+def test_a_suppressed_component_is_refused_before_the_whole_call() -> None:
+    model = _WholeModel(*_latch().components)
+    model.components[1].suppression = cl.SUPPRESSED
+
+    with pytest.raises(cl.InvalidRequest, match="component_b 'slot-1' is suppressed"):
+        cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", coarse=True)
+    assert model.measured == 0

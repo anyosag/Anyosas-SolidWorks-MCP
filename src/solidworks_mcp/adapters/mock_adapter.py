@@ -5552,14 +5552,15 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         origin when a test set none), placed where ``insert_component`` put
         it. The refusals are the real adapter's: not an assembly, the same
         component twice, one not in the assembly, one with no solid body
-        (a box of ``None``). One pair, measured exactly, so ``coarse`` and
-        ``timeout_s`` change nothing: the reply is always complete.
+        (a box of ``None``). One pair, measured exactly, so the reply is
+        always complete; with ``coarse`` or ``timeout_s`` it is the real
+        adapter's one-call answer (``method: components``, no faces).
 
         Args:
             component_a (str): An instance name, as ``list_components`` gives it.
             component_b (str): Another one.
-            coarse (bool): Accepted; one pair is always complete.
-            timeout_s (float | None): Accepted, likewise.
+            coarse (bool): Answer as the components measured whole.
+            timeout_s (float | None): Likewise, when given.
 
         Returns:
             AdapterResult[dict[str, Any]]: The real adapter's reply shape.
@@ -5634,6 +5635,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 point_b.append(middle)
         clearance = box_distance(a, b)
         touching = clearance <= TOUCHING_MM
+        whole = coarse or timeout_s is not None
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
@@ -5643,12 +5645,17 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "touching": touching,
                 "point_a_mm": [round(v, 4) + 0.0 for v in point_a],
                 "point_b_mm": [round(v, 4) + 0.0 for v in point_b],
-                "face_a": {"kind": "plane", "box_mm": [round(v, 4) for v in a]},
-                "face_b": {"kind": "plane", "box_mm": [round(v, 4) for v in b]},
-                "pairs_checked": 1,
-                "pairs_total": 1,
+                "face_a": None
+                if whole
+                else {"kind": "plane", "box_mm": [round(v, 4) for v in a]},
+                "face_b": None
+                if whole
+                else {"kind": "plane", "box_mm": [round(v, 4) for v in b]},
+                "pairs_checked": 0 if whole else 1,
+                "pairs_total": None if whole else 1,
                 "complete": True,
                 "at_least_mm": 0.0 if touching else round(clearance, 6),
+                "method": "components" if whole else "face_pairs",
             },
             execution_time=self._delays["model_operation"],
         )

@@ -4546,12 +4546,14 @@ async def register_modeling_tools(
         components' solid faces pair by pair, nearest first, a cylinder to its
         surface (not its axis), and gives where the gap is. Touching or overlapping
         components read 0 with `touching: true`; for an overlap's volume, use
-        `check_interference`. For speed in a sweep, `coarse` or `timeout_s` stop
-        early with bounds. Needs: an open assembly whose two components are
-        unsuppressed and hold a solid body. Read-only. Returns: `data` with
+        `check_interference`. For speed in a sweep, `coarse` or `timeout_s`
+        first measure the two components whole in one call (`method:
+        components`: exact, but `face_a`/`face_b` null), else stop the face
+        search early with bounds. Needs: an open assembly whose two components
+        are unsuppressed and hold a solid body. Read-only. Returns: `data` with
         `clearance_mm`, `at_least_mm`, `complete`, `touching`, `point_a_mm` and
         `point_b_mm` (assembly coordinates), `face_a` and `face_b` (`kind`,
-        `box_mm`), `pairs_checked` and `pairs_total`.
+        `box_mm`), `pairs_checked`, `pairs_total` and `method`.
 
         Args:
             input_data: The two components, by instance name as `list_components`

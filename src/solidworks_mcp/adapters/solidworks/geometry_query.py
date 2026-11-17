@@ -18,7 +18,7 @@ is within r of this point" and leaves the selection as it was:
 * **Else SolidWorks' own picks around the point.** ``SelectByID2`` at the
   point and ``IModelDocExtension.SelectByRay`` along +-X, +-Y and +-Z with
   the radius as the ray's, for faces (and edges), each pick read at once
-  (``GetSelectedObject6``) and the selection cleared at the end. They run
+  (``GetSelectedObject6``) and the selection cleared after it. They run
   only from an empty selection, which is what they leave: a pick could not
   be told from the user's own. The picks, and the edges of picked faces
   with few edges, are measured exactly. That is a few dozen calls however
@@ -33,9 +33,22 @@ The descriptions (a face's surface and its parameters, an edge's curve,
 ends and length, persistent ids) are read only for what the reply lists,
 and kept with the index.
 
-None of the COM paths here has run on SolidWorks:
-``tests/scripts/probe_query_geometry.py`` settles them (the picks, the
-surface parameters' order, ``GetCurveParams2`` and ``GetLength3``).
+Measured on SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_query_geometry.py``):
+
+* ``CylinderParams`` is the axis point, the axis and the radius (metres);
+  ``ConeParams`` an origin on the axis, the axis, the radius at the origin and the
+  half angle in radians; ``SphereParams`` the centre and radius;
+  ``TorusParams`` the centre, the axis and the major and minor radii.
+  A surface of another kind reads uninitialised numbers there, so only the
+  ``Is*`` check that says True is used. ``GetCurveParams2`` gives the start,
+  the end and the start and end parameters (0 to 2 pi on a circle);
+  ``GetLength3`` the length in metres.
+* On a 172 x 108 mm plate of 2,904 edges, at a pocket's middle with a
+  2.6 mm radius, the picks took 2.3 s and found 5 of the 6 faces (not the
+  top face, reached only at a rim) and all 8 edges; the first ``read_all``
+  27 s (1,206 face boxes) and found all; a query at another pocket then
+  took 1.7 s, and at the same point 0.4 s. ``select_edges`` on the same
+  pocket took 27 s with a fresh index and 0.5 s with it kept.
 """
 
 from __future__ import annotations
@@ -286,9 +299,11 @@ def pick_search(
     """What SolidWorks' picks around the point reach, measured; None when it can't pick.
 
     Faces are picked for every query (their edges are where the edges come
-    from), edges too unless only faces are asked for. Each pick replaces the
-    selection (``Append`` false), is read at index 1, and the selection is
-    cleared once at the end.
+    from), edges too unless only faces are asked for. Each pick that
+    selects something is read at index 1 and cleared at once: on SOLIDWORKS
+    2026 SP4.1 ``SelectByRay`` with ``Append`` false added to the selection
+    (11 entities after 12 picks), so index 1 held the first pick every time
+    and a query found only the pocket floor of six faces.
 
     Returns:
         Found | None: The hits within the radius, and how many picks were
@@ -312,33 +327,28 @@ def pick_search(
     x, y, z = point
     found = Found()
     picked: list[tuple[str, Any]] = []
-    selected = False
-    try:
-        for name, sel_type in types:
-            tries = [
-                lambda n=name: extension.SelectByID2(
-                    "", n, x, y, z, False, 0, _null_callout(), 0
-                )
-            ] + [
-                lambda d=d, s=sel_type: extension.SelectByRay(
-                    x, y, z, d[0], d[1], d[2], radius, s, False, 0, 0
-                )
-                for d in RAY_DIRECTIONS
-            ]
-            for pick in tries:
-                limits.check("picking around the point")
-                found.picks += 1
-                if not _attempt(adapter, pick, False):
-                    continue
-                selected = True
-                entity = _attempt(adapter, lambda: manager.GetSelectedObject6(1, -1))
-                if entity is not None and not any(
-                    sw_type_info.same_com_object(entity, seen) for _n, seen in picked
-                ):
-                    picked.append((name, entity))
-    finally:
-        if selected:
+    for name, sel_type in types:
+        tries = [
+            lambda n=name: extension.SelectByID2(
+                "", n, x, y, z, False, 0, _null_callout(), 0
+            )
+        ] + [
+            lambda d=d, s=sel_type: extension.SelectByRay(
+                x, y, z, d[0], d[1], d[2], radius, s, False, 0, 0
+            )
+            for d in RAY_DIRECTIONS
+        ]
+        for pick in tries:
+            limits.check("picking around the point")
+            found.picks += 1
+            if not _attempt(adapter, pick, False):
+                continue
+            entity = _attempt(adapter, lambda: manager.GetSelectedObject6(1, -1))
             _attempt(adapter, lambda: model.ClearSelection2(True))
+            if entity is not None and not any(
+                sw_type_info.same_com_object(entity, seen) for _n, seen in picked
+            ):
+                picked.append((name, entity))
     _measure_picks(adapter, index, picked, point, radius, found, kinds != "faces")
     return found
 

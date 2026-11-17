@@ -8,7 +8,8 @@ SolidWorks would:
   point lies on, or an edge within 0.1 mm of it;
 * ``SelectByRay(x, y, z, dx, dy, dz, radius, type, ...)`` selects the first
   face the ray crosses (within ``radius`` of its rectangle), or the first
-  edge passing within ``radius`` of the ray.
+  edge passing within ``radius`` of the ray, and adds it to the selection
+  even with ``Append`` false, as SOLIDWORKS 2026 SP4.1 did.
 
 Every call is counted in the plate's :class:`fake_pocket_plate.Log`, picks
 included. The shared helper is left as it is: the objects it builds are
@@ -132,10 +133,11 @@ class QueryExtension(Extension):
             )
         return super().GetPersistReference3(entity)
 
-    def _select(self, entity: Any) -> bool:
+    def _select(self, entity: Any, add: bool = False) -> bool:
         if entity is None:
             return False
-        self.model.SelectionManager.items = [entity]
+        items = self.model.SelectionManager.items if add else []
+        self.model.SelectionManager.items = [*items, entity]
         return True
 
     def SelectByID2(  # noqa: N802
@@ -185,7 +187,7 @@ class QueryExtension(Extension):
             ]
         if not hits:
             return False
-        return self._select(min(hits, key=lambda pair: pair[0])[1])
+        return self._select(min(hits, key=lambda pair: pair[0])[1], add=True)
 
 
 class QueryModel(Model):

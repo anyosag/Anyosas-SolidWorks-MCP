@@ -124,6 +124,13 @@ async def test_the_mock_reply_is_complete_and_bounded(latch: Any) -> None:
 
     assert result["data"]["complete"] is True
     assert result["data"]["at_least_mm"] == pytest.approx(0.25)
+    # Asked for speed, the mock answers as the components measured whole.
+    assert result["data"]["method"] == "components"
+    assert result["data"]["face_a"] is None and result["data"]["pairs_total"] is None
+
+    full = await tool.fn({"component_a": "component-1", "component_b": "component-2"})
+    assert full["data"]["method"] == "face_pairs"
+    assert full["data"]["face_a"]["kind"] == "plane"
 
 
 async def test_a_coarse_answer_gives_both_bounds(latch: Any) -> None:

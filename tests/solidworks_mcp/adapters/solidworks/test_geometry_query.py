@@ -71,13 +71,13 @@ def _kinds(entries: list[dict[str, Any]]) -> list[tuple[str, float]]:
 # ---- the read counts -------------------------------------------------------------
 
 
-def test_the_first_query_starts_from_the_picks_and_reads_299_calls() -> None:
+def test_the_first_query_starts_from_the_picks_and_reads_310_calls() -> None:
     model, log = query_plate()
 
     reply = gq.query_geometry(_Adapter(model), POCKET, 2.6)
 
     assert _old_reads(query_plate()[0]) == 29_166
-    assert log.total == 299
+    assert log.total == 310
     assert reply["method"] == "pick" and reply["complete"] is False
     assert (reply["faces_found"], reply["edges_found"]) == (6, 8)
     # The floor (and the fake top face, a rectangle without its pockets),
@@ -96,8 +96,10 @@ def test_the_first_query_starts_from_the_picks_and_reads_299_calls() -> None:
         "measured": 18,
         "described": 14,
     }
+    # Each pick that selects is read and cleared: SelectByRay adds to the
+    # selection even with Append false.
     assert model.SelectionManager.items == []
-    assert log.calls["ClearSelection2"] == 1
+    assert log.calls["ClearSelection2"] == 12
 
 
 def test_read_all_reads_the_boxes_once_and_then_a_query_costs_almost_nothing() -> None:

@@ -42,6 +42,24 @@ with what the stop still guarantees:
   the smaller of the best and the next box distance. ``complete`` is true
   when the search ran to its own stop, and the two are the same.
 
+Measured on two 172 x 108 mm plates of 1,206 faces each, 0.4 mm apart
+(``tests/scripts/probe_query_geometry.py``, SOLIDWORKS 2026 SP4.1), the
+search took 55 s full, 57 s coarse and 55 s with ``timeout_s`` 1: reading
+the faces (``GetBox`` and ``GetCorrespondingEntity`` on 2,412 faces) was
+nearly all of it, and the stops only shorten the measuring after. So:
+
+* a face's twin is read only when one of its pairs is measured, which
+  halves the reading;
+* with ``coarse`` or ``timeout_s``, ``ClosestDistance`` is first given the
+  two components themselves. On two 20 mm blocks 10 mm apart it gave
+  10 mm and the two nearest points in one call. That answer is exact
+  (``complete``, ``method: components``), and has no faces
+  (``face_a`` and ``face_b`` None, ``pairs_checked`` 0). When it gives no
+  distance, the face search runs as above (``method: face_pairs``).
+
+On the same plates the full search then took 36 s, and ``coarse`` and
+``timeout_s`` 1 each 0.43 s, all reading 0.4 mm.
+
 The pure pieces (transforms, box distances, the search) are separate from
 the COM walk so they can be tested without SolidWorks.
 """
@@ -277,11 +295,22 @@ def nearest_pair(
 
 @dataclass
 class _Face:
-    """One face of a component: the part's face, its twin, and its box."""
+    """One face of a component: the part's face, its box, and (once read) its twin."""
 
     face: Any
-    twin: Any
+    component: Any
     box_m: Box
+    _twin: Any = None
+    _read: bool = False
+
+    def twin(self, adapter: Any) -> Any:
+        """The face in the assembly (``GetCorrespondingEntity``), read once."""
+        if not self._read:
+            self._read = True
+            self._twin = _attempt(
+                adapter, lambda: self.component.GetCorrespondingEntity(self.face)
+            )
+        return self._twin
 
 
 def _mm(values: Sequence[float], digits: int = 4) -> list[float]:
@@ -329,10 +358,11 @@ def _solid_bodies(adapter: Any, component: Any, label: str) -> list[Any]:
 
 
 def component_faces(adapter: Any, component: Any, label: str) -> list[_Face]:
-    """Every face of the component's solid bodies, with its twin and its box.
+    """Every face of the component's solid bodies, with its box.
 
     The box is ``IFace2.GetBox`` (part coordinates) placed in the assembly by
-    the component's transform. A face without a twin or a box is left out.
+    the component's transform. A face without a box is left out; its twin is
+    read when a pair of it is measured (:meth:`_Face.twin`).
 
     Args:
         adapter: A connected adapter.
@@ -353,15 +383,11 @@ def component_faces(adapter: Any, component: Any, label: str) -> list[_Face]:
             limits.check("reading faces for the clearance")
             _flag(adapter, face, "GetBox")
             box = _attempt(adapter, lambda f=face: f.GetBox())
-            twin = _attempt(adapter, lambda f=face: component.GetCorrespondingEntity(f))
-            if twin is None or not isinstance(box, (list, tuple)) or len(box) < 6:
+            if not isinstance(box, (list, tuple)) or len(box) < 6:
                 continue
-            faces.append(_Face(face, twin, transform_box(box[:6], rows, origin)))
+            faces.append(_Face(face, component, transform_box(box[:6], rows, origin)))
     if not faces:
-        raise RuntimeError(
-            f"No face of {label} could be read in the assembly "
-            "(GetCorrespondingEntity or GetBox gave nothing)."
-        )
+        raise RuntimeError(f"No face of {label} could be read (GetBox gave nothing).")
     return faces
 
 
@@ -387,6 +413,42 @@ def _closest(adapter: Any, model: Any, a: Any, b: Any) -> Any:
         [float(v) for v in points[0][:3]],
         [float(v) for v in points[1][:3]],
     )
+
+
+def _pair(adapter: Any, model: Any, a: _Face, b: _Face) -> Any:
+    """``ClosestDistance`` between two faces' twins (:func:`_closest`), or None."""
+    twin_a, twin_b = a.twin(adapter), b.twin(adapter)
+    if twin_a is None or twin_b is None:
+        return None
+    return _closest(adapter, model, twin_a, twin_b)
+
+
+def _whole(
+    adapter: Any, model: Any, names: tuple[str, str], components: tuple[Any, Any]
+) -> dict[str, Any] | None:
+    """The reply from ``ClosestDistance`` on the two components, or None."""
+    measured = _closest(adapter, model, *components)
+    if measured is None:
+        return None
+    distance, point_a, point_b = measured
+    clearance_mm = distance * 1000.0
+    touching = clearance_mm <= TOUCHING_MM
+    value = 0.0 if touching else round(clearance_mm, 6) + 0.0
+    return {
+        "component_a": names[0],
+        "component_b": names[1],
+        "clearance_mm": value,
+        "touching": touching,
+        "point_a_mm": _mm(point_a),
+        "point_b_mm": _mm(point_b),
+        "face_a": None,
+        "face_b": None,
+        "pairs_checked": 0,
+        "pairs_total": None,
+        "complete": True,
+        "at_least_mm": value,
+        "method": "components",
+    }
 
 
 def face_kind(adapter: Any, face: Any) -> str:
@@ -427,8 +489,9 @@ def measure_clearance(
         ``touching``, ``point_a_mm`` and ``point_b_mm`` (assembly
         coordinates), ``face_a`` and ``face_b`` (``kind`` and ``box_mm``, in
         assembly coordinates), ``pairs_checked``, ``pairs_total``,
-        ``complete`` and ``at_least_mm``; ``stopped_by`` (``coarse`` or
-        ``timeout``) when not complete.
+        ``complete``, ``at_least_mm`` and ``method`` (``face_pairs``, or
+        ``components`` for the one-call answer, whose faces are None);
+        ``stopped_by`` (``coarse`` or ``timeout``) when not complete.
 
     Raises:
         InvalidRequest: The same component twice, or one that is suppressed
@@ -448,17 +511,28 @@ def measure_clearance(
     model = adapter.currentModel
     assembly = _sw_type_info.flagged(model, "IAssemblyDoc")
     found = _find_components(adapter, assembly, [component_a, component_b])
+    _flag(adapter, model, "ClosestDistance")
+    if coarse or timeout_s is not None:
+        for role, name in (("component_a", component_a), ("component_b", component_b)):
+            _solid_bodies(adapter, found[name], f"{role} {name!r}")
+        whole = _whole(
+            adapter,
+            model,
+            (component_a, component_b),
+            (found[component_a], found[component_b]),
+        )
+        if whole is not None:
+            return whole
     sides = []
     for role, name in (("component_a", component_a), ("component_b", component_b)):
         sides.append(component_faces(adapter, found[name], f"{role} {name!r}"))
     faces_a, faces_b = sides
 
-    _flag(adapter, model, "ClosestDistance")
     boxes_a, boxes_b = [f.box_m for f in faces_a], [f.box_m for f in faces_b]
     nearest = nearest_pair(
         boxes_a,
         boxes_b,
-        lambda i, j: _closest(adapter, model, faces_a[i].twin, faces_b[j].twin),
+        lambda i, j: _pair(adapter, model, faces_a[i], faces_b[j]),
         touching=TOUCHING_MM / 1000.0,
         check=lambda: limits.check("measuring clearance"),
         max_pairs=COARSE_PAIRS if coarse else None,
@@ -494,6 +568,7 @@ def measure_clearance(
         "pairs_total": len(faces_a) * len(faces_b),
         "complete": nearest.complete,
         "at_least_mm": (0.0 if touching else round(nearest.at_least * 1000.0, 6) + 0.0),
+        "method": "face_pairs",
     }
     if nearest.stopped_by:
         reply["stopped_by"] = nearest.stopped_by
