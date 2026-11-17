@@ -48,6 +48,16 @@ FLAT_DEG = 10.0
 #: The angle bands, degrees from horizontal, that down-facing area is split in.
 BANDS = ((0.0, 15.0), (15.0, 30.0), (30.0, 45.0), (45.0, 60.0), (60.0, 90.0))
 
+#: Faces within this many degrees of the support angle print without supports
+#: and are reported on their own (``at_support_angle``). The Dipper's pointed
+#: window tops, sides at exactly 45 degrees, came out as 8 "islands" and about
+#: 240 mm2 needing supports: the mesh put some triangles of each flat side a
+#: hair under 45 and some a hair over, splitting it into unsupported pieces.
+SUPPORT_ANGLE_TOLERANCE_DEG = 1.0
+
+#: Where the bridge histogram's bins start, mm of span; the last is open.
+BRIDGE_SPAN_BINS_MM = (0.0, 2.0, 5.0, 10.0, 20.0, 50.0)
+
 #: Vertices this close (mm) are one vertex.
 _WELD_MM = 1e-3
 
@@ -340,7 +350,9 @@ def _analyse_mesh(
         }
         for low, high in BANDS
     ]
-    needs = mesh.down & (mesh.angle < support_angle_deg)
+    tolerance = SUPPORT_ANGLE_TOLERANCE_DEG
+    needs = mesh.down & (mesh.angle < support_angle_deg - tolerance)
+    at_angle = mesh.down & (np.abs(mesh.angle - support_angle_deg) <= tolerance)
 
     islands: list[dict[str, Any]] = []
     cups: list[dict[str, Any]] = []
@@ -366,11 +378,13 @@ def _analyse_mesh(
             )
 
     bridges: list[dict[str, Any]] = []
+    spans: list[tuple[float, float]] = []
     for region in mesh.regions(mesh.down & (mesh.angle < FLAT_DEG)):
         runs = mesh.supported_runs(region)
         if len(runs) < 2:
             continue
         span = _span(mesh, region, runs)
+        spans.append((span, float(mesh.area[region].sum())))
         if span > min_bridge_mm:
             weights = mesh.area[region]
             centre = (mesh.centre[region] * weights[:, None]).sum(
@@ -389,12 +403,42 @@ def _analyse_mesh(
         "build_direction": _rounded(direction),
         "support_angle_deg": support_angle_deg,
         "triangles": int(len(mesh.faces)),
-        "down_facing": {"bands": bands, "needs_support_mm2": needs_support},
+        "down_facing": {
+            "bands": bands,
+            "needs_support_mm2": needs_support,
+            "at_support_angle": {
+                "from_deg": max(support_angle_deg - tolerance, 0.0),
+                "to_deg": support_angle_deg + tolerance,
+                "area_mm2": round(float(mesh.area[at_angle].sum()), 3),
+            },
+        },
         "islands": _listed(islands, "area_mm2"),
-        "bridges": _listed(bridges, "span_mm"),
+        "bridges": {**_listed(bridges, "span_mm"), "by_span": span_histogram(spans)},
         "suction_cups": _listed(cups, "opening_area_mm2"),
         "ok": not islands and not cups and not bridges and needs_support == 0.0,
     }
+
+
+def span_histogram(spans: list[tuple[float, float]]) -> list[dict[str, Any]]:
+    """Every bridge by span, short ones too: count and area per bin.
+
+    Args:
+        spans: Each bridge's span and area, mm and mm2.
+
+    Returns:
+        list[dict[str, Any]]: One bin per :data:`BRIDGE_SPAN_BINS_MM` start,
+        ``from_mm``, ``to_mm`` (None for the last), ``count`` and ``area_mm2``.
+    """
+    edges = [*BRIDGE_SPAN_BINS_MM, math.inf]
+    return [
+        {
+            "from_mm": low,
+            "to_mm": None if high == math.inf else high,
+            "count": sum(1 for span, _area in spans if low <= span < high),
+            "area_mm2": round(sum(a for span, a in spans if low <= span < high), 3),
+        }
+        for low, high in itertools.pairwise(edges)
+    ]
 
 
 def _cup(mesh: _Mesh, region: list[int]) -> dict[str, Any] | None:
