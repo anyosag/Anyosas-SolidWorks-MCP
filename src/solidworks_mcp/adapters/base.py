@@ -2130,6 +2130,83 @@ class SolidWorksAdapter(ABC):
             error="measure_clearance is not implemented by this adapter",
         )
 
+    async def rotation_clearance(
+        self,
+        moving: str,
+        other: str,
+        axis: list[float],
+        pivot_mm: list[float] | None = None,
+        range_deg: list[float] | None = None,
+        step_deg: float = 5.0,
+        tolerance_deg: float = 0.1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Turn a body (part) or component (assembly) through an angle range.
+
+        Args:
+            moving (str): The body or component that turns.
+            other (str): The one it must clear.
+            axis (list[float]): The turn's axis direction (unit vector).
+            pivot_mm (list[float] | None): A point on the axis, mm; the origin.
+            range_deg (list[float] | None): ``[from, to]``, 0 inside it.
+            step_deg (float): The coarse step.
+            tolerance_deg (float): How finely contacts and minima are found.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``min_clearance_mm`` and where,
+            ``positive`` and ``negative`` first contacts, and the samples, or
+            error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="rotation_clearance is not implemented by this adapter",
+        )
+
+    async def volume_by_plane(
+        self,
+        plane: str | None = None,
+        point_mm: list[float] | None = None,
+        normal: list[float] | None = None,
+        bodies: list[str] | None = None,
+        enclosed: bool = False,
+        density_g_cm3: float | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the active part's volume on each side of a plane.
+
+        Args:
+            plane (str | None): A reference plane's name.
+            point_mm (list[float] | None): Or a point on the plane, mm.
+            normal (list[float] | None): And its normal.
+            bodies (list[str] | None): Only these bodies; all when None.
+            enclosed (bool): Also the space the bodies enclose on each side.
+            density_g_cm3 (float | None): The density for the masses.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``above`` and ``below`` volumes and
+            masses, per body, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="volume_by_plane is not implemented by this adapter",
+        )
+
+    async def set_density(
+        self, density_g_cm3: float, remove_material: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Give the active part a density without a library material.
+
+        Args:
+            density_g_cm3 (float): The density, g/cm³.
+            remove_material (bool): Take an assigned material off first.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The density read back and whether
+            the mass properties use it, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_density is not implemented by this adapter",
+        )
+
     # Feature Editing
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False

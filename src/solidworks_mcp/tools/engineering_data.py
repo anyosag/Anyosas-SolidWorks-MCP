@@ -95,6 +95,29 @@ class SetMaterialInput(CompatInput):
     )
 
 
+class SetDensityInput(CompatInput):
+    """Input schema for giving a part a density without a library material.
+
+    Attributes:
+        density_g_cm3 (float): The density, g/cm³.
+        remove_material (bool): Take an assigned material off first.
+    """
+
+    density_g_cm3: float = Field(
+        gt=0,
+        le=25,
+        description="The density, g/cm³: 1.15 for a typical resin, 1.24 for PLA",
+    )
+    remove_material: bool = Field(
+        default=False,
+        description=(
+            "Take the part's material off first: SolidWorks uses an assigned "
+            "material's density instead of this one, so the call is refused while "
+            "the part has one"
+        ),
+    )
+
+
 class ListMaterialsInput(CompatInput):
     """Input schema for listing materials.
 
@@ -321,6 +344,51 @@ async def register_engineering_data_tools(
         return _success(result, f"Assigned {input_data.material_name}")
 
     @mcp.tool()
+    async def set_density(input_data: SetDensityInput) -> dict[str, Any]:
+        """Give the active part a density, e.g. a resin's 1.15 g/cm³, so its mass means something without a library material.
+
+        It sets the part's own density (Document Properties > Material Properties
+        > Density), which SolidWorks uses for mass properties while no material is
+        assigned and saves with the part; it follows the geometry, unlike a mass
+        override. A part with a material is refused unless `remove_material` takes
+        it off. The density is read back from the mass properties, so `applied`
+        says whether SolidWorks uses it. For a library material, use
+        `set_material`. Needs: an open part. Changes: the part's density, and its
+        material with `remove_material`. Returns: `data` with `applied`,
+        `read_back_kg_m3`, `mass_properties_density_g_cm3`, `volume_mm3`,
+        `mass_g`, `material_removed`, `method` and `persists`.
+
+        Args:
+            input_data: The density. `density_g_cm3` is required;
+                `remove_material` is false by default.
+
+        Returns:
+            dict[str, Any]: The density set and read back.
+        """
+        input_data = normalize_input(input_data, SetDensityInput)
+        _supports("set_density")
+        result = await adapter.set_density(
+            input_data.density_g_cm3, input_data.remove_material
+        )
+        require_success(result, context="Failed to set the density")
+        data = result.data or {}
+        removed = data.get("material_removed")
+        message = f"Density {input_data.density_g_cm3:g} g/cm³ set on the part"
+        if removed:
+            message += f" (material {removed.get('material')} taken off)"
+        if data.get("mass_g") is not None:
+            message += f"; it weighs {data['mass_g']:g} g"
+        reply = _success(result, message)
+        if not data.get("applied"):
+            reply["warning"] = (
+                "SolidWorks stored the density but its mass properties use "
+                f"{data.get('mass_properties_density_g_cm3')} g/cm³, so masses are not "
+                "at this density. get_mass_properties with density_g_cm3 gives the "
+                "mass at it from the volume."
+            )
+        return reply
+
+    @mcp.tool()
     async def list_available_materials(
         input_data: ListMaterialsInput | None = None,
     ) -> dict[str, Any]:
@@ -436,4 +504,4 @@ async def register_engineering_data_tools(
             "file_check": check,
         }
 
-    return 8
+    return 9

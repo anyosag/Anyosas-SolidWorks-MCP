@@ -1872,6 +1872,50 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.measure_clearance(component_a, component_b),
         )
 
+    async def rotation_clearance(
+        self,
+        moving: str,
+        other: str,
+        axis: list[float],
+        pivot_mm: list[float] | None = None,
+        range_deg: list[float] | None = None,
+        step_deg: float = 5.0,
+        tolerance_deg: float = 0.1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Sweep a turn for clearance using pool."""
+        return await self._execute_with_pool(
+            "rotation_clearance",
+            lambda adapter: adapter.rotation_clearance(
+                moving, other, axis, pivot_mm, range_deg, step_deg, tolerance_deg
+            ),
+        )
+
+    async def volume_by_plane(
+        self,
+        plane: str | None = None,
+        point_mm: list[float] | None = None,
+        normal: list[float] | None = None,
+        bodies: list[str] | None = None,
+        enclosed: bool = False,
+        density_g_cm3: float | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure volume on each side of a plane using pool."""
+        return await self._execute_with_pool(
+            "volume_by_plane",
+            lambda adapter: adapter.volume_by_plane(
+                plane, point_mm, normal, bodies, enclosed, density_g_cm3
+            ),
+        )
+
+    async def set_density(
+        self, density_g_cm3: float, remove_material: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set a part's document density using pool."""
+        return await self._execute_with_pool(
+            "set_density",
+            lambda adapter: adapter.set_density(density_g_cm3, remove_material),
+        )
+
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False
     ) -> AdapterResult[dict[str, Any]]:

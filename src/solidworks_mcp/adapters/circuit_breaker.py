@@ -2102,6 +2102,71 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"component_a": component_a, "component_b": component_b},
         )
 
+    async def rotation_clearance(
+        self,
+        moving: str,
+        other: str,
+        axis: list[float],
+        pivot_mm: list[float] | None = None,
+        range_deg: list[float] | None = None,
+        step_deg: float = 5.0,
+        tolerance_deg: float = 0.1,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Sweep a turn for clearance through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "rotation_clearance",
+            lambda: self.adapter.rotation_clearance(
+                moving, other, axis, pivot_mm, range_deg, step_deg, tolerance_deg
+            ),
+            input_dict={
+                "moving": moving,
+                "other": other,
+                "axis": axis,
+                "pivot_mm": pivot_mm,
+                "range_deg": range_deg,
+                "step_deg": step_deg,
+                "tolerance_deg": tolerance_deg,
+            },
+        )
+
+    async def volume_by_plane(
+        self,
+        plane: str | None = None,
+        point_mm: list[float] | None = None,
+        normal: list[float] | None = None,
+        bodies: list[str] | None = None,
+        enclosed: bool = False,
+        density_g_cm3: float | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure volume on each side of a plane through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "volume_by_plane",
+            lambda: self.adapter.volume_by_plane(
+                plane, point_mm, normal, bodies, enclosed, density_g_cm3
+            ),
+            input_dict={
+                "plane": plane,
+                "point_mm": point_mm,
+                "normal": normal,
+                "bodies": bodies,
+                "enclosed": enclosed,
+                "density_g_cm3": density_g_cm3,
+            },
+        )
+
+    async def set_density(
+        self, density_g_cm3: float, remove_material: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set a part's document density through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_density",
+            lambda: self.adapter.set_density(density_g_cm3, remove_material),
+            input_dict={
+                "density_g_cm3": density_g_cm3,
+                "remove_material": remove_material,
+            },
+        )
+
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False
     ) -> AdapterResult[dict[str, Any]]:

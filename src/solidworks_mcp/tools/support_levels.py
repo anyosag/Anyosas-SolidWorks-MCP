@@ -87,7 +87,9 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "check_printability": _UNCHECKED,
     "get_mass_properties": _STABLE,
     "get_material_properties": _PLANNED,
+    "rotation_clearance": _UNCHECKED,
     "verify_model": _STABLE,
+    "volume_by_plane": _UNCHECKED,
     # automation
     "automation_start_macro_recording": _PLANNED,
     "automation_stop_macro_recording": _PLANNED,
@@ -154,6 +156,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "list_model_dimensions": _STABLE,
     "measure_entities": _STABLE,
     "set_custom_property": _STABLE,
+    "set_density": _UNCHECKED,
     "set_material": _STABLE,
     # export
     "batch_export": _PLANNED,

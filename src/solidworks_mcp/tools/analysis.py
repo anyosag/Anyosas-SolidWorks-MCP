@@ -37,9 +37,23 @@ def _kg_mm2(value: float | None) -> float | None:
 class MassPropertiesInput(CompatInput):
     """Input schema for mass properties analysis.
 
-    It has no fields: the tool always measures the active model. Inputs it
-    used to take are refused (``input_compat.REMOVED_INPUTS``).
+    The tool always measures the active model. Inputs it used to take are
+    refused (``input_compat.REMOVED_INPUTS``).
+
+    Attributes:
+        density_g_cm3 (float | None): Also give the mass at this density.
     """
+
+    density_g_cm3: float | None = Field(
+        default=None,
+        gt=0,
+        le=25,
+        description=(
+            "Also give `mass_at_density`: the measured volume times this density, "
+            "g/cm³ (a resin at 1.15), for a part with no material. SolidWorks' own "
+            "`mass` is kept beside it; `set_density` makes SolidWorks use it"
+        ),
+    )
 
 
 class InterferenceCheckInput(CompatInput):
@@ -125,16 +139,41 @@ class CheckPrintabilityInput(CompatInput):
     """Input schema for checking a part for printing in one orientation.
 
     Attributes:
-        build_direction (str | list[float]): The direction the part grows.
+        build_direction (str | list[float] | None): The direction the part grows.
         support_angle_deg (float): Surfaces under this angle need support.
         min_bridge_mm (float): Only longer bridges are listed.
+        orientations (int | None): How many build directions to try.
+        min_feature_mm (float | None): List regions thinner than this.
     """
 
-    build_direction: str | list[float] = Field(
+    build_direction: str | list[float] | None = Field(
+        default=None,
         description=(
             "The direction the part grows away from the build plate: 'x', 'y', "
             "'z', '-x', '-y', '-z' or [x, y, z]. A part printed upright on its "
-            "base, with Y up in the model, is 'y'"
+            "base, with Y up in the model, is 'y'. Leave it out with "
+            "`orientations` to check in the best one found"
+        ),
+    )
+    orientations: int | None = Field(
+        default=None,
+        ge=6,
+        le=200,
+        description=(
+            "Try this many build directions (the six axes, the biggest flat faces "
+            "on the plate, then directions in between; 26 is a good start) and "
+            "report the one needing the least support as `orientations.best`, "
+            "with `rotate_to_z`, the turn that makes it +Z for a slicer"
+        ),
+    )
+    min_feature_mm: float | None = Field(
+        default=None,
+        gt=0,
+        le=20,
+        description=(
+            "Also list the regions thinner than this, mm (the printer's smallest "
+            "feature, e.g. 0.4 on resin), from rays cast inward on the mesh: "
+            "`thin_features`"
         ),
     )
     support_angle_deg: float = Field(
@@ -155,7 +194,176 @@ class CheckPrintabilityInput(CompatInput):
     def model_post_init(self, __context: Any) -> None:
         from ..utils.printability import direction_vector
 
-        direction_vector(self.build_direction)
+        if self.build_direction is None and not self.orientations:
+            raise ValueError(
+                "give build_direction, or orientations to find the best one"
+            )
+        if self.build_direction is not None:
+            direction_vector(self.build_direction)
+
+
+class RotationClearanceInput(CompatInput):
+    """Input schema for the clearance of a part turned through an angle range.
+
+    Attributes:
+        moving (str): The body or component that turns.
+        other (str): The one it must clear.
+        axis (str | list[float]): The turn's axis direction.
+        pivot_mm (list[float]): A point on the axis.
+        range_deg (list[float]): ``[from, to]``, 0 inside it.
+        step_deg (float): The coarse step.
+        tolerance_deg (float): How finely contacts and minima are found.
+    """
+
+    moving: str = Field(
+        description=(
+            "What turns: in a part, a body as `list_bodies` names it; in an "
+            "assembly, a component as `list_components` names it (e.g. 'Lid-1')"
+        )
+    )
+    other: str = Field(
+        description="What it must clear: another body or component (e.g. 'Base-1')"
+    )
+    axis: str | list[float] = Field(
+        description=(
+            "The direction of the turn's axis in the part's or assembly's "
+            "coordinates: 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]. Positive "
+            "angles turn by the right-hand rule about it"
+        )
+    )
+    pivot_mm: list[float] = Field(
+        default_factory=lambda: [0.0, 0.0, 0.0],
+        min_length=3,
+        max_length=3,
+        description=(
+            "A point on the axis, [x, y, z] mm: a point on the hinge pin's axis; "
+            "the origin by default"
+        ),
+    )
+    range_deg: list[float] = Field(
+        default_factory=lambda: [-180.0, 180.0],
+        min_length=2,
+        max_length=2,
+        description=(
+            "[from, to] degrees, from at most 0 to at least 0: 0 is where it is "
+            "now. A lid that only opens: [0, 180]. Default [-180, 180]"
+        ),
+    )
+    step_deg: float = Field(
+        default=5.0,
+        gt=0,
+        le=45,
+        description=(
+            "The coarse step, degrees (default 5). Contacts and the closest pass "
+            "are then narrowed to tolerance_deg. Smaller finds thinner walls: "
+            "the reply's travel_per_step_mm is how far a point moves per step"
+        ),
+    )
+    tolerance_deg: float = Field(
+        default=0.1,
+        gt=0,
+        le=5,
+        description="How finely contact angles and the closest pass are found, degrees",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from ..adapters.solidworks.placement import axis_vector
+        from ..adapters.solidworks.rotation_clearance import range_problem
+
+        self.moving, self.other = self.moving.strip(), self.other.strip()
+        if not self.moving or not self.other:
+            raise ValueError("moving and other are required")
+        if self.moving == self.other:
+            raise ValueError("moving and other must be different")
+        axis_vector(self.axis)
+        problem = range_problem(self.range_deg, self.step_deg, self.tolerance_deg)
+        if problem:
+            raise ValueError(problem)
+
+    def axis_vector(self) -> list[float]:
+        """The axis as a unit vector."""
+        from ..adapters.solidworks.placement import axis_vector
+
+        return axis_vector(self.axis)
+
+
+class VolumeByPlaneInput(CompatInput):
+    """Input schema for the volume on each side of a plane.
+
+    Attributes:
+        plane (str | None): A reference plane's name.
+        point_mm (list[float] | None): Or a point on the plane.
+        normal (str | list[float] | None): And its normal.
+        bodies (list[str] | None): Only these bodies.
+        enclosed (bool): Also the space the bodies enclose on each side.
+        density_g_cm3 (float | None): The density for the masses.
+    """
+
+    plane: str | None = Field(
+        default=None,
+        description=(
+            "A reference plane's name, e.g. 'Top Plane' or 'Fill line' (Top, Front "
+            "and Right work too). `above` is the side its normal points to: +Y "
+            "for Top Plane"
+        ),
+    )
+    point_mm: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="Instead of plane: a point on it, [x, y, z] mm",
+    )
+    normal: str | list[float] | None = Field(
+        default=None,
+        description=(
+            "With point_mm: the plane's normal, 'x', 'y', 'z', '-x', '-y', '-z' "
+            "or [x, y, z]; `above` is the side it points to"
+        ),
+    )
+    bodies: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Only these bodies, as `list_bodies` names them; all by default",
+    )
+    enclosed: bool = Field(
+        default=False,
+        description=(
+            "Also measure the space the bodies enclose on each side, open only at "
+            "the plane: what a cup holds filled to that line (`enclosed_mm3`, "
+            "`enclosed_ml`). Slower"
+        ),
+    )
+    density_g_cm3: float | None = Field(
+        default=None,
+        gt=0,
+        le=25,
+        description=(
+            "The density for the masses, g/cm³ (a resin at 1.15); the part's own "
+            "(its material or `set_density`) when omitted"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from ..adapters.solidworks.placement import axis_vector
+        from ..adapters.solidworks.plane_volume import plane_problem
+
+        self.plane = (self.plane or "").strip() or None
+        problem = plane_problem(self.plane, self.point_mm, self.normal)
+        if problem:
+            raise ValueError(problem)
+        if self.normal is not None:
+            axis_vector(self.normal)
+        if self.bodies is not None:
+            names = [b.strip() for b in self.bodies]
+            if any(not n for n in names) or len(set(names)) != len(names):
+                raise ValueError("bodies holds a blank or repeated name")
+            self.bodies = names
+
+    def normal_vector(self) -> list[float] | None:
+        """The normal as a unit vector, or None with a named plane."""
+        from ..adapters.solidworks.placement import axis_vector
+
+        return None if self.normal is None else axis_vector(self.normal)
 
 
 class VerifyModelInput(BaseModel):
@@ -355,6 +563,125 @@ def _verdict_message(verdict: str, checks: list[dict[str, Any]], doc: str) -> st
     )
 
 
+#: A step on which a point moves farther than this (mm) gets a warning.
+_TRAVEL_WARN_MM = 1.0
+
+
+def _way(direction: dict[str, Any] | None, sign: str) -> str:
+    """One direction of a sweep, in words."""
+    if not direction or not direction.get("to_deg"):
+        return ""
+    hit = direction.get("first_contact_deg")
+    if hit is None:
+        return f"{sign} way free to {direction['to_deg']:g}°"
+    return f"{sign} way hits at {hit:g}°"
+
+
+def _rotation_reply(
+    input_data: RotationClearanceInput, data: dict[str, Any], execution_time: float
+) -> dict[str, Any]:
+    """The rotation_clearance reply: the findings in words, and warnings."""
+    who = f"{input_data.moving} against {input_data.other}"
+    warnings = []
+    if data.get("interfering_at_start"):
+        message = (
+            f"{who}: they already overlap by {data.get('start_overlap_mm3')} mm³ "
+            "where they are, so nothing was turned"
+        )
+        warnings.append(
+            "Clear the overlap first (body_clearance or check_interference shows "
+            "it), then sweep again."
+        )
+    else:
+        ways = [
+            w
+            for w in (
+                _way(data.get("positive"), "+"),
+                _way(data.get("negative"), "-"),
+            )
+            if w
+        ]
+        message = f"Turning {who}: " + ", ".join(ways)
+        closest = data.get("closest_pass")
+        if closest:
+            message += (
+                f"; closest pass {closest['clearance_mm']:g} mm at "
+                f"{closest['angle_deg']:g}°"
+            )
+        elif data.get("min_clearance_mm") is not None:
+            message += (
+                f"; smallest gap {data['min_clearance_mm']:g} mm at "
+                f"{data['min_clearance_deg']:g}°"
+            )
+        if not data.get("clearance_measured"):
+            warnings.append(
+                "SolidWorks gave no distance between the faces at any angle, so "
+                "only contacts (overlaps) were found."
+            )
+    if data.get("restored") is False:
+        warnings.append(
+            f"{input_data.moving} could not be put back where it was: check its "
+            "placement before saving."
+        )
+    travel = data.get("travel_per_step_mm") or 0.0
+    if travel > _TRAVEL_WARN_MM:
+        warnings.append(
+            f"Between two steps a point of {input_data.moving} moves up to "
+            f"{travel:g} mm: a wall thinner than that can be passed unseen. Lower "
+            "step_deg to check thin parts."
+        )
+    reply: dict[str, Any] = {
+        "status": "success",
+        "message": message,
+        "data": data,
+        "execution_time": execution_time,
+    }
+    if warnings:
+        reply["warning"] = " ".join(warnings)
+    return reply
+
+
+def _volume_reply(data: dict[str, Any], execution_time: float) -> dict[str, Any]:
+    """The volume_by_plane reply: both sides in words, and warnings."""
+    plane = data.get("plane") or {}
+    name = plane.get("name") or f"the plane through {plane.get('origin_mm')} mm"
+
+    def side(values: dict[str, Any]) -> str:
+        mass = values.get("mass_g")
+        return f"{values.get('volume_mm3')} mm³" + (
+            f" ({mass:g} g)" if mass is not None else ""
+        )
+
+    above, below = data.get("above") or {}, data.get("below") or {}
+    message = f"Above {name}: {side(above)}; below: {side(below)}"
+    if "enclosed_ml" in below:
+        message += (
+            f"; filled to it, the part holds {below['enclosed_ml']:g} ml below it "
+            f"({below.get('pockets', 0)} pocket(s))"
+        )
+    warnings = []
+    if data.get("check_ok") is False:
+        warnings.append(
+            f"Above and below differ from the bodies' volume by {data.get('check_mm3')}"
+            " mm³: a temporary boolean may have failed. split_body along the plane "
+            "and list_bodies confirm it."
+        )
+    if data.get("density_g_cm3") is None:
+        warnings.append(
+            "No density is known, so there are no masses: pass density_g_cm3, or "
+            "give the part one with set_density or set_material."
+        )
+    reply: dict[str, Any] = {
+        "status": "success",
+        "message": message,
+        "data": data,
+        "execution_time": execution_time,
+    }
+    if warnings:
+        reply["warning"] = " ".join(warnings)
+    return reply
+
+
 async def register_analysis_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -395,26 +722,43 @@ async def register_analysis_tools(
 
         Use it to check weight or balance. To compare a model with the values you
         expect, use `verify_model`; `get_mass_properties` does the same as this tool.
-        Mass depends on the assigned material (`set_material`). Needs: an open part or
-        assembly. Read-only. It rebuilds first. Returns: `mass_properties` with `volume`
-        (mm³), `surface_area` (mm²), `mass` (kg), `center_of_mass` (mm),
-        `moments_of_inertia` (kg·mm², about the centre of mass) and
-        `principal_axes`.
+        Mass depends on the assigned material (`set_material`) or density
+        (`set_density`); `density_g_cm3` also gives the mass at a density you name.
+        Needs: an open part or assembly. Read-only. It rebuilds first. Returns:
+        `mass_properties` with `volume` (mm³), `surface_area` (mm²), `mass` (kg),
+        `center_of_mass` (mm), `moments_of_inertia` (kg·mm², about the centre of
+        mass), `principal_axes`, and `mass_at_density` when asked.
 
         Args:
-            input_data: Nothing: it always measures the active model.
+            input_data: Nothing is required: it always measures the active model;
+                `density_g_cm3` adds the mass at that density.
 
         Returns:
             dict[str, Any]: The mass properties.
         """
+        input_data = normalize_input(input_data, MassPropertiesInput)
         result = await adapter.get_mass_properties()
 
         require_success(result, context="Failed to calculate mass properties")
         props = result.data
         assert props is not None
+        extra: dict[str, Any] = {}
+        density = input_data.density_g_cm3
+        if density is not None:
+            extra["mass_at_density"] = {
+                "value": props.volume * density * 1e-6,
+                "units": "kg",
+                "density_g_cm3": density,
+                "from": "the measured volume times density_g_cm3, not SolidWorks' mass",
+            }
         return {
             "status": "success",
-            "message": "Mass properties calculated successfully",
+            "message": "Mass properties calculated successfully"
+            + (
+                f"; at {density:g} g/cm³ the part is {props.volume * density / 1000:g} g"
+                if density is not None
+                else ""
+            ),
             "mass_properties": {
                 "volume": {"value": props.volume, "units": "mm³"},
                 "surface_area": {"value": props.surface_area, "units": "mm²"},
@@ -433,6 +777,7 @@ async def register_analysis_tools(
                     "units": "kg·mm²",
                 },
                 "principal_axes": props.principal_axes,
+                **extra,
             },
             "execution_time": result.execution_time,
         }
@@ -445,13 +790,16 @@ async def register_analysis_tools(
 
         The same as `calculate_mass_properties`, which it calls. To compare a model with
         the values you expect, use `verify_model`. Mass depends on the assigned material
-        (`set_material`). Needs: an open part or assembly. Read-only. It rebuilds first.
-        Returns: `mass_properties` with `volume` (mm³), `surface_area` (mm²), `mass`
-        (kg), `center_of_mass` (mm), `moments_of_inertia` (kg·mm², about the centre
-        of mass) and `principal_axes`.
+        (`set_material`) or density (`set_density`); `density_g_cm3` also gives the
+        mass at a density you name. Needs: an open part or assembly. Read-only. It
+        rebuilds first. Returns: `mass_properties` with `volume` (mm³),
+        `surface_area` (mm²), `mass` (kg), `center_of_mass` (mm),
+        `moments_of_inertia` (kg·mm², about the centre of mass), `principal_axes`,
+        and `mass_at_density` when asked.
 
         Args:
-            input_data: Optional, and empty: it always measures the active model.
+            input_data: Optional: it always measures the active model;
+                `density_g_cm3` adds the mass at that density.
 
         Returns:
             dict[str, Any]: The mass properties.
@@ -598,33 +946,46 @@ async def register_analysis_tools(
 
     @mcp.tool()
     async def check_printability(input_data: CheckPrintabilityInput) -> dict[str, Any]:
-        """Check the active part for 3D printing (resin or FDM) in one orientation: overhangs, islands, bridges and suction cups.
+        """Check the active part for 3D printing (resin or FDM): overhangs, islands, bridges, suction cups; optionally the best orientation and thin features.
 
         Give `build_direction`, the way the part grows from the build plate. It
         reports the area facing the plate in angle bands and how much needs supports
         (under `support_angle_deg`), islands (spots that start in mid-air), bridges
-        (flat overhangs held at both ends, with their spans) and suction cups
-        (cavities open toward the plate, which trap resin). Try each orientation you
-        might print in and compare. It checks the part's mesh: a screen, not a
-        slicer. Needs: an open part (check an assembly's parts one by one).
-        Read-only. A temporary STL is written and deleted, and your STL options are
-        put back. Returns: `data` with `down_facing` (`bands`, `needs_support_mm2`),
-        `islands`, `bridges` and `suction_cups` (each `count` and `items` with
-        points in model mm), `ok` and `triangles`.
+        (flat overhangs held at both ends) and suction cups (cavities open toward
+        the plate, which trap resin). `orientations` tries that many directions and
+        checks in the one needing the least support, with the turn to apply;
+        `min_feature_mm` lists regions thinner than that. It checks the mesh: a
+        screen, not a slicer (exact walls: `check_wall_thickness`). Needs: an open
+        part. Read-only. A temporary STL is written and deleted, and your STL
+        options are put back. Returns: `data` with `down_facing` (`bands`,
+        `needs_support_mm2`), `islands`, `bridges` and `suction_cups` (each
+        `count` and `items`, points in model mm), `ok`, `triangles`, and
+        `orientations` (`best` with `rotate_to_z`, `ranked`) and `thin_features`
+        when asked.
 
         Args:
-            input_data: The orientation. `build_direction` is required;
-                `support_angle_deg` (45) and `min_bridge_mm` (5) have defaults.
+            input_data: The check. `build_direction` or `orientations` is
+                required; `support_angle_deg` (45) and `min_bridge_mm` (5) have
+                defaults; `min_feature_mm` is off.
 
         Returns:
             dict[str, Any]: The check.
         """
         input_data = normalize_input(input_data, CheckPrintabilityInput)
-        result = await adapter.check_printability(
-            input_data.build_direction,
-            input_data.support_angle_deg,
-            input_data.min_bridge_mm,
-        )
+        if not input_data.orientations and input_data.min_feature_mm is None:
+            result = await adapter.check_printability(
+                input_data.build_direction,
+                input_data.support_angle_deg,
+                input_data.min_bridge_mm,
+            )
+        else:
+            result = await adapter.check_printability(
+                input_data.build_direction,
+                input_data.support_angle_deg,
+                input_data.min_bridge_mm,
+                input_data.orientations or 0,
+                input_data.min_feature_mm,
+            )
         require_success(result, context="Failed to check the part for printing")
         data = result.data if isinstance(result.data, dict) else {}
         found = [
@@ -644,12 +1005,118 @@ async def register_analysis_tools(
             if data.get("ok")
             else "In this orientation: " + ", ".join(found)
         )
+        best = (data.get("orientations") or {}).get("best")
+        if best:
+            turn = best.get("rotate_to_z") or {}
+            message = (
+                f"Best of {data['orientations'].get('tried')} orientations: build "
+                f"along {best.get('build_direction')} (turn {turn.get('angle_deg')}° "
+                f"about {turn.get('axis')} to make it +Z). "
+                + ("Checked in it. " if data.get("orientation") == "best" else "")
+                + message
+            )
+        thin = data.get("thin_features")
+        if thin:
+            count = (thin.get("regions") or {}).get("count", 0)
+            message += (
+                f"; {count} region(s) thinner than {thin.get('min_feature_mm'):g} mm, "
+                f"the thinnest {thin.get('thinnest_mm')} mm"
+                if count
+                else f"; nothing thinner than {thin.get('min_feature_mm'):g} mm"
+            )
         return {
             "status": "success",
             "message": message,
             "data": data,
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def rotation_clearance(input_data: RotationClearanceInput) -> dict[str, Any]:
+        """Turn a body or component about an axis through a point, over an angle range, and find the smallest gap and where it first hits.
+
+        Use it for hinges, latches and lids: a lid's open stop, the angle a latch
+        clears a wall by 0.3 mm, a pin's lift-off window. In a part it turns a body
+        (`list_bodies`); in an assembly, a component (`list_components`). It steps
+        out from where it is (0°) both ways, narrows each contact and the closest
+        pass to `tolerance_deg`, and reports overlap as contact, so faces resting
+        together at the start don't stop it. For one pose, use `body_clearance` or
+        `measure_clearance`. Needs: an open part or assembly. Changes: in an
+        assembly, the component's placement while it runs; it is put back after
+        (mates that hold it stop the sweep). In a part, nothing (temporary
+        copies). Returns: `data` with `positive` and `negative` (`first_contact_deg`,
+        `free_to_deg`), `min_clearance_mm` and `min_clearance_deg`,
+        `closest_pass`, `travel_per_step_mm` and `samples`.
+
+        Args:
+            input_data: The turn. `moving`, `other` and `axis` are required;
+                `pivot_mm` (origin), `range_deg` ([-180, 180]), `step_deg` (5) and
+                `tolerance_deg` (0.1) have defaults.
+
+        Returns:
+            dict[str, Any]: The sweep.
+        """
+        input_data = normalize_input(input_data, RotationClearanceInput)
+        require_capability(
+            adapter,
+            "rotation_clearance",
+            "The active adapter does not support rotation_clearance; nothing was "
+            "turned.",
+        )
+        result = await adapter.rotation_clearance(
+            input_data.moving,
+            input_data.other,
+            input_data.axis_vector(),
+            input_data.pivot_mm,
+            input_data.range_deg,
+            input_data.step_deg,
+            input_data.tolerance_deg,
+        )
+        require_success(result, context="Failed to sweep the turn")
+        data = result.data if isinstance(result.data, dict) else {}
+        return _rotation_reply(input_data, data, result.execution_time)
+
+    @mcp.tool()
+    async def volume_by_plane(input_data: VolumeByPlaneInput) -> dict[str, Any]:
+        """Measure the active part's volume, and mass, above and below a plane, without cutting it.
+
+        Use it for fill lines and part splits: the resin below a fill line, the
+        share of a part above a parting plane, or with `enclosed` what a cup
+        holds filled to that line. Give a named plane, or a point and a normal;
+        `above` is the side the normal points to. It works on temporary copies of
+        the bodies, so nothing is added to the part. Mass uses `density_g_cm3`, or
+        the part's material or `set_density`. Needs: an open part with solid
+        bodies. Read-only. Returns: `data` with `above` and `below` (`volume_mm3`,
+        `mass_g`, and with `enclosed`, `enclosed_mm3`, `enclosed_ml` and
+        `pockets`), `bodies` (each one's split), `total_volume_mm3`, `check_mm3`,
+        `plane` and `density_source`.
+
+        Args:
+            input_data: The plane. `plane`, or `point_mm` and `normal`, is
+                required; `bodies` (all), `enclosed` (false) and `density_g_cm3`
+                (the part's) have defaults.
+
+        Returns:
+            dict[str, Any]: The volumes on each side.
+        """
+        input_data = normalize_input(input_data, VolumeByPlaneInput)
+        require_capability(
+            adapter,
+            "volume_by_plane",
+            "The active adapter does not support volume_by_plane; nothing was "
+            "measured.",
+        )
+        result = await adapter.volume_by_plane(
+            input_data.plane,
+            input_data.point_mm,
+            input_data.normal_vector(),
+            input_data.bodies,
+            input_data.enclosed,
+            input_data.density_g_cm3,
+        )
+        require_success(result, context="Failed to measure the volume by the plane")
+        data = result.data if isinstance(result.data, dict) else {}
+        return _volume_reply(data, result.execution_time)
 
     @mcp.tool()
     async def get_material_properties() -> dict[str, Any]:
