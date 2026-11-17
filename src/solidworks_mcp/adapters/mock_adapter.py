@@ -2184,6 +2184,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "thin_thickness": params.thin_thickness,
                 "thin_side": params.thin_side if params.thin_feature else None,
                 "sketch_name": sketch,
+                "start_offset": params.start_offset,
+                "draft_outward": params.draft_outward,
             },
             properties={"created": datetime.now().isoformat(), "mock": True},
         )
@@ -2229,19 +2231,22 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         await asyncio.sleep(self._delays["feature_operation"])
         self._operation_count += 1
 
-        feature_id = f"Boss-Revolve{len(self._features) + 1}"
+        cut = bool(getattr(params, "cut", False))
+        stem = "Cut-Revolve" if cut else "Boss-Revolve"
+        feature_id = f"{stem}{len(self._features) + 1}"
         feature = SolidWorksFeature(
             name=feature_id,
-            type="Revolve",
+            type="Cut-Revolve" if cut else "Revolve",
             id=str(uuid.uuid4()),
             parameters={
                 "angle": params.angle,
                 "reverse_direction": params.reverse_direction,
                 "both_directions": params.both_directions,
-                "thin_feature": params.thin_feature,
+                "thin_feature": params.thin_feature and not cut,
                 "thin_thickness": params.thin_thickness,
                 "sketch_name": sketch,
                 "axis_entity": axis,
+                "cut": cut,
             },
             properties={"created": datetime.now().isoformat(), "mock": True},
         )
@@ -2771,6 +2776,54 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "segment_count": total,
                 "line_count": counts["line"],
                 "arc_count": counts["arc"],
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    async def add_sketch_text(
+        self,
+        text: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        height: float | None = None,
+        font: str | None = None,
+        angle: float = 0.0,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock writing text in the open sketch.
+
+        Refuses without an open sketch, as the live adapter does, and reports
+        what was asked as what was read back: a document font and height it
+        doesn't know are None. An angled text gets its guide line's id
+        (``TextLine_N``), as ``sketch_text.add_sketch_text`` registers it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The text's ``id`` and its fields.
+        """
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        await asyncio.sleep(self._delays["sketch_operation"] / 2)
+        self._operation_count += 1
+        guide = self._new_sketch_entity_id("TextLine") if angle else None
+        formatted = height is not None or bool(font) or bold or italic
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "id": self._new_sketch_entity_id("Text"),
+                "text": text,
+                "position_mm": [float(x), float(y)],
+                "uses_document_font": not formatted,
+                "font": font,
+                "height_mm": height,
+                "angle_deg": float(angle),
+                "bold": bool(bold),
+                "italic": bool(italic),
+                "along_line": guide,
+                "format_applied": True if formatted else None,
+                "shares_sketch_with": [],
             },
             execution_time=self._delays["sketch_operation"] / 2,
         )
@@ -5714,6 +5767,103 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "volume_after": volume_after,
                 "volume_change": volume_after - volume_before,
                 "volume_ratio": round(volume_after / volume_before, 6),
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def pattern_linear(
+        self,
+        features: list[str],
+        direction: str,
+        count: int,
+        spacing: float,
+        direction2: str | None = None,
+        count2: int = 1,
+        spacing2: float = 0.0,
+        reverse_direction: bool = False,
+        reverse_direction2: bool = False,
+        bodies: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a linear pattern of features or bodies.
+
+        Refuses what ``patterns.pattern_linear`` refuses, with its messages:
+        the argument checks, a direction named but never made (not a default
+        plane, nor a plane or axis made this session), and a seed feature or
+        body that isn't in the part. It reads no volume: the tool measures it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The pattern's ``name`` and inputs.
+        """
+        from .solidworks.patterns import linear_pattern_refusal, parse_direction
+
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        refusal = linear_pattern_refusal(
+            features, count, spacing, direction2, count2, spacing2
+        )
+        given = [direction] + ([direction2] if direction2 is not None else [])
+        parsed = []
+        if refusal is None:
+            try:
+                parsed = [parse_direction(d) for d in given]
+            except ValueError as exc:
+                refusal = str(exc)
+        if refusal is not None:
+            return self._mock_invalid(refusal)
+        known = self._BUILTIN_PLANES | set(self._reference_planes) | set(self._axes)
+        for item in parsed:
+            if item.kind == "named" and item.name not in known:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"Failed to select '{item.name}' as a pattern direction.",
+                )
+        names = [n for n in features if n]
+        seeds = (
+            set(self._mock_bodies())
+            if bodies
+            else {feature.name for feature in self._features.values()}
+        )
+        for name in names:
+            if name not in seeds:
+                what, where = (
+                    ("body", "list_bodies") if bodies else ("feature", "list_features")
+                )
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"Failed to select {what} to pattern: {name} ({where} names them)",
+                )
+
+        await asyncio.sleep(self._delays["feature_operation"])
+        self._operation_count += 1
+        self._feature_tree_count += 1
+        number2, gap2 = (int(count2), float(spacing2)) if direction2 else (1, 0.0)
+
+        def _way(item: Any, number: int, gap: float, reverse: bool) -> dict[str, Any]:
+            return {
+                "spec": item.spec,
+                "follows": item.name or item.plane_key or item.point_mm,
+                "count": number,
+                "spacing_mm": gap,
+                "flipped": item.flip != bool(reverse),
+            }
+
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "name": f"LPattern{self._feature_tree_count}",
+                "patterned": names,
+                "bodies": bool(bodies),
+                "direction": _way(
+                    parsed[0], int(count), float(spacing), reverse_direction
+                ),
+                "direction2": (
+                    _way(parsed[1], number2, gap2, reverse_direction2)
+                    if direction2
+                    else None
+                ),
+                "instances": int(count) * number2,
             },
             execution_time=self._delays["feature_operation"],
         )

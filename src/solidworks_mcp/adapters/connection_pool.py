@@ -945,6 +945,36 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             ),
         )
 
+    async def pattern_linear(
+        self,
+        features: list[str],
+        direction: str,
+        count: int,
+        spacing: float,
+        direction2: str | None = None,
+        count2: int = 1,
+        spacing2: float = 0.0,
+        reverse_direction: bool = False,
+        reverse_direction2: bool = False,
+        bodies: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Pattern features or bodies along directions using pool."""
+        return await self._execute_with_pool(
+            "pattern_linear",
+            lambda adapter: adapter.pattern_linear(
+                features,
+                direction,
+                count,
+                spacing,
+                direction2,
+                count2,
+                spacing2,
+                reverse_direction,
+                reverse_direction2,
+                bodies,
+            ),
+        )
+
     async def create_revolve(
         self, params: RevolveParameters
     ) -> AdapterResult[SolidWorksFeature]:
@@ -1128,6 +1158,25 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         return await self._execute_with_pool(
             "add_sketch_outlines",
             lambda adapter: adapter.add_sketch_outlines(outlines),
+        )
+
+    async def add_sketch_text(
+        self,
+        text: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        height: float | None = None,
+        font: str | None = None,
+        angle: float = 0.0,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write text in the open sketch using pool."""
+        return await self._execute_with_pool(
+            "add_sketch_text",
+            lambda adapter: adapter.add_sketch_text(
+                text, x, y, height, font, angle, bold, italic
+            ),
         )
 
     async def set_sketch_construction(

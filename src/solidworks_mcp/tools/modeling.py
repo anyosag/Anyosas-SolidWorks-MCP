@@ -19,7 +19,9 @@ from ..adapters.base import (
 )
 from ..adapters.solidworks.cut_check import shortfall_warning
 from .input_compat import CompatInput
+from .sketching import AddSketchTextInput, text_warnings
 from .tool_boundary import (
+    ToolOperationError,
     normalize_input,
     require_capability,
     require_success,
@@ -140,6 +142,57 @@ def _attach_measured_change(
     return reply
 
 
+def _added_nothing(
+    before: AdapterResult[dict[str, Any]] | None,
+    after: AdapterResult[dict[str, Any]] | None,
+) -> bool:
+    """Whether a boss left the volume as it was (it grew into the part).
+
+    Returns:
+        bool: True only when both volumes were read and they are the same;
+        False when either can't be read.
+    """
+    if before is None or after is None or not (before.is_success and after.is_success):
+        return False
+    old = (before.data or {}).get("volume_mm3")
+    new = (after.data or {}).get("volume_mm3")
+    if not isinstance(old, int | float) or not isinstance(new, int | float):
+        return False
+    return float(new) - float(old) <= 1e-6 * max(abs(float(old)), 1.0)
+
+
+def sketch_point(axes: Any, point_mm: list[float]) -> tuple[float, float] | None:
+    """A model point in a sketch's own x and y, from the sketch's ``axes``.
+
+    Args:
+        axes: ``create_sketch``'s ``axes`` (``x``, ``y`` unit vectors and
+            ``origin_mm`` in model coordinates), or None.
+        point_mm: The point in model mm.
+
+    Returns:
+        tuple[float, float] | None: Sketch (x, y) in mm, or None without axes.
+    """
+    if not isinstance(axes, dict):
+        return None
+    origin, x_axis, y_axis = (_vector3(axes.get(k)) for k in ("origin_mm", "x", "y"))
+    if origin is None or x_axis is None or y_axis is None:
+        return None
+    offset = [float(p) - o for p, o in zip(point_mm, origin, strict=True)]
+    return (
+        round(sum(d * a for d, a in zip(offset, x_axis, strict=True)), 9),
+        round(sum(d * a for d, a in zip(offset, y_axis, strict=True)), 9),
+    )
+
+
+def _vector3(value: Any) -> list[float] | None:
+    """Three numbers as floats, or None when ``value`` isn't three numbers."""
+    if not isinstance(value, list | tuple) or len(value) != 3:
+        return None
+    if not all(isinstance(c, int | float) for c in value):
+        return None
+    return [float(c) for c in value]
+
+
 def _flag_a_shallow_cut(
     reply: dict[str, Any], applied: Any, input_data: Any
 ) -> dict[str, Any]:
@@ -201,6 +254,43 @@ def _cut_direction_note(applied: Any) -> str:
     if flipped:
         return " (the requested direction found no material, so it cut the other way)"
     return ""
+
+
+_START_OFFSET = (
+    "Start the feature this many mm from the sketch plane instead of on it: "
+    "positive along the sketch normal (the side create_extrusion grows into), "
+    "negative the other way. Saves making a reference plane just to start "
+    "at a depth; 0 starts on the plane"
+)
+_DRAFT_OUTWARD_BOSS = (
+    "With draft_angle: false (the default) tapers the boss inward, narrower "
+    "at its far end; true flares it outward, wider at its far end"
+)
+_DRAFT_OUTWARD_CUT = (
+    "With draft_angle: false (the default) tapers the cut inward, narrower "
+    "as it goes deeper; true flares it outward, wider as it goes deeper"
+)
+
+
+def _check_draft(draft_angle: float, draft_outward: bool) -> None:
+    """Refuse a draft direction given without a draft angle.
+
+    Raises:
+        ValueError: ``draft_outward`` without a ``draft_angle``.
+    """
+    if draft_outward and not draft_angle:
+        raise ValueError("draft_outward needs a draft_angle (degrees)")
+
+
+def _offset_and_draft(input_data: Any) -> dict[str, Any]:
+    """The start offset and draft direction a reply shows, when they were set."""
+    shown: dict[str, Any] = {}
+    if input_data.start_offset_mm:
+        shown["start_offset_mm"] = input_data.start_offset_mm
+    if input_data.draft_angle:
+        shown["draft_angle"] = input_data.draft_angle
+        shown["draft_outward"] = input_data.draft_outward
+    return shown
 
 
 class OpenModelInput(BaseModel):
@@ -273,11 +363,13 @@ class CreateExtrusionInput(CompatInput):
         both_directions (bool): The both directions value.
         depth (float): The depth value.
         draft_angle (float): The draft angle value.
+        draft_outward (bool): Draft outward instead of inward.
         end_condition (str): The end condition value.
         merge_result (bool): The merge result value.
         reverse (bool | None): The reverse value.
         reverse_direction (bool): The reverse direction value.
         sketch_name (str | None): The sketch to extrude; None for the last closed.
+        start_offset_mm (float): Start this far off the sketch plane.
         thin_feature (bool): The thin feature value.
         thin_thickness (float | None): The thin thickness value.
         thin_side (str): The side a thin wall grows on.
@@ -292,6 +384,8 @@ class CreateExtrusionInput(CompatInput):
     depth: float = Field(description="Extrusion depth in millimeters")
     reverse: bool | None = Field(default=None, description="Reverse direction alias")
     draft_angle: float = Field(default=0.0, description="Draft angle in degrees")
+    draft_outward: bool = Field(default=False, description=_DRAFT_OUTWARD_BOSS)
+    start_offset_mm: float = Field(default=0.0, description=_START_OFFSET)
     reverse_direction: bool = Field(
         default=False, description="Reverse extrusion direction"
     )
@@ -340,6 +434,7 @@ class CreateExtrusionInput(CompatInput):
             self.reverse_direction = self.reverse
         if self.thin_feature and not (self.thin_thickness and self.thin_thickness > 0):
             raise ValueError("thin_feature needs a positive thin_thickness (mm)")
+        _check_draft(self.draft_angle, self.draft_outward)
 
 
 class CreateRevolveInput(CompatInput):
@@ -397,6 +492,60 @@ class CreateRevolveInput(CompatInput):
         """
         if self.angle <= 0:
             raise ValueError("angle must be positive")
+
+
+class CreateCutRevolveInput(CompatInput):
+    """Input schema for cutting a revolved profile out of the part.
+
+    Attributes:
+        angle (float): Degrees to revolve; 360 for a full turn.
+        axis_entity (str | None): A reference axis to revolve about.
+        both_directions (bool): Revolve half the angle each way.
+        reverse_direction (bool): Revolve the other way round.
+        sketch_name (str | None): The sketch to revolve; None for the last closed.
+    """
+
+    sketch_name: str | None = Field(
+        default=None,
+        description=(
+            'Sketch to use, by its name in the feature tree (e.g. "Sketch2"); '
+            "omit to use the sketch `exit_sketch` closed last"
+        ),
+    )
+    axis_entity: str | None = Field(
+        default=None,
+        description=(
+            "A reference axis to revolve about, by its name in the feature tree "
+            '(e.g. "Axis1" from `create_axis`); omit to use the centreline '
+            "drawn in the sketch"
+        ),
+    )
+    angle: float = Field(
+        default=360.0,
+        gt=0,
+        le=360,
+        description="Degrees to revolve the profile; 360 (the default) cuts all round",
+    )
+    reverse_direction: bool = Field(
+        default=False, description="Revolve the other way round the axis"
+    )
+    both_directions: bool = Field(
+        default=False,
+        description="Revolve `angle` degrees each way from the sketch (180 at most)",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse a two-way revolve of more than a full turn.
+
+        Raises:
+            ValueError: ``both_directions`` with an angle over 180 degrees.
+        """
+        if self.both_directions and self.angle > 180:
+            raise ValueError(
+                f"both_directions revolves {self.angle:g} degrees each way, "
+                f"{2 * self.angle:g} in all; give 180 or less, or leave "
+                "both_directions off for a full turn"
+            )
 
 
 class CreateSweepInput(BaseModel):
@@ -558,10 +707,14 @@ class CreateCutExtrudeInput(CompatInput):
             material.
         both_directions (bool): With ``"ThroughAll"``, cut both ways.
         sketch_name (str | None): Sketch to cut from.
+        draft_outward (bool): Draft outward instead of inward.
+        start_offset_mm (float): Start this far off the sketch plane.
     """
 
     depth: float = Field(description="Cut depth in millimeters")
     draft_angle: float = Field(default=0.0, description="Draft angle in degrees")
+    draft_outward: bool = Field(default=False, description=_DRAFT_OUTWARD_CUT)
+    start_offset_mm: float = Field(default=0.0, description=_START_OFFSET)
     reverse_direction: bool | None = Field(
         default=None,
         description=(
@@ -577,8 +730,9 @@ class CreateCutExtrudeInput(CompatInput):
     end_condition: str = Field(
         default="Blind",
         description=(
-            "'Blind' (cut 'depth' mm), 'ThroughAll' (through the body, one "
-            "way) or 'ThroughAllBoth' (through the body both ways, for a "
+            "'Blind' (cut 'depth' mm), 'MidPlane' ('depth' mm in total, half "
+            "each side of the sketch plane), 'ThroughAll' (through the body, "
+            "one way) or 'ThroughAllBoth' (through the body both ways, for a "
             "sketch inside the body)"
         ),
     )
@@ -604,6 +758,64 @@ class CreateCutExtrudeInput(CompatInput):
     def model_post_init(self, __context: Any) -> None:
         if self.depth <= 0:
             raise ValueError("depth must be positive")
+        _check_draft(self.draft_angle, self.draft_outward)
+
+
+class EmbossTextInput(AddSketchTextInput):
+    """Input schema for raising or sinking a label in one call.
+
+    Attributes:
+        plane (str | None): The plane to write on.
+        face_point (list[float] | None): A point on a flat face to write on.
+        depth (float): How far the text stands up or goes in, mm.
+        mode (str): ``emboss`` (raised) or ``engrave`` (cut in).
+        reverse_direction (bool | None): Which side to extrude or cut.
+    """
+
+    plane: str | None = Field(
+        default=None,
+        description=(
+            "Plane to write on: 'Front', 'Top', 'Right' or a plane in the part "
+            "(e.g. 'Plane1'). Give this or face_point"
+        ),
+    )
+    face_point: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description=(
+            "Instead of plane: [x, y, z] mm on a flat face; a reference plane "
+            "is made on the face and the text written on it"
+        ),
+    )
+    depth: float = Field(
+        gt=0, description="How far the text stands up (emboss) or goes in (engrave), mm"
+    )
+    mode: Literal["emboss", "engrave"] = Field(
+        default="emboss",
+        description="'emboss' raises the text off the part; 'engrave' cuts it in",
+    )
+    reverse_direction: bool | None = Field(
+        default=None,
+        description=(
+            "Usually leave unset: an emboss that adds nothing (it grew into the "
+            "part) is made again the other way, and an engrave cuts the side "
+            "with more material. Set it to choose, as create_extrusion's and "
+            "create_cut_extrude's reverse_direction"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Need exactly one place to write.
+
+        Raises:
+            ValueError: Both or neither of ``plane`` and ``face_point``.
+        """
+        super().model_post_init(__context)
+        if (self.plane is None) == (self.face_point is None):
+            raise ValueError("give plane or face_point, one of them")
+        if self.plane is not None and not self.plane.strip():
+            raise ValueError("plane is blank")
 
 
 class AddFilletInput(CompatInput):
@@ -1595,6 +1807,94 @@ class PatternCircularInput(CompatInput):
         }
 
 
+_DIRECTION = (
+    "'x', 'y' or 'z' for a model axis ('-x' the negative way), a reference "
+    "axis or plane by name (along the axis, or the plane's normal), or "
+    "'x,y,z' in mm on a straight edge (along the edge)"
+)
+
+
+class PatternLinearInput(CompatInput):
+    """Input schema for repeating features or bodies in rows.
+
+    Attributes:
+        features (list[str]): Features (or bodies) to pattern.
+        direction (str): Direction 1.
+        count (int): Instances along it, the original included.
+        spacing (float): Millimetres between neighbours along it.
+        direction2 (str | None): Direction 2, for a grid.
+        count2 (int | None): Instances along Direction 2.
+        spacing2 (float | None): Millimetres between neighbours along it.
+        reverse_direction (bool): Go the other way along Direction 1.
+        reverse_direction2 (bool): Go the other way along Direction 2.
+        bodies (bool): Pattern solid bodies instead of features.
+    """
+
+    features: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of the features to repeat (e.g. 'Cut-Extrude3'), or with "
+            "`bodies` the solid bodies `list_bodies` names. At least one"
+        ),
+    )
+    direction: str = Field(description="Direction 1: " + _DIRECTION)
+    count: int = Field(
+        description="Instances along direction, the original included (2 or more)"
+    )
+    spacing: float = Field(
+        gt=0, description="Millimetres between neighbouring instances along direction"
+    )
+    direction2: str | None = Field(
+        default=None,
+        description="A second direction, for a grid, given the same way; omit for one row",
+    )
+    count2: int | None = Field(
+        default=None,
+        description="Instances along direction2, the first row included (2 or more)",
+    )
+    spacing2: float | None = Field(
+        default=None,
+        gt=0,
+        description="Millimetres between neighbouring rows along direction2",
+    )
+    reverse_direction: bool = Field(
+        default=False, description="Repeat the other way along direction"
+    )
+    reverse_direction2: bool = Field(
+        default=False, description="Repeat the other way along direction2"
+    )
+    bodies: bool = Field(
+        default=False,
+        description="Repeat whole solid bodies instead of features",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse a pattern SolidWorks couldn't make.
+
+        Raises:
+            ValueError: No features, a count under 2, a direction that can't
+                be read, or a half-given second direction.
+        """
+        from ..adapters.solidworks.patterns import parse_direction
+
+        self.features = [name.strip() for name in self.features if name.strip()]
+        if not self.features:
+            raise ValueError("features must contain at least one name")
+        if self.count < 2:
+            raise ValueError("count must be at least 2 (the original included)")
+        parse_direction(self.direction)
+        given = (self.count2 is not None, self.spacing2 is not None)
+        if self.direction2 is None:
+            if any(given):
+                raise ValueError("count2 and spacing2 need a direction2")
+            return
+        parse_direction(self.direction2)
+        if not all(given):
+            raise ValueError("direction2 needs count2 and spacing2")
+        if (self.count2 or 0) < 2:
+            raise ValueError("count2 must be at least 2 (the first row included)")
+
+
 class MeasureClearanceInput(CompatInput):
     """Input schema for measuring the gap between two components.
 
@@ -1911,20 +2211,22 @@ async def register_modeling_tools(
         extrudes the sketch `sketch_name` names, or the one `exit_sketch` closed last;
         a name that isn't in the feature tree fails before anything is built. End
         conditions: Blind (default), MidPlane, ThroughAll, UpToNext; `both_directions`
-        means MidPlane. With `thin_feature` and `thin_thickness` it makes a wall from the
-        sketch's outline, and an open chain works (a bent plate from its centreline).
+        means MidPlane. `start_offset_mm` starts it off the sketch plane, with no
+        reference plane; a `draft_angle` tapers inward unless `draft_outward`. With
+        `thin_feature` and `thin_thickness` it makes a wall from the sketch's outline,
+        and an open chain works. A text sketch (`add_sketch_text`) extrudes too.
         Needs: an open part and a closed profile (open is fine when thin). Changes:
         adds a Boss-Extrude feature. Returns: `extrusion` (`name`, `sketch` when one
         was named, `depth`, the `end_condition` SolidWorks used, `both_directions`,
-        and `thin` when thin) and
+        `thin` when thin, and the start offset and draft when set) and
         `measured_change` (volume, bounding box and solid-body count before and after;
         left out when the model can't be read).
 
         Args:
             input_data: The extrusion. `depth` (mm) is required; `sketch_name`,
                 `end_condition`, `both_directions`, `reverse_direction`,
-                `draft_angle`, `thin_feature`/`thin_thickness` and `merge_result`
-                have defaults.
+                `start_offset_mm`, `draft_angle`/`draft_outward`,
+                `thin_feature`/`thin_thickness` and `merge_result` have defaults.
 
         Returns:
             dict[str, Any]: The created feature.
@@ -1934,6 +2236,8 @@ async def register_modeling_tools(
         params = ExtrusionParameters(
             depth=input_data.depth,
             draft_angle=input_data.draft_angle,
+            draft_outward=input_data.draft_outward,
+            start_offset=input_data.start_offset_mm,
             reverse_direction=input_data.reverse_direction,
             both_directions=input_data.both_directions,
             thin_feature=input_data.thin_feature,
@@ -1967,6 +2271,7 @@ async def register_modeling_tools(
                 "thickness": input_data.thin_thickness,
                 "side": input_data.thin_side,
             }
+        extrusion.update(_offset_and_draft(input_data))
         reply = {
             "status": "success",
             "message": f"Created extrusion: {name}",
@@ -2022,6 +2327,59 @@ async def register_modeling_tools(
             "status": "success",
             "message": f"Created revolve: {name}",
             "revolve": {
+                "name": name,
+                "sketch": applied.get("sketch_name"),
+                "axis_entity": applied.get("axis_entity"),
+                "angle": input_data.angle,
+            },
+            "execution_time": result.execution_time,
+        }
+        return _attach_measured_change(reply, before, after)
+
+    @mcp.tool()
+    async def create_cut_revolve(input_data: CreateCutRevolveInput) -> dict[str, Any]:
+        """Cut material away by revolving a closed sketch around an axis: grooves, seats.
+
+        Use it for round cuts that a straight cut can't make in one feature: a
+        conical groove, a chamfered seat, an O-ring gland. Draw the cross-section
+        of the material to remove on a plane through the axis, then call it with
+        the sketch `sketch_name` names (or the one `exit_sketch` closed last) and
+        the reference axis `axis_entity` names (from `create_axis`), or the
+        centreline drawn in the sketch with `add_centerline`. To add material, use
+        `create_revolve`. Needs: an open part with a solid body the profile
+        overlaps. Changes: adds a Cut-Revolve feature. Returns: `cut_revolve`
+        (`name`, `sketch`, `axis_entity`, `angle`) and `measured_change` (volume,
+        bounding box and solid-body count before and after), with a `warning`
+        when the volume didn't change.
+
+        Args:
+            input_data: The cut. Everything has a default: `angle` 360,
+                `sketch_name` and `axis_entity` from the sketch closed last and
+                its centreline, `reverse_direction` and `both_directions` off.
+
+        Returns:
+            dict[str, Any]: The cut made.
+        """
+        input_data = normalize_input(input_data, CreateCutRevolveInput)
+        params = RevolveParameters(
+            angle=input_data.angle,
+            reverse_direction=input_data.reverse_direction,
+            both_directions=input_data.both_directions,
+            sketch_name=input_data.sketch_name,
+            axis_entity=input_data.axis_entity,
+            cut=True,
+        )
+        before = await _read_summary(adapter)
+        result = await adapter.create_revolve(params)
+        require_success(result, context="Failed to create cut-revolve")
+        after = await _read_summary(adapter) if before is not None else None
+        feature = result.data
+        name = _result_value(feature, "feature_name", "name", default="Cut-Revolve")
+        applied = _result_value(feature, "parameters", default=None) or {}
+        reply = {
+            "status": "success",
+            "message": f"Created cut-revolve: {name}",
+            "cut_revolve": {
                 "name": name,
                 "sketch": applied.get("sketch_name"),
                 "axis_entity": applied.get("axis_entity"),
@@ -2153,17 +2511,20 @@ async def register_modeling_tools(
         keeps the side along the sketch normal, where `create_extrusion` grows). Set,
         true cuts along the sketch normal and false against it, and the other side is
         tried only when that one has no material. `direction_flipped` says the cut
-        went the other way. For a sketch inside the body, use ThroughAllBoth. Needs:
-        an open part with a solid body. Changes: adds a
-        Cut-Extrude feature. Returns: `cut_extrude` (`name`, `sketch_name`,
-        `direction_flipped`) and `measured_change` (volume, bounding box and solid-body
-        count before and after; left out when the model can't be read).
+        went the other way. For a sketch inside the body, use MidPlane (blind) or
+        ThroughAllBoth. `start_offset_mm` starts the cut off the sketch plane; a
+        `draft_angle` narrows it with depth unless `draft_outward`. A text sketch
+        (`add_sketch_text`) cuts too. Needs: an open part with a solid body.
+        Changes: adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`,
+        `sketch_name`, `direction_flipped`, and the options set) and
+        `measured_change` (volume, bounding box and solid-body count before and
+        after; left out when the model can't be read).
 
         Args:
             input_data: The cut. `depth` (mm) is required; `sketch_name`,
-                `end_condition` (Blind, ThroughAll, ThroughAllBoth),
-                `both_directions`, `reverse_direction` and `draft_angle` have
-                defaults.
+                `end_condition` (Blind, MidPlane, ThroughAll, ThroughAllBoth),
+                `both_directions`, `reverse_direction`, `start_offset_mm` and
+                `draft_angle`/`draft_outward` have defaults.
 
         Returns:
             dict[str, Any]: The created cut.
@@ -2172,6 +2533,8 @@ async def register_modeling_tools(
         params = ExtrusionParameters(
             depth=input_data.depth,
             draft_angle=input_data.draft_angle,
+            draft_outward=input_data.draft_outward,
+            start_offset=input_data.start_offset_mm,
             both_directions=input_data.both_directions,
             thin_feature=False,
             thin_thickness=None,
@@ -2211,8 +2574,159 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        if isinstance(feature_params, dict) and feature_params.get("mid_plane"):
+            reply["cut_extrude"]["end_condition"] = "MidPlane"
+        reply["cut_extrude"].update(_offset_and_draft(input_data))
         reply = _attach_measured_change(reply, before, after)
         return _flag_a_shallow_cut(reply, feature_params, input_data)
+
+    async def _text_sketch(
+        input_data: EmbossTextInput,
+    ) -> tuple[str, dict[str, Any], AdapterResult[dict[str, Any]], list[str]]:
+        """Open the label's sketch, write the text, and close it.
+
+        Returns:
+            tuple: The sketch's name, its ``sketch`` reply block, the text's
+            result and any warnings.
+
+        Raises:
+            ToolOperationError: A step failed; a sketch left open by a failed
+                text is closed first (an empty one goes away).
+        """
+        notes: list[str] = []
+        plane = str(input_data.plane)
+        plane_created = None
+        if input_data.face_point is not None:
+            made = await adapter.create_reference_plane(
+                "", 0.0, 0.0, False, None, list(input_data.face_point)
+            )
+            require_success(made, context="Failed to make a plane on the face")
+            plane = plane_created = str((made.data or {}).get("name"))
+        opened = await adapter.create_sketch(plane)
+        require_success(opened, context="Failed to open a sketch for the text")
+        sketch_name = str(
+            opened.data.get("sketch_name")
+            if isinstance(opened.data, dict)
+            else opened.data
+        )
+        found = opened.metadata if isinstance(opened.metadata, dict) else {}
+        axes = found.get("axes")
+        x, y = input_data.x, input_data.y
+        if input_data.face_point is not None:
+            at = sketch_point(axes, input_data.face_point)
+            if at is None:
+                notes.append(
+                    "The sketch's axes couldn't be read, so x and y were taken "
+                    "from the sketch origin, not from face_point."
+                )
+            else:
+                x, y = at[0] + x, at[1] + y
+        text = await adapter.add_sketch_text(
+            input_data.text,
+            x,
+            y,
+            input_data.height,
+            input_data.font,
+            input_data.angle,
+            input_data.bold,
+            input_data.italic,
+        )
+        if not text.is_success:
+            await adapter.exit_sketch()
+        require_success(text, context="Failed to add the text")
+        closed = await adapter.exit_sketch()
+        require_success(closed, context="Failed to close the text sketch")
+        block = {
+            "name": sketch_name,
+            "plane": found.get("plane") or plane,
+            "axes": axes,
+            "plane_created": plane_created,
+        }
+        return sketch_name, block, text, notes
+
+    @mcp.tool()
+    async def emboss_text(input_data: EmbossTextInput) -> dict[str, Any]:
+        """Raise a text label off the active part, or engrave it in, in one call.
+
+        Use it for labels (MIN/MAX, a name and version): it opens a sketch on
+        `plane`, or on the flat face at `face_point` (a reference plane is made
+        there, and `x`, `y` count from that point), writes the text as
+        `add_sketch_text` does, closes the sketch and extrudes it `depth` mm
+        (`mode: "emboss"`) or cuts it in (`"engrave"`). An emboss that added
+        nothing grew into the part, so it is made again the other way; an engrave
+        cuts the side with more material. For text in a sketch you build, use
+        `add_sketch_text`. Needs: an open part. Changes: adds a text sketch, a
+        Boss-Extrude or Cut-Extrude, and for `face_point` a plane. Returns:
+        `text` (read back), `sketch` (`name`, `plane`, `axes`, `plane_created`),
+        `feature` (`name`, `mode`, `depth`, `direction_flipped`) and
+        `measured_change`.
+
+        Args:
+            input_data: The label. `text`, `depth` (mm) and `plane` or
+                `face_point` are required; `mode` is emboss, and `x`, `y`,
+                `height`, `font`, `angle`, `bold`, `italic` default as in
+                `add_sketch_text`.
+
+        Returns:
+            dict[str, Any]: The text and the feature made from it.
+        """
+        input_data = normalize_input(input_data, EmbossTextInput)
+        sketch_name, sketch_block, text, notes = await _text_sketch(input_data)
+        emboss = input_data.mode == "emboss"
+        params = ExtrusionParameters(
+            depth=input_data.depth, sketch_name=sketch_name, merge_result=emboss
+        )
+        if input_data.reverse_direction is not None:
+            params.reverse_direction = input_data.reverse_direction
+        before = await _read_summary(adapter)
+        make = adapter.create_extrusion if emboss else adapter.create_cut_extrude
+        result = await make(params)
+        require_success(result, context=f"Failed to {input_data.mode} the text")
+        after = await _read_summary(adapter) if before is not None else None
+        flipped = bool(
+            (_result_value(result.data, "parameters", default=None) or {}).get(
+                "direction_flipped"
+            )
+        )
+        if (
+            emboss
+            and input_data.reverse_direction is None
+            and _added_nothing(before, after)
+        ):
+            # Grown into the part: a raised label goes the other way.
+            first = _result_value(result.data, "feature_name", "name", default="")
+            removed = await adapter.delete_feature(str(first))
+            if removed.is_success:
+                result = await adapter.create_extrusion(
+                    params.model_copy(update={"reverse_direction": True})
+                )
+                require_success(
+                    result, context="Failed to emboss the text the other way"
+                )
+                after = await _read_summary(adapter)
+                flipped = True
+        name = _result_value(result.data, "feature_name", "name", default="")
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": (
+                f"{'Embossed' if emboss else 'Engraved'} {input_data.text!r} "
+                f"{input_data.depth:g} mm on {sketch_block['plane']}: {name}"
+            ),
+            "text": text.data,
+            "sketch": sketch_block,
+            "feature": {
+                "name": name,
+                "mode": input_data.mode,
+                "depth": input_data.depth,
+                "direction_flipped": flipped,
+            },
+            "execution_time": result.execution_time,
+        }
+        reply = _attach_measured_change(reply, before, after)
+        notes += text_warnings(input_data, dict(text.data or {}))
+        if notes:
+            reply["warning"] = " ".join(filter(None, [reply.get("warning"), *notes]))
+        return reply
 
     @mcp.tool()
     async def add_fillet(input_data: AddFilletInput) -> dict[str, Any]:
@@ -3279,6 +3793,79 @@ async def register_modeling_tools(
             "pattern": data,
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def pattern_linear(input_data: PatternLinearInput) -> dict[str, Any]:
+        """Repeat features or bodies of the active part in a row or a grid: slots, holes, ribs.
+
+        Use it to make many identical features from one (8 slot cuts, 16 drafted
+        lead-ins): cut or extrude the first, then repeat it `count` times
+        `spacing` mm apart along `direction`, and optionally `count2` rows
+        `spacing2` apart along `direction2`. A direction is `x`, `y` or `z`
+        (`-x` the other way), a reference axis or plane by name (the plane's
+        normal), or a point on a straight edge as "x,y,z" mm. Cuts and bosses
+        both work; `bodies` repeats solid bodies. For a ring, use
+        `pattern_circular`. It fails when the volume doesn't change: no instance
+        landed on the part, and the empty pattern is deleted. Needs: an open part
+        with the named features. Changes: adds a linear pattern feature.
+        Returns: `pattern` (`name`, `patterned`, `direction` and `direction2`
+        with `follows`, `count`, `spacing_mm`, `flipped`, and `instances`) and
+        `measured_change`.
+
+        Args:
+            input_data: The pattern. `features`, `direction`, `count` (2 or
+                more, the original included) and `spacing` (mm) are required;
+                `direction2` with `count2` and `spacing2` adds rows, and
+                `reverse_direction`, `reverse_direction2` and `bodies` are off.
+
+        Returns:
+            dict[str, Any]: The pattern created.
+        """
+        input_data = normalize_input(input_data, PatternLinearInput)
+        before = await _read_summary(adapter)
+        result = await adapter.pattern_linear(
+            input_data.features,
+            input_data.direction,
+            input_data.count,
+            input_data.spacing,
+            input_data.direction2,
+            input_data.count2 or 1,
+            input_data.spacing2 or 0.0,
+            input_data.reverse_direction,
+            input_data.reverse_direction2,
+            input_data.bodies,
+        )
+        require_success(result, context="Failed to make the linear pattern")
+        after = await _read_summary(adapter) if before is not None else None
+        data = dict(result.data or {})
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": (
+                f"Patterned {', '.join(input_data.features)}: "
+                f"{data.get('instances', input_data.count)} instances "
+                f"({data.get('name')})"
+            ),
+            "pattern": data,
+            "execution_time": result.execution_time,
+        }
+        reply = _attach_measured_change(reply, before, after)
+        delta = (reply.get("measured_change") or {}).get("volume_delta_mm3")
+        if delta == 0:
+            removed = await adapter.delete_feature(str(data.get("name")))
+            raise ToolOperationError(
+                f"The linear pattern built no instance: the volume stayed at "
+                f"{reply['measured_change']['volume_before_mm3']:g} mm3. "
+                + (
+                    f"The empty pattern {data.get('name')} was deleted. "
+                    if removed.is_success
+                    else f"The empty pattern {data.get('name')} is still in the "
+                    f"tree ({removed.error}). "
+                )
+                + "Check each direction and its sense (reverse_direction) and that "
+                "the instances land on the part.",
+                execution_time=result.execution_time,
+            )
+        return reply
 
     @mcp.tool()
     async def measure_clearance(input_data: MeasureClearanceInput) -> dict[str, Any]:

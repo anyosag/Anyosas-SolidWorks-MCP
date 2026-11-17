@@ -505,6 +505,101 @@ class AddOutlinesInput(CompatInput):
     )
 
 
+class AddSketchTextInput(CompatInput):
+    """Input schema for writing text in the open sketch.
+
+    Attributes:
+        text (str): The text.
+        x (float): Where it starts, sketch x in mm.
+        y (float): Where it starts, sketch y in mm.
+        height (float | None): Character height in mm.
+        font (str | None): Font name.
+        angle (float): Degrees counter-clockwise from sketch x.
+        bold (bool): Bold characters.
+        italic (bool): Italic characters.
+    """
+
+    text: str = Field(description="The text to write, e.g. 'MAX' or 'DIPPER v2'")
+    x: float = Field(
+        default=0.0, description="Where the text starts (its left end), sketch x in mm"
+    )
+    y: float = Field(
+        default=0.0, description="Where the text starts (its baseline), sketch y in mm"
+    )
+    height: float | None = Field(
+        default=None,
+        gt=0,
+        description="Character height in mm; omit for the document's text height",
+    )
+    font: str | None = Field(
+        default=None,
+        description=(
+            "Font name, e.g. 'Arial'; omit for the document's. A plain sans-serif "
+            "font extrudes most reliably"
+        ),
+    )
+    angle: float = Field(
+        default=0.0,
+        ge=-360,
+        le=360,
+        description=(
+            "Degrees counter-clockwise from sketch x: 90 reads upwards. The text "
+            "follows a construction line drawn at that angle"
+        ),
+    )
+    bold: bool = Field(default=False, description="Bold characters")
+    italic: bool = Field(default=False, description="Italic characters")
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse empty text.
+
+        Raises:
+            ValueError: The text is blank.
+        """
+        if not self.text.strip():
+            raise ValueError("text is required")
+
+
+def text_warnings(asked: AddSketchTextInput, data: dict[str, Any]) -> list[str]:
+    """How the text SolidWorks holds differs from what was asked.
+
+    Args:
+        asked: The text's input.
+        data: The adapter's reply for it.
+
+    Returns:
+        list[str]: One sentence per difference; empty when it is as asked.
+    """
+    warnings = []
+    others = data.get("shares_sketch_with") or []
+    if others:
+        warnings.append(
+            f"The sketch also holds {', '.join(map(str, others))}: a sketch with "
+            "both a profile and text won't extrude or cut. Put the text in a "
+            "sketch of its own."
+        )
+    if data.get("format_applied") is False:
+        warnings.append(
+            "SolidWorks did not take the font settings; the text keeps the "
+            "document's font and height."
+        )
+    height = data.get("height_mm")
+    if (
+        asked.height is not None
+        and isinstance(height, int | float)
+        and abs(float(height) - asked.height) > 1e-3
+    ):
+        warnings.append(
+            f"The text is {float(height):g} mm high, not the {asked.height:g} mm asked."
+        )
+    font = data.get("font")
+    if asked.font and isinstance(font, str) and font.lower() != asked.font.lower():
+        warnings.append(
+            f"SolidWorks used the font '{font}', not '{asked.font}' (is it installed?)."
+        )
+    return warnings
+
+
 class AddSplineInput(BaseModel):
     """Input schema for adding a spline to sketch.
 
@@ -1053,6 +1148,55 @@ async def register_sketching_tools(
             "arc_count": data.get("arc_count", 0),
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def add_sketch_text(input_data: AddSketchTextInput) -> dict[str, Any]:
+        """Write text in the open sketch, for a label to raise or cut into the part.
+
+        Use it for part labels (MIN/MAX, a name, a version): `exit_sketch`, then
+        `create_extrusion` raises the text and `create_cut_extrude` sinks it. Put
+        the text in a sketch of its own: a sketch with both a profile and text
+        won't extrude. For the whole label in one call, use `emboss_text`. The
+        text starts at (`x`, `y`) in sketch mm and reads along sketch x, or at
+        `angle` degrees along a construction line. Needs: an open sketch
+        (`create_sketch`). Changes: adds the text (and that line, for an angle).
+        Returns: `text` with `id` and what SolidWorks reads back: `text`,
+        `position_mm`, `font`, `height_mm`, `bold`, `italic`, `angle_deg`; and a
+        `warning` when the sketch holds other geometry or the font or height
+        didn't take.
+
+        Args:
+            input_data: The text. `text` is required; `x`, `y` (mm), `height`
+                (mm), `font`, `angle` (degrees), `bold` and `italic` have
+                defaults (the document's font and height).
+
+        Returns:
+            dict[str, Any]: The text written.
+        """
+        input_data = normalize_input(input_data, AddSketchTextInput)
+        result = await adapter.add_sketch_text(
+            input_data.text,
+            input_data.x,
+            input_data.y,
+            input_data.height,
+            input_data.font,
+            input_data.angle,
+            input_data.bold,
+            input_data.italic,
+        )
+        require_success(result, context="Failed to add sketch text")
+        data = dict(result.data or {})
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Added text {input_data.text!r} at "
+            f"({input_data.x:g}, {input_data.y:g}) mm",
+            "text": data,
+            "execution_time": result.execution_time,
+        }
+        warnings = text_warnings(input_data, data)
+        if warnings:
+            reply["warning"] = " ".join(warnings)
+        return reply
 
     @mcp.tool()
     async def edit_sketch(input_data: EditSketchInput) -> dict[str, Any]:
