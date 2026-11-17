@@ -158,6 +158,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     # export
     "batch_export": _PLANNED,
     "export_dwg": _STABLE,
+    "export_for_blender": _UNCHECKED,
     "export_iges": _STABLE,
     "export_image": _STABLE,
     "export_pdf": _STABLE,

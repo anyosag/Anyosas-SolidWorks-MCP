@@ -4,16 +4,20 @@ Provides tools for exporting SolidWorks models to various formats including STEP
 STL, PDF, DWG, and image formats.
 """
 
+import json
+import os
+import tempfile
 from typing import Any, Literal, TypeVar
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
-from ..utils import export_check, stl_mesh
+from ..utils import blender_handoff, export_check, gltf_summary, stl_mesh
 from .input_compat import CompatInput
 from .modeling import DisplayType
 from .tool_boundary import (
+    InvalidInputError,
     ToolOperationError,
     UnsupportedOperationError,
     normalize_input,
@@ -255,6 +259,68 @@ class ExportImageInput(CompatInput):
             first, second = self.zoom_box_mm[:3], self.zoom_box_mm[3:]
             if first == second:
                 raise ValueError("zoom_box_mm needs two different corners")
+
+
+class ExportForBlenderInput(CompatInput):
+    """Input schema for handing the active model to Blender.
+
+    Attributes:
+        folder (str | None): Where the files go.
+        name (str | None): The files' and Blender collection's name.
+        file_format (str): ``glb`` or ``stl``.
+        up_axis (str): The model's up axis in SolidWorks.
+        resolution (str | None): STL mesh resolution.
+    """
+
+    folder: str | None = Field(
+        default=None,
+        description=(
+            "Folder for the mesh and its manifest; created if missing. Left out: "
+            "a solidworks_mcp\\blender\\<name> folder in the system temp folder"
+        ),
+    )
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Name for the files and the Blender collection. Left out: the "
+            "document's name. Keep it the same on a re-export so Blender "
+            "replaces the earlier import"
+        ),
+    )
+    file_format: Literal["glb", "stl"] = Field(
+        default="glb",
+        description=(
+            "glb: SolidWorks' glTF exporter, with each component as its own "
+            "object in place and its colours. stl: one mesh in model "
+            "coordinates, no colours or parts"
+        ),
+    )
+    up_axis: Literal["y", "z"] = Field(
+        default="y",
+        description=(
+            "Which model axis is up: y for SolidWorks' views, z for a part "
+            "modelled Z-up. It ends up on Blender's +Z"
+        ),
+    )
+    resolution: Literal["coarse", "fine"] | None = Field(
+        default=None,
+        description=(
+            "STL only: mesh resolution for this file. Left out: the user's STL "
+            "setting. A GLB uses SolidWorks' own tessellation"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse an STL resolution for a GLB, and blank names."""
+        if self.resolution is not None and self.file_format != "stl":
+            raise ValueError(
+                "resolution applies to file_format 'stl' only; a GLB uses "
+                "SolidWorks' own tessellation"
+            )
+        for field in ("folder", "name"):
+            value = getattr(self, field)
+            if value is not None and not value.strip():
+                raise ValueError(f"{field} is blank; leave it out for the default")
 
 
 class BatchExportInput(CompatInput):
@@ -818,6 +884,144 @@ async def register_export_tools(
         )
 
     @mcp.tool()
+    async def export_for_blender(input_data: ExportForBlenderInput) -> dict[str, Any]:
+        """Export the active part or assembly for Blender, with the code that imports it right.
+
+        Use it to render, inspect or animate the model in Blender (the Blender MCP's
+        `execute_blender_code`): it fixes the hand-off's units (Blender reads metres),
+        up axis (Blender is +Z up) and placement once. GLB (default) keeps each
+        component as its own object in place, with its colour; STL is one mesh in
+        model coordinates. The file is read back and its size checked against the
+        model's to confirm its units. Run `blender_code` in Blender as it is: it
+        imports into collection "SW <name>", replacing an earlier import of the same
+        name (a re-export after a change updates it), and returns the size Blender
+        measured with `size_matches`. Needs: an open, active part or assembly.
+        Changes: writes the mesh and `<name>.blender.json` (the manifest), replacing
+        files there; nothing stays selected; the model and the user's STL options
+        are unchanged. Returns: `data` with `file_path`, `manifest_path`, `format`,
+        `units`, `up_axis`, `parts` (GLB), `expected_size_mm` and `blender_code`.
+
+        Args:
+            input_data: The hand-off. Everything has a default: `file_format`
+                glb, `up_axis` y, a temp folder and the document's name.
+
+        Returns:
+            dict[str, Any]: The files written and the Blender code.
+        """
+        input_data = normalize_input(input_data, ExportForBlenderInput)
+        info = await adapter.get_model_info()
+        require_success(info, context="Failed to read the active document")
+        document = info.data if isinstance(info.data, dict) else {}
+        doc_type = str(document.get("type") or "").lower()
+        if doc_type not in ("part", "assembly"):
+            raise InvalidInputError(
+                "export_for_blender needs an active part or assembly, not "
+                f"{doc_type or 'no document'}; activate one with activate_document."
+            )
+        name = blender_handoff.safe_name(
+            input_data.name or str(document.get("title") or "")
+        )
+        folder = os.path.abspath(
+            input_data.folder
+            or os.path.join(tempfile.gettempdir(), "solidworks_mcp", "blender", name)
+        )
+        os.makedirs(folder, exist_ok=True)
+        fmt = input_data.file_format
+        file_path = os.path.join(folder, f"{name}.{fmt}")
+        model_size = await _model_size_mm(adapter)
+
+        warnings: list[str] = []
+        glb: dict[str, Any] | None = None
+        units_check: dict[str, Any] | None = None
+        if fmt == "stl":
+            require_capability(
+                adapter,
+                "export_stl_with_settings",
+                "The active adapter cannot set STL options; nothing was exported. "
+                "Use file_format 'glb'.",
+            )
+            settings: dict[str, Any] = {"units": "mm", "translate_to_positive": False}
+            if input_data.resolution:
+                settings["resolution"] = input_data.resolution
+            result = await adapter.export_stl_with_settings(file_path, settings)
+            require_success(result, context="Failed to export STL for Blender")
+            mesh_check = stl_mesh.check_stl(file_path, "mm")
+            if "error" in mesh_check:
+                raise ToolOperationError(
+                    f"The STL can't be read back: {mesh_check['error']}",
+                    result.execution_time,
+                    {"mesh_check": mesh_check},
+                )
+            metres_per_unit = 0.001
+            file_size = mesh_check.get("size_mm")
+        else:
+            result = await adapter.export_file(file_path, "glb")
+            require_success(result, context="Failed to export GLB for Blender")
+            _file_check(file_path, "GLB", result.execution_time)
+            glb = gltf_summary.check_glb(file_path)
+            if "error" in glb:
+                raise ToolOperationError(
+                    f"SolidWorks wrote a GLB with no scene in it ({glb['error']}); "
+                    "use file_format 'stl'.",
+                    result.execution_time,
+                    {"glb": glb},
+                )
+            bounds = glb.get("bounds") or {}
+            file_size = bounds.get("size")
+            units_check = blender_handoff.file_units(file_size or [0, 0, 0], model_size)
+            metres_per_unit = units_check["metres_per_unit"]
+            warnings.extend(_glb_warnings(units_check, model_size, glb))
+
+        # Without the model's size, Blender's check still catches a wrong turn
+        # or scale against the file's own size.
+        file_size_mm = (
+            [float(v) * metres_per_unit * 1000.0 for v in file_size]
+            if isinstance(file_size, list) and len(file_size) == 3
+            else None
+        )
+        manifest = blender_handoff.build_manifest(
+            document=document,
+            file_format=fmt,
+            file_path=file_path,
+            up_axis=input_data.up_axis,
+            metres_per_unit=metres_per_unit,
+            model_size_mm=model_size or file_size_mm,
+            glb=glb,
+            units_check=units_check,
+            name=name,
+        )
+        manifest_path = os.path.join(folder, f"{name}.blender.json")
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2)
+        data: dict[str, Any] = {
+            "file_path": file_path,
+            "manifest_path": manifest_path,
+            "format": fmt,
+            "units": "mm" if fmt == "stl" else (units_check or {}).get("units"),
+            "up_axis": input_data.up_axis,
+            "collection": manifest["collection"],
+            "file_size": file_size,
+            "expected_size_mm": manifest["expected_size_mm"],
+            "expected_size_from": "model" if model_size else "file",
+            "blender_code": blender_handoff.blender_code(manifest_path),
+        }
+        if glb is not None:
+            data["parts"] = [part["name"] for part in glb.get("nodes", [])]
+            data["materials"] = glb.get("materials", [])
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": (
+                f"Exported {name} for Blender: run data.blender_code with "
+                "execute_blender_code"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+        if warnings:
+            reply["warning"] = " ".join(warnings)
+        return reply
+
+    @mcp.tool()
     async def batch_export(input_data: BatchExportInput) -> dict[str, Any]:
         """Export every matching SolidWorks file in a folder to one format.
 
@@ -849,5 +1053,57 @@ async def register_export_tools(
             "execution_time": result.execution_time,
         }
 
-    tool_count = 7  # Number of tools registered
+    tool_count = 8  # Number of tools registered
     return tool_count
+
+
+async def _model_size_mm(adapter: Any) -> list[float] | None:
+    """The active model's box size in mm, or ``None`` when SolidWorks gives none."""
+    if not hasattr(adapter, "get_model_geometry_summary"):
+        return None
+    summary = await adapter.get_model_geometry_summary()
+    box = (summary.data or {}).get("bounding_box_mm") if summary.is_success else None
+    size = box.get("size") if isinstance(box, dict) else None
+    if isinstance(size, list) and len(size) == 3 and max(size) > 0:
+        return [float(v) for v in size]
+    return None
+
+
+def _glb_warnings(
+    units_check: dict[str, Any],
+    model_size: list[float] | None,
+    glb: dict[str, Any],
+) -> list[str]:
+    """What the agent should know about a GLB before trusting the import.
+
+    Args:
+        units_check: :func:`blender_handoff.file_units`'s result.
+        model_size: The model's box size in mm, or ``None``.
+        glb: :func:`gltf_summary.summarize`'s result.
+
+    Returns:
+        list[str]: Zero or more sentences.
+    """
+    if not glb.get("nodes"):
+        return ["The GLB has no mesh node; Blender will import nothing."]
+    notes: list[str] = []
+    if model_size is None:
+        notes.append(
+            "SolidWorks gave no model size, so the GLB's units were taken as "
+            "metres (the glTF standard) unchecked; compare the size_mm Blender "
+            "reports with the model."
+        )
+    elif not units_check["checked"]:
+        notes.append(
+            f"The GLB's size {(glb.get('bounds') or {}).get('size')} matches the "
+            f"model's {model_size} mm in no unit, so its units were taken as "
+            "metres; the file may hold only part of the model, or hidden "
+            "components. Check size_matches after the import."
+        )
+    elif units_check["axes"] == "y_z_swapped":
+        notes.append(
+            "The GLB's Y and Z sides are the model's Z and Y: SolidWorks turned "
+            "the model on export, so it may come into Blender on its side. Check "
+            "it, and try the other up_axis."
+        )
+    return notes

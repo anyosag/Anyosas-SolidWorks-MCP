@@ -181,6 +181,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "export_stl": _overwrites("Export STL"),
     "export_pdf": _overwrites("Export PDF"),
     "export_dwg": _overwrites("Export DWG"),
+    "export_for_blender": _overwrites("Export for Blender"),
     "export_image": _overwrites("Export Image"),
     "batch_export": _overwrites("Batch Export"),
     # file_management

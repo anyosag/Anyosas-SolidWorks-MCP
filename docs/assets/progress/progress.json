@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 183,
+  "total": 184,
   "by_level": {
    "stable": 107,
    "beta": 0,
-   "experimental": 37,
+   "experimental": 38,
    "planned": 39
   },
   "list": [
@@ -574,6 +574,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Export the active sheet-metal part's flat pattern to DXF or DWG, for laser or waterjet cutting."
+   },
+   {
+    "name": "export_for_blender",
+    "family": "export",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Export the active part or assembly for Blender, with the code that imports it right."
    },
    {
     "name": "export_iges",

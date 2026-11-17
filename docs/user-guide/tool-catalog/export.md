@@ -4,7 +4,7 @@ Convert SolidWorks models to industry-standard interchange and manufacturing for
 
 > **Prerequisite:** An active document or a valid file path to an existing model.
 
-**Total tools in this category: 7**
+**Total tools in this category: 8**
 
 ---
 
@@ -153,6 +153,30 @@ Save a picture of the active model, in a standard view or as it is on screen, as
 | `zoom_box_mm` | `List[float]?` | — | `None` | Zoom to this part of the model: two opposite corners of a box in model coordinates, mm, as [x1, y1, z1, x2, y2, z2] |
 | `hide` | `List[DisplayType]?` | — | `None` | Hide these for the picture only, e.g. ["planes", "sketches"]; they are shown again afterwards as they were |
 | `section` | `ImageSection?` | — | `None` | Cut the model on a plane for this picture only, with the cut faces capped, e.g. {"plane": "Front Plane", "offset_mm": 0}, to show a snap inside its socket; the cut is taken off afterwards |
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
+### `export_for_blender`
+
+Export the active part or assembly for Blender, with the code that imports it right.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `folder` | `str?` | — | `None` | Folder for the mesh and its manifest; created if missing. Left out: a solidworks_mcp\blender\<name> folder in the system temp folder |
+| `name` | `str?` | — | `None` | Name for the files and the Blender collection. Left out: the document's name. Keep it the same on a re-export so Blender replaces the earlier import |
+| `file_format` | `Literal['glb', 'stl']` | — | `glb` | glb: SolidWorks' glTF exporter, with each component as its own object in place and its colours. stl: one mesh in model coordinates, no colours or parts |
+| `up_axis` | `Literal['y', 'z']` | — | `y` | Which model axis is up: y for SolidWorks' views, z for a part modelled Z-up. It ends up on Blender's +Z |
+| `resolution` | `Literal['coarse', 'fine']?` | — | `None` | STL only: mesh resolution for this file. Left out: the user's STL setting. A GLB uses SolidWorks' own tessellation |
 
 **Sample call:**
 

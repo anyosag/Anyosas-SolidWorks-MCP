@@ -7,10 +7,12 @@ when SolidWorks is not available.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import random
 import shutil
+import struct
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -64,6 +66,66 @@ _MOCK_STL = (
 )
 
 
+def _mock_glb() -> bytes:
+    """The mock's GLB: the STL's tetrahedron (10 mm legs) in metres, one node.
+
+    Like SolidWorks' exporter, the node is named after the document and the
+    material carries a base colour, so ``export_for_blender`` reads back
+    what a real export holds.
+    """
+    corners = [(0.0, 0.0, 0.0), (0.01, 0.0, 0.0), (0.0, 0.01, 0.0), (0.0, 0.0, 0.01)]
+    faces = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
+    positions = struct.pack("<12f", *(v for corner in corners for v in corner))
+    indices = struct.pack("<12H", *faces)
+    binary = positions + indices
+    document = {
+        "asset": {"version": "2.0", "generator": "solidworks-mcp mock"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "mock", "mesh": 0}],
+        "meshes": [
+            {
+                "name": "mock",
+                "primitives": [
+                    {"attributes": {"POSITION": 0}, "indices": 1, "material": 0}
+                ],
+            }
+        ],
+        "materials": [
+            {
+                "name": "mock grey",
+                "pbrMetallicRoughness": {"baseColorFactor": [0.8, 0.8, 0.8, 1.0]},
+            }
+        ],
+        "buffers": [{"byteLength": len(binary)}],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": len(positions)},
+            {"buffer": 0, "byteOffset": len(positions), "byteLength": len(indices)},
+        ],
+        "accessors": [
+            {
+                "bufferView": 0,
+                "componentType": 5126,
+                "count": 4,
+                "type": "VEC3",
+                "min": [0.0, 0.0, 0.0],
+                "max": [0.01, 0.01, 0.01],
+            },
+            {"bufferView": 1, "componentType": 5123, "count": 12, "type": "SCALAR"},
+        ],
+    }
+    text = json.dumps(document).encode("utf-8")
+    text += b" " * (-len(text) % 4)
+    binary += b"\x00" * (-len(binary) % 4)
+    chunks = (
+        struct.pack("<II", len(text), 0x4E4F534A)
+        + text
+        + struct.pack("<II", len(binary), 0x004E4942)
+        + binary
+    )
+    return b"glTF" + struct.pack("<II", 2, 12 + len(chunks)) + chunks
+
+
 def _iges_line(text: str, section: str, number: int) -> str:
     """One 80-column IGES line: text, the section letter in column 73, a number."""
     return f"{text:<72}{section}{number:>7}\n"
@@ -111,7 +173,7 @@ _MOCK_EXPORTS: dict[str, bytes] = {
         b"\x00\x00\x00\x00\xff\xff\xff\x00"
     ),
     ".tif": b"II*\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00",
-    ".glb": b"glTF\x02\x00\x00\x00\x0c\x00\x00\x00",
+    ".glb": _mock_glb(),
     ".gltf": b'{"asset": {"version": "2.0"}}\n',
 }
 _MOCK_EXPORTS[".stp"] = _MOCK_EXPORTS[".step"]
