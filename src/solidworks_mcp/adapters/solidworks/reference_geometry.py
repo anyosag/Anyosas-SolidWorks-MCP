@@ -21,8 +21,10 @@ vertical axis through a cell centre, and no pattern could go round one.
   ``IFeatureManager.InsertRefPlane`` Perpendicular to the line (mark 0) and
   Coincident with its start point (mark 1).
 
-The 3D sketch stays in the tree as the feature's parent. None of this has
-run on SolidWorks yet: ``tests/scripts/probe_r2_sketching.py`` settles it.
+The 3D sketch stays in the tree as the feature's parent. Measured on
+SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_r2_sketching.py``, 29 of 29
+checks): the axis lies on its line, the plane passes through its point,
+and a plane turned 30 degrees about an axis reads its normal to 6e-6.
 """
 
 from __future__ import annotations

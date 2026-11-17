@@ -359,13 +359,35 @@ def _part(first: _Feature, issues: Any, bodies: list[list[str]]) -> SimpleNamesp
     return model
 
 
+class _AccessedScope:
+    """A cut's definition as measured: its scope bodies read only inside
+    ``AccessSelections`` (None outside), released after."""
+
+    FeatureScope = True
+    AutoSelect = False
+
+    def __init__(self, *names: str, grant: bool = True) -> None:
+        self._bodies = tuple(_body(n) for n in names)
+        self.grant, self.accessed, self.calls = grant, False, []
+
+    @property
+    def FeatureScopeBodies(self) -> Any:  # noqa: N802
+        return self._bodies if self.accessed else None
+
+    def AccessSelections(self, _model: Any, component: Any) -> bool:  # noqa: N802
+        self.calls.append("access")
+        assert component is not None  # a null dispatch, not None (pitfall #11)
+        self.accessed = self.grant
+        return self.grant
+
+    def ReleaseSelectionAccess(self) -> None:  # noqa: N802
+        self.calls.append("release")
+        self.accessed = False
+
+
 def test_a_cut_that_meets_nothing_names_its_bodies_and_the_parts() -> None:
     """The Dipper: a cut scoped to the strip missed once an edit split it."""
-    scoped = SimpleNamespace(
-        FeatureScope=True,
-        AutoSelect=False,
-        FeatureScopeBodies=(_body("Boss-Extrude1"),),
-    )
+    scoped = _AccessedScope("Boss-Extrude1")
     cut = _ScopedCut("Cut-Extrude7", scoped)
     model = _part(cut, [(cut, 71, False)], [["Boss-Extrude1", "Boss-Extrude5"]])
 
@@ -374,6 +396,18 @@ def test_a_cut_that_meets_nothing_names_its_bodies_and_the_parts() -> None:
     assert issue.scope == ri.BodyScope(
         True, False, ["Boss-Extrude1"], ["Boss-Extrude1", "Boss-Extrude5"]
     )
+    assert scoped.calls == ["access", "release"] and not scoped.accessed
+
+
+def test_scope_bodies_stay_unknown_when_the_access_is_refused() -> None:
+    scoped = _AccessedScope("Boss-Extrude1", grant=False)
+    cut = _ScopedCut("Cut-Extrude7", scoped)
+    model = _part(cut, [(cut, 71, False)], [["Boss-Extrude1"]])
+
+    (issue,) = ri.collect_rebuild_issues(_Adapter(model), model)
+
+    assert issue.scope is not None and issue.scope.bodies is None
+    assert scoped.calls == ["access"]
 
 
 def test_the_parts_bodies_are_read_once_for_every_cut() -> None:
@@ -438,10 +472,7 @@ async def test_a_rebuild_that_splits_a_body_off_says_so() -> None:
 
 @pytest.mark.asyncio
 async def test_a_failed_rebuild_that_split_a_body_says_so_in_its_error() -> None:
-    scoped = SimpleNamespace(
-        FeatureScope=True, AutoSelect=False, FeatureScopeBodies=(_body("Strip"),)
-    )
-    cut = _ScopedCut("Cut-Extrude7", scoped)
+    cut = _ScopedCut("Cut-Extrude7", _AccessedScope("Strip"))
     model = _part(cut, [(cut, 71, False)], [["Strip"], ["Strip", "Boss-Extrude5"]])
 
     result = await _IO(_Adapter(model)).rebuild_model()

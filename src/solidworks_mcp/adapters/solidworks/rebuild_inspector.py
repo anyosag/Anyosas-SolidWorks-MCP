@@ -11,8 +11,12 @@ description and fix hint. Two sources, in the order chosen from the live probe
 
 A cut that meets nothing (``swFeatureErrorCutNotIntersectModel``) also gets
 the bodies it acts on, from its definition's ``FeatureScope``,
-``AutoSelect`` and ``FeatureScopeBodies`` (read without ``AccessSelections``,
-as ``get_feature_definition`` reads), and the part's solid bodies, read once.
+``AutoSelect`` and ``FeatureScopeBodies``, and the part's solid bodies, read
+once. On SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_r2_fixes.py``) the
+first two read without ``AccessSelections`` but ``FeatureScopeBodies`` read
+None (``GetFeatureScopeBodiesCount`` -1); inside ``AccessSelections(model,
+null dispatch)`` it gave the body (``Boss-Extrude1``, count 1). So a scoped
+cut's bodies are read inside the access, released at once.
 """
 
 from __future__ import annotations
@@ -69,15 +73,11 @@ def _parents(adapter: Any, feature: Any) -> list[ParentInfo]:
     return out
 
 
-#: What a property read gives when it raised.
-_UNREAD = object()
-
-
 class _PartBodies:
     """The part's solid body names, read the first time a cut needs them."""
 
     def __init__(self, adapter: Any, model: Any) -> None:
-        self._adapter, self._model = adapter, model
+        self._adapter, self.model = adapter, model
         self._read = False
         self._names: list[str] | None = None
 
@@ -85,7 +85,7 @@ class _PartBodies:
         if not self._read:
             from .bodies import solid_body_names
 
-            self._names = solid_body_names(self._adapter, self._model)
+            self._names = solid_body_names(self._adapter, self.model)
             self._read = True
         return self._names
 
@@ -94,10 +94,27 @@ def _bool_or_none(value: Any) -> bool | None:
     return None if value is None else bool(value)
 
 
+def _scope_bodies(adapter: Any, model: Any, data: Any) -> list[str] | None:
+    """``FeatureScopeBodies`` by name, read inside ``AccessSelections``; None
+    when they don't read. The access is released before returning."""
+    from .bodies import _wrapped
+    from .features import _null_callout
+
+    _flag(adapter, data, "AccessSelections", "ReleaseSelectionAccess")
+    if not _attempt(adapter, lambda: data.AccessSelections(model, _null_callout())):
+        return None
+    try:
+        raw = _attempt(adapter, lambda: data.FeatureScopeBodies)
+        return [
+            str(_attempt(adapter, lambda b=_wrapped(adapter, item): b.Name) or "")
+            for item in _as_list(raw)
+        ] or None
+    finally:
+        _attempt(adapter, lambda: data.ReleaseSelectionAccess())
+
+
 def _scope(adapter: Any, feature: Any, part_bodies: _PartBodies) -> BodyScope:
     """The bodies a cut acts on (its definition) and the part's bodies."""
-    from .bodies import _wrapped
-
     _flag(adapter, feature, "GetDefinition")
     data = _attempt(adapter, lambda: feature.GetDefinition())
     scoped = auto = None
@@ -105,12 +122,8 @@ def _scope(adapter: Any, feature: Any, part_bodies: _PartBodies) -> BodyScope:
     if data is not None:
         scoped = _bool_or_none(_attempt(adapter, lambda: data.FeatureScope))
         auto = _bool_or_none(_attempt(adapter, lambda: data.AutoSelect))
-        raw = _attempt(adapter, lambda: data.FeatureScopeBodies, _UNREAD)
-        if scoped and raw is not _UNREAD:
-            bodies = [
-                str(_attempt(adapter, lambda b=_wrapped(adapter, item): b.Name) or "")
-                for item in _as_list(raw)
-            ] or None
+        if scoped:
+            bodies = _scope_bodies(adapter, part_bodies.model, data)
     return BodyScope(scoped, auto, bodies, part_bodies())
 
 

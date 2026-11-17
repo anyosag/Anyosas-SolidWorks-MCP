@@ -23,8 +23,9 @@ line-to-line pin turning in its hole, don't stop the sweep. Between two steps
 a point of the turned part moves at most ``travel_per_step_mm``: a wall
 thinner than that can be passed unseen.
 
-The COM, per step (``tests/scripts/probe_dipper_analysis.py`` runs it on
-scratch parts, for someone to run later):
+The COM, per step, as ``tests/scripts/probe_dipper_analysis.py`` ran it on
+SOLIDWORKS 2026 SP4.1 (first contact 42.11 degrees where 42.09 was
+computed, the start gap 33.0 mm, both ways):
 
 * **bodies** (a part): ``IBody2.Copy`` of the turned body, then
   ``ApplyTransform`` of the turn (``IMathUtility.CreateTransform``, flagged:
@@ -33,8 +34,12 @@ scratch parts, for someone to run later):
   between the temporary body's faces and the other body's, nearest face boxes
   first (``clearance.nearest_pair``);
 * **components** (an assembly): ``IComponent2.Transform2`` set to the turned
-  placement and read back (mates that hold the component make it differ, and
-  the sweep stops); the gap is ``ClosestDistance`` between the faces' assembly
+  placement and read back (when it differs the sweep stops). A coincident
+  mate of the two Front Planes did not hold it: Transform2 turned the arm
+  30 degrees through the mate, as nothing rebuilds the mates between steps.
+  So the reply counts the moving component's mates (``IComponent2.GetMates``)
+  and the tool warns that the sweep ignored them. The gap is
+  ``ClosestDistance`` between the faces' assembly
   twins (pitfall #46); the overlap is ``intersect_mm3`` on copies of each
   component's bodies placed in the assembly. The original transform (and the
   fixed state) is put back at the end, whatever happened.
@@ -737,6 +742,17 @@ def body_frame(
     return "part" if placed <= raw else "assembly"
 
 
+def _mate_count(adapter: Any, component: Any) -> int | None:
+    """How many mates the component has (``IComponent2.GetMates``), or None."""
+    flagged = _sw_type_info.flagged(component, "IComponent2")
+    raw = _attempt(adapter, lambda: flagged.GetMates(), _UNREAD_MATES)
+    return None if raw is _UNREAD_MATES else len(as_list(raw))
+
+
+#: What ``GetMates`` gives when it raised.
+_UNREAD_MATES = object()
+
+
 class _ComponentTurn:
     """Turning one component and putting it back (``IComponent2.Transform2``)."""
 
@@ -872,6 +888,7 @@ def component_rotation_clearance(
     utility = _math_utility(adapter)
     label_m, label_o = f"moving {moving!r}", f"other {other!r}"
     turn = _ComponentTurn(adapter, model, assembly, found[moving], label_m, utility)
+    mates = _mate_count(adapter, found[moving])
     other_data = _transform_data(adapter, found[other])
     if other_data is None:
         raise RuntimeError(
@@ -934,4 +951,5 @@ def component_rotation_clearance(
         **reply,
         "body_frame": frame,
         "restored": restored,
+        "mates": mates,
     }

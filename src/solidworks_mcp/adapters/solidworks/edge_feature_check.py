@@ -19,8 +19,12 @@ stayed invisible.
   it (``GetNextFeature``, ``IsRolledBack``): a new feature goes in at the bar.
 * :func:`warnings`: what a reply should say about those.
 
-Which of these read right on SolidWorks 2026 is what
-``tests/scripts/probe_dipper_fixes.py`` settles.
+Measured on SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_dipper_fixes.py``):
+``GetLastFeatureAdded`` gives the new feature under late binding, and
+``IsRolledBack`` reads the features below the bar. A fillet that lost an
+edge on roll-forward (``swFeatureErrorFilletNoEdge``) still read
+``GetEdgeCount`` 2 of 2: the definition keeps the edge it lost, so only the
+rebuild warning tells.
 """
 
 from __future__ import annotations

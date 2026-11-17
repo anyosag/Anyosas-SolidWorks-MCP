@@ -67,6 +67,7 @@ from solidworks_mcp.adapters import sw_type_info
 from solidworks_mcp.adapters.base import ExtrusionParameters
 from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
 from solidworks_mcp.adapters.solidworks import bodies, saving
+from solidworks_mcp.adapters.solidworks.features import _null_callout
 from solidworks_mcp.adapters.solidworks.file_ledger import FileLedger
 
 OUT = Path(__file__).resolve().parents[1] / ".generated" / "probe_r2_fixes"
@@ -187,7 +188,11 @@ def _scope(adapter: PyWin32Adapter, cut: str) -> dict[str, Any]:
         }
 
     out = {"without_access": read()}
-    out["AccessSelections"] = _raw(lambda: data.AccessSelections(model, None))
+    # The component argument is a null VT_DISPATCH: None marshals as VT_NULL and
+    # gave "Type mismatch" (pitfall #11).
+    out["AccessSelections"] = _raw(
+        lambda: data.AccessSelections(model, _null_callout())
+    )
     out["with_access"] = read()
     out["ReleaseSelectionAccess"] = _raw(lambda: data.ReleaseSelectionAccess())
     out["after_release"] = _flags(adapter)

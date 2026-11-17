@@ -9,8 +9,10 @@ where about 5,270 were meant) was the only clue. The same corners drawn with
 
 ``ISketchManager.CreateCornerRectangle`` places its second corner where
 SolidWorks infers it should go; ``AddToDB`` (on since ``create_sketch``)
-should skip that, as it does for lines. Which inference squared the
-rectangle is what ``tests/scripts/probe_dipper_fixes.py`` settles. Here:
+should skip that, as it does for lines. The probe
+(``tests/scripts/probe_dipper_fixes.py``) didn't square it: 2 x 64 mm on an
+offset plane came out right with ``AddToDB`` and ``swSketchInference`` each
+on and off, the user's toggles 249, 95 and 9 all on. So the guard stays:
 
 * :func:`inference_off`: ``swSketchInference`` off around the call, then
   back to the user's value; ``AddToDB`` is set again first.

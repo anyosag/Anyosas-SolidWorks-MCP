@@ -21,7 +21,10 @@ changes nothing outside the part. A material, when one is assigned, takes
 precedence, so the material must come off first (``remove_material``, an
 empty ``SetMaterialPropertyName2``). The density is read back two ways: the
 preference itself, and the density ``CreateMassProperty`` computes with
-(``applied``). ``tests/scripts/probe_dipper_analysis.py`` checks both live.
+(``applied``). On SOLIDWORKS 2026 SP4.1
+(``tests/scripts/probe_dipper_analysis.py``) the preference read back 1150
+and the mass properties used 1.15 g/cm3; with ABS assigned the call is
+refused, and ``remove_material`` takes it off.
 """
 
 from __future__ import annotations
@@ -135,12 +138,17 @@ def set_density(
 
 
 def _mass_facts(adapter: Any, model: Any) -> tuple[float | None, float | None]:
-    """The part's volume (mm3) and mass (g) from ``CreateMassProperty``."""
+    """The part's volume (mm3) and mass (g) from ``CreateMassProperty``.
+
+    ``Mass`` is read first: on SOLIDWORKS 2026 SP4.1, read after ``Volume``
+    on the same object it gave the volume (1.6e-05 for a 16,000 mm3 block,
+    which ``set_density`` reported as 0.016 g instead of 18.4 g).
+    """
     extension = _attempt(adapter, lambda: model.Extension)
     _flag(adapter, extension, "CreateMassProperty")
     props = _attempt(adapter, lambda: extension.CreateMassProperty())
-    volume = _attempt(adapter, lambda: props.Volume) if props is not None else None
     mass = _attempt(adapter, lambda: props.Mass) if props is not None else None
+    volume = _attempt(adapter, lambda: props.Volume) if props is not None else None
     return (
         round(float(volume) * 1e9, 4) + 0.0
         if isinstance(volume, (int, float))

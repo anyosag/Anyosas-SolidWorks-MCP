@@ -35,9 +35,10 @@ Before an assembly save writes its modified parts, they are sorted:
   unchanged on disk since, in the same SolidWorks process (its id and start
   time): one the server created is its own; one it only saved counts only
   when the document's ``GetUpdateStamp`` is still the one read just after
-  that save - the model hasn't changed since, so its unsaved state is a flag
-  such as a needed rebuild (:func:`ledger_owns`). ``NeedsRebuild2`` can't
-  tell that alone: an edit of the user's needs a rebuild too;
+  that save (:func:`ledger_owns`). On SOLIDWORKS 2026 SP4.1 a save left the
+  stamp alone, while a rebuild, a model edit and a dimension change each
+  moved it (pitfall #57), so a saved file rebuilt since asks: the safe side.
+  ``NeedsRebuild2`` can't tell a rebuild from an edit either;
 * any other modified file - the user's own work - is not overwritten unless
   the caller passed ``overwrite_modified_references``. The save returns
   :class:`NeedsConfirmation` instead, and the tool reports

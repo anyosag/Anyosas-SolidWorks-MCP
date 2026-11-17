@@ -2711,9 +2711,11 @@ class SolidWorksIOMixin:
             )
 
             if mass_props:
+                # Mass first: read after Volume it can give the volume
+                # (density.py, SOLIDWORKS 2026 SP4.1).
+                mass = mass_props.Mass
                 volume = mass_props.Volume * 1e9
                 surface_area = mass_props.SurfaceArea * 1e6
-                mass = mass_props.Mass
 
                 center_of_mass = [0.0, 0.0, 0.0]
                 com = adapter._attempt(lambda: mass_props.CenterOfMass, default=None)

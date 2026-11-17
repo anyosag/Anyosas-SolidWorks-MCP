@@ -224,6 +224,27 @@ def test_mates_that_hold_the_lid_stop_the_sweep() -> None:
     assert world.components[0].data == start
 
 
+def test_mates_that_dont_hold_the_lid_are_counted() -> None:
+    """As measured: Transform2 turned a mated component without a rebuild."""
+    found = _components(_assembly(mates=1), range_deg=[0.0, 20.0])
+    unmated = _components(_assembly(), range_deg=[0.0, 20.0])
+
+    assert found["mates"] == 1 and found["restored"] is True
+    assert unmated["mates"] == 0
+
+
+def test_mates_that_dont_read_are_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = _assembly()
+    lid = world.components[0]
+
+    def unreadable() -> None:
+        raise RuntimeError("Member not found")
+
+    monkeypatch.setattr(lid, "GetMates", unreadable)
+
+    assert _components(world, range_deg=[0.0, 20.0])["mates"] is None
+
+
 def test_a_lid_held_by_something_else() -> None:
     world = _assembly()
     world.frozen_after = 0

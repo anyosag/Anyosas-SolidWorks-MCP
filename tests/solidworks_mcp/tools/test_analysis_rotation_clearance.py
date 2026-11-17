@@ -129,6 +129,21 @@ async def test_what_could_not_be_measured_or_put_back(tools) -> None:
     assert "a could not be put back where it was" in reply["warning"]
 
 
+async def test_a_mated_component_is_warned_about(tools) -> None:
+    adapter, tool = tools
+    _answer(
+        adapter,
+        positive={"to_deg": 30.0, "first_contact_deg": None},
+        negative={"to_deg": 0.0},
+        clearance_measured=True,
+        mates=1,
+    )
+
+    reply = await tool["rotation_clearance"]({"moving": "a", "other": "b", "axis": "y"})
+
+    assert "a has 1 mate(s), and the sweep turned it regardless" in reply["warning"]
+
+
 async def test_parts_that_already_overlap(tools) -> None:
     adapter, tool = tools
     _answer(adapter, interfering_at_start=True, start_overlap_mm3=12.5)

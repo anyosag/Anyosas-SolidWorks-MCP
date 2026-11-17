@@ -125,6 +125,7 @@ async def _tools(adapter: PyWin32Adapter) -> dict[str, Any]:
     from solidworks_mcp.tools.analysis import register_analysis_tools
     from solidworks_mcp.tools.bodies import register_bodies_tools
     from solidworks_mcp.tools.engineering_data import register_engineering_data_tools
+    from solidworks_mcp.tools.file_management import register_file_management_tools
     from solidworks_mcp.tools.modeling import register_modeling_tools
     from solidworks_mcp.tools.sketching import register_sketching_tools
 
@@ -135,6 +136,7 @@ async def _tools(adapter: PyWin32Adapter) -> dict[str, Any]:
         register_bodies_tools,
         register_analysis_tools,
         register_engineering_data_tools,
+        register_file_management_tools,  # list_features
     ):
         await register(mcp, adapter, {})
     return {t.name: t.fn for t in await mcp.list_tools()}
@@ -335,6 +337,11 @@ def step_component_raw(adapter: PyWin32Adapter) -> dict[str, Any]:
     ]
     out["gap_at_30_mm"] = round(min(gaps), 4) if gaps else None
     out["expected_gap_at_30_mm"] = round(GAP_AT_30_MM, 4)
+    # measure_clearance's one-call answer: ClosestDistance on the components.
+    whole = _closest(adapter, model, arm, wall)
+    out["whole_components_at_30_mm"] = (
+        None if whole is None else round(whole[0] * 1000, 4)
+    )
     bodies = rc._component_bodies(adapter, arm, "arm")
     out["body_frame"] = rc._frame_of(moving, bodies, after or asked)
     out["raw_body_box_mm"] = _mm(bodies[0][1]) if bodies else None

@@ -530,6 +530,11 @@ async def _move_in(
     )
     shutil.copy2(target if Path(target).exists() else files["part"], copy)
     app = adapter.swApp
+    # MoveDocument returned 2 here for a never-opened copy: is the part it was
+    # copied from still loaded (a closed assembly leaves its parts loaded)?
+    out["loaded_before_raw_move"] = sorted(
+        t for t in _titles(adapter) if t.lower().startswith("pd_")
+    )
 
     def raw_move() -> dict[str, Any]:
         from solidworks_mcp.adapters.solidworks.references import _string_array

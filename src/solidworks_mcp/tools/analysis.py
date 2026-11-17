@@ -789,6 +789,13 @@ def _rotation_reply(
             f"{input_data.moving} could not be put back where it was: check its "
             "placement before saving."
         )
+    if data.get("mates"):
+        warnings.append(
+            f"{input_data.moving} has {data['mates']} mate(s), and the sweep turned "
+            "it regardless of them (SolidWorks doesn't solve mates between "
+            "steps): the angles are where it could turn with every mate but the "
+            "hinge suppressed."
+        )
     travel = data.get("travel_per_step_mm") or 0.0
     if travel > _TRAVEL_WARN_MM:
         warnings.append(

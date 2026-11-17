@@ -67,12 +67,25 @@ class VolumeApp(fb.App):
 
 
 class MassProperty:
+    """``IMassProperty``. As on SOLIDWORKS 2026 SP4.1 through late binding,
+    ``Mass`` read after ``Volume`` on the same object gives the volume."""
+
     def __init__(self, world: VolumeWorld) -> None:
         volume = sum(b.volume for b in world.bodies) / 1e9
         density = world.mass_density()
-        self.Volume = volume
-        self.Mass = volume * (density or 0.0)
+        self._volume = volume
+        self._mass = volume * (density or 0.0)
+        self._volume_read = False
         self.Density = 0.0 if world.density_hidden else (density or 0.0)
+
+    @property
+    def Volume(self) -> float:  # noqa: N802
+        self._volume_read = True
+        return self._volume
+
+    @property
+    def Mass(self) -> float:  # noqa: N802
+        return self._volume if self._volume_read else self._mass
 
 
 class VolumeExtension(fb.Extension):
