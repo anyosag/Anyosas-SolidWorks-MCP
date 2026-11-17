@@ -589,7 +589,7 @@ class SolidWorksSaveBodiesMixin:
             )
         return None
 
-    def _run_on_part(
+    def _run_save_bodies(
         self,
         operation: str,
         work: Callable[[Any, Any], dict[str, Any]],
@@ -732,7 +732,7 @@ class SolidWorksSaveBodiesMixin:
                 "file_check": check,
             }
 
-        return self._run_on_part(
+        return self._run_save_bodies(
             "save_body_as_part",
             _save,
             "The file was written and holds the body, so the save worked.",
@@ -796,7 +796,7 @@ class SolidWorksSaveBodiesMixin:
             return edit_definition(adapter, model, feature, changes)
 
         asked_for = bool(changes.get("assembly_path"))
-        return self._run_on_part(
+        return self._run_save_bodies(
             "edit_save_bodies",
             _edit,
             "The feature was changed; check `definition`.",
@@ -817,7 +817,7 @@ class SolidWorksSaveBodiesMixin:
         if refused is not None:
             return refused
         adapter = self._adapter(self)
-        return self._run_on_part(
+        return self._run_save_bodies(
             "resplit_bodies",
             lambda model, _holder: resplit(adapter, model, feature_name),
             "Check each file's `status`.",
