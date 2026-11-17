@@ -443,18 +443,27 @@ async def _convexity_cases(adapter: PyWin32Adapter, z_sign: float) -> list[Any]:
                 "matched": data.get("matched"),
             }
         )
-    # The raw reads for every edge of the pocket, once.
-    box = _z([[4, 14, -16], [16, 21, -4]], z_sign)
+    # The raw reads behind each edge of the pocket (flat faces), the hole and
+    # the boss (a flat face and a cylinder each).
     selector = edge_rules.EdgeRuleSelector(adapter)
-    for edge, info in selector.candidates({"inside_box": box}):
-        located = selector._convexity.point_and_direction(edge, info)
-        out.append(
-            {
-                "edge": {k: info.get(k) for k in ("start_mm", "end_mm", "center_mm")},
-                "convexity": selector.convexity(edge, info),
-                "faces": _faces_raw(adapter, edge, located[0] if located else None),
-            }
-        )
+    for box in (
+        [[4, 14, -16], [16, 21, -4]],
+        [[26, -1, -12], [34, 21, -4]],
+        [[25, 19, -27], [35, 26, -17]],
+    ):
+        query = {"inside_box": _z(box, z_sign)}
+        for edge, info in selector.candidates(query):
+            located = selector._convexity.point_and_direction(edge, info)
+            out.append(
+                {
+                    "edge": {
+                        k: info.get(k)
+                        for k in ("curve", "start_mm", "end_mm", "center_mm")
+                    },
+                    "convexity": selector.convexity(edge, info),
+                    "faces": _faces_raw(adapter, edge, located[0] if located else None),
+                }
+            )
     return out
 
 
