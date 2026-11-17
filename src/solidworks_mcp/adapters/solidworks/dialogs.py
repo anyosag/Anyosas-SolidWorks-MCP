@@ -13,13 +13,21 @@ Esc), then ``WM_CLOSE``. It never presses Save, Don't Save, Yes or No. A dialog
 it can't cancel is handed to ``on_unanswerable`` (the adapter restores the
 SolidWorks window so the user can answer it).
 
-Like ``window.py`` it makes no COM calls, so it may run on any thread.
+Like ``window.py`` it makes no COM calls on its own thread, so it may run on
+any thread. A task dialog (a "SOLIDWORKS Design" box with Yes and No, seen
+during Save Bodies on SOLIDWORKS 2026 SP4.1) draws its text in a
+``DirectUIHWND``, which neither ``GetWindowText`` nor ``WM_GETTEXT`` reads.
+That text is read with UI Automation instead (:func:`read_accessible`),
+through ``comtypes`` and Windows' own ``UIAutomationCore.dll``, on a
+short-lived thread with a COM apartment of its own: never the adapter's
+SolidWorks thread.
 """
 
 from __future__ import annotations
 
 import ctypes
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -54,6 +62,22 @@ SELF_DISMISS_GRACE_SECONDS = 2.0
 #: stalls; after that it is cancelled like any other.
 SELF_DISMISS_MAX_SECONDS = 30.0
 
+#: UI Automation control types (``UIAutomationClient.h``).
+UIA_BUTTON = 50000
+UIA_HYPERLINK = 50005
+UIA_TEXT = 50020
+UIA_DOCUMENT = 50030
+_UIA_TEXT_TYPES = frozenset({UIA_TEXT, UIA_HYPERLINK, UIA_DOCUMENT})
+#: ``TreeScope_Descendants``.
+UIA_DESCENDANTS = 4
+#: How long reading a dialog with UI Automation may take before it is skipped.
+ACCESSIBLE_TIMEOUT_SECONDS = 1.5
+
+#: ``(texts, buttons)`` read from a window's UI Automation tree.
+AccessibleNames = tuple[list[str], list[str]]
+#: Reads a window's :data:`AccessibleNames`; ``None`` when it can't.
+AccessibleReader = Callable[[int], AccessibleNames | None]
+
 _ENUM_PROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
     ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p
 )
@@ -68,6 +92,9 @@ class DialogInfo:
     texts: list[str] = field(default_factory=list)
     buttons: list[str] = field(default_factory=list)
     task_dialog: bool = False
+    #: Where ``texts`` came from: ``controls`` (Win32 child windows) or
+    #: ``ui_automation`` (a task dialog); ``None`` when nothing was read.
+    text_source: str | None = None
     #: The messages posted, in order: ``cancel``, then ``close``.
     actions: list[str] = field(default_factory=list)
     #: Whether the dialog had gone when last checked.
@@ -181,11 +208,22 @@ def find_modal_dialogs(window: SolidWorksWindow, user32: Any) -> list[int]:
     return dialogs
 
 
-def describe_dialog(user32: Any, hwnd: int) -> DialogInfo:
+def describe_dialog(
+    user32: Any, hwnd: int, read_accessible: AccessibleReader | None = None
+) -> DialogInfo:
     """Read a dialog's title, and its visible static texts and button captions.
 
     Hidden controls are skipped: SolidWorks' message boxes carry every
     possible button (OK, Cancel, Yes, No, Abort, ...) and show only some.
+    A task dialog keeps its text in a ``DirectUIHWND`` that no Win32 call
+    reads; given ``read_accessible``, its text (and its buttons, when no
+    Win32 button was found) is read through UI Automation.
+
+    Args:
+        user32: The ``user32`` to use.
+        hwnd: The dialog.
+        read_accessible: Reads a window's UI Automation texts and buttons
+            (:func:`read_accessible`); ``None`` reads Win32 controls only.
     """
     info = DialogInfo(hwnd=hwnd, title=_text(user32, hwnd))
     for child in child_windows(user32, hwnd):
@@ -199,7 +237,108 @@ def describe_dialog(user32: Any, hwnd: int) -> DialogInfo:
                 info.buttons.append(caption)
         elif text := _control_text(user32, child).strip():
             info.texts.append(text)
+    if info.texts:
+        info.text_source = "controls"
+    elif info.task_dialog and read_accessible is not None:
+        names = read_accessible(hwnd)
+        if names is not None:
+            texts, buttons = names
+            info.texts = [t for t in texts if t != info.title]
+            info.buttons = info.buttons or list(buttons)
+            if info.texts:
+                info.text_source = "ui_automation"
     return info
+
+
+def accessible_names(automation: Any, hwnd: int) -> AccessibleNames:
+    """The texts and button names in a window's UI Automation tree.
+
+    Args:
+        automation: An ``IUIAutomation``.
+        hwnd: The window.
+
+    Returns:
+        ``(texts, buttons)``, each in tree order, without blanks or repeats.
+    """
+    root = automation.ElementFromHandle(hwnd)
+    found = root.FindAll(UIA_DESCENDANTS, automation.CreateTrueCondition())
+    texts: list[str] = []
+    buttons: list[str] = []
+    for index in range(int(found.Length or 0)):
+        element = found.GetElement(index)
+        name = str(element.CurrentName or "").replace("&", "").strip()
+        kind = int(element.CurrentControlType or 0)
+        if kind == UIA_BUTTON:
+            target = buttons
+        elif kind in _UIA_TEXT_TYPES:
+            target = texts
+        else:
+            continue
+        if name and name not in target:
+            target.append(name)
+    return texts, buttons
+
+
+def _uia_read(hwnd: int) -> AccessibleNames | None:
+    """:func:`accessible_names` with a fresh UI Automation client.
+
+    Meant for its own thread (:func:`read_accessible`): it starts a
+    multithreaded COM apartment there and ends it, so the adapter's
+    single-threaded one is never touched. ``None`` when ``comtypes`` or UI
+    Automation isn't there, or the read fails.
+    """
+    try:
+        import comtypes  # type: ignore[import-untyped]
+        import comtypes.client  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    try:
+        comtypes.CoInitializeEx(getattr(comtypes, "COINIT_MULTITHREADED", 0))
+        started = True
+    except OSError:
+        # This thread already has an apartment (RPC_E_CHANGED_MODE); use it.
+        started = False
+    try:
+        comtypes.client.GetModule("UIAutomationCore.dll")
+        uia = sys.modules["comtypes.gen.UIAutomationClient"]
+        automation = comtypes.client.CreateObject(
+            uia.CUIAutomation, interface=uia.IUIAutomation
+        )
+        return accessible_names(automation, hwnd)
+    except Exception:
+        return None
+    finally:
+        if started:
+            comtypes.CoUninitialize()
+
+
+def read_accessible(
+    hwnd: int,
+    timeout: float = ACCESSIBLE_TIMEOUT_SECONDS,
+    reader: AccessibleReader = _uia_read,
+) -> AccessibleNames | None:
+    """Read a window's texts and buttons with UI Automation, off this thread.
+
+    The read runs on a daemon thread and gets ``timeout`` seconds, so a
+    SolidWorks that stops answering can't hang the watchdog.
+
+    Args:
+        hwnd: The window.
+        timeout: Seconds to wait for the read.
+        reader: What reads it (:func:`_uia_read`; tests pass a fake).
+
+    Returns:
+        ``(texts, buttons)``, or ``None`` when it couldn't be read in time.
+    """
+    box: dict[str, AccessibleNames | None] = {}
+
+    def work() -> None:
+        box["names"] = reader(hwnd)
+
+    thread = threading.Thread(target=work, name="solidworks-dialog-text", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return box.get("names")
 
 
 def patience_for(title: str, timeout: float, elapsed: float = 0.0) -> float:
@@ -289,6 +428,7 @@ class DialogWatchdog:
         retry_seconds: float = 1.5,
         clock: Callable[[], float] = time.monotonic,
         on_unanswerable: Callable[[DialogInfo], None] | None = None,
+        read_text: AccessibleReader | None = read_accessible,
     ) -> None:
         """Watch one SolidWorks.
 
@@ -301,6 +441,8 @@ class DialogWatchdog:
             retry_seconds: How long each message gets to close the dialog.
             clock: A monotonic clock (tests pass a fake).
             on_unanswerable: Called once for a dialog neither message closed.
+            read_text: Reads a task dialog's text with UI Automation
+                (:func:`read_accessible`); ``None`` reads Win32 controls only.
         """
         self.window = window
         self.timeout = timeout
@@ -309,6 +451,7 @@ class DialogWatchdog:
         self._retry = retry_seconds
         self._clock = clock
         self._on_unanswerable = on_unanswerable
+        self._read_text = read_text
         self._tracked: dict[int, _Tracked] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -377,7 +520,7 @@ class DialogWatchdog:
         if tracked.gave_up or now - tracked.first_seen < tracked.patience:
             return
         if tracked.info is None:
-            tracked.info = describe_dialog(self._user32, hwnd)
+            tracked.info = describe_dialog(self._user32, hwnd, self._read_text)
         info = tracked.info
         info.closed = False
         if now - tracked.last_action < self._retry and info.actions:
