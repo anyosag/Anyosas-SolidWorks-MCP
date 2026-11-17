@@ -32,7 +32,7 @@ import shutil
 from collections.abc import Callable
 from typing import Any
 
-from . import file_access, limits
+from . import file_access, limits, saving
 from .com_utils import as_list
 from .com_utils import flag as _flag
 
@@ -519,6 +519,8 @@ def _move_file(adapter: Any, src: str, dst: str) -> str:
         raise RuntimeError(
             f"{method} reported success, but {dst} isn't there; check {src}."
         )
+    # A file this session wrote stays its own at the new path (the save guard).
+    saving.follow_move(adapter, src, dst)
     return method
 
 

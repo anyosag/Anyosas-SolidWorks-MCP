@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from solidworks_mcp.adapters.solidworks import references as refs
+from solidworks_mcp.adapters.solidworks import saving
 
 
 class _App:
@@ -489,6 +490,23 @@ def test_a_closed_file_solidworks_refuses_is_moved_as_a_file(folder: Path) -> No
     assert Path(new).read_bytes() == b"sw"
     assert not (folder / "bracket.sldprt").exists()
     assert [u["verified"] for u in data["updated"]] == [True, True]
+
+
+def test_a_file_this_session_wrote_stays_its_own_after_the_move(
+    folder: Path,
+) -> None:
+    # The save guard asked about the Dipper's renamed part as the user's.
+    app = _App({})
+    app.move_code = 2  # moved by the plain file move
+    adapter = _Adapter(app)
+    part, new = str(folder / "bracket.sldprt"), str(folder / "plate.sldprt")
+    saving.remember(adapter, part)
+    saving.record_save(adapter, part)
+
+    refs.move_document(adapter, part, new, None, None, False)
+
+    assert saving.normalize(new) in saving.session_paths(adapter)
+    assert saving.saved_by_session(adapter, new)
 
 
 def test_a_refusal_that_moved_the_file_anyway_is_a_move(folder: Path) -> None:

@@ -23,6 +23,13 @@ Before an assembly save writes its modified parts, they are sorted:
 * saved by this session before, and unchanged on disk since: its unsaved
   changes are this session's own edits (the Cellvis dish rack's parts were
   the user's files, and every assembly save after the first asked again);
+* a file this session wrote, since renamed or moved on its drive and
+  unchanged: the same file id (``st_dev``, ``st_ino``), size and modified
+  time as just after the session's save. The Dipper's part, made this
+  session and renamed with ``mv``, was asked about as the user's. A move
+  ``move_document`` made carries the records to the new path
+  (:func:`follow_move`). A file system without file ids, or a file copied
+  to another drive, gives no match, and the save asks;
 * any other modified file - the user's own work - is not overwritten unless
   the caller passed ``overwrite_modified_references``. The save returns
   :class:`NeedsConfirmation` instead, and the tool reports
@@ -118,6 +125,69 @@ def session_paths(adapter: Any) -> set[str]:
 def remember(adapter: Any, path: str) -> None:
     """Record a file this session wrote for the first time."""
     session_paths(adapter).add(normalize(path))
+    _record_identity(adapter, path)
+
+
+#: A file's id on its volume: ``(st_dev, st_ino)``. A rename or a move on the
+#: same drive keeps it.
+FileId = tuple[int, int]
+
+
+def _identity(path: str) -> tuple[FileId, tuple[int, int]] | None:
+    """A file's id and its ``(size, modified time in ns)``; None when unknown."""
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    if not status.st_ino:
+        return None  # a file system without file ids: no way to tell
+    return (status.st_dev, status.st_ino), (status.st_size, status.st_mtime_ns)
+
+
+def session_files(adapter: Any) -> dict[FileId, tuple[int, int]]:
+    """Each file this session wrote, by id: its size and modified time just after."""
+    files = getattr(adapter, "_session_files", None)
+    if files is None:
+        files = {}
+        adapter._session_files = files
+    return files
+
+
+def _record_identity(adapter: Any, path: str) -> None:
+    found = _identity(path)
+    if found is not None:
+        session_files(adapter)[found[0]] = found[1]
+
+
+def moved_session_file(adapter: Any, path: str) -> bool:
+    """Whether ``path`` is a file this session wrote, renamed or moved since, unchanged.
+
+    Its id, size and modified time must all be those recorded just after
+    the session's save; anything else is not known to be the session's.
+    """
+    found = _identity(path)
+    return found is not None and session_files(adapter).get(found[0]) == found[1]
+
+
+def follow_move(adapter: Any, source: str, destination: str) -> None:
+    """Carry this session's records of ``source`` to ``destination`` after a move.
+
+    ``move_document`` calls it, whether SolidWorks or a plain file move moved
+    the file. A move to another drive copies the file (a new id), so the id
+    is recorded again when the source was the session's.
+    """
+    old, new = normalize(source), normalize(destination)
+    paths, saves = session_paths(adapter), session_saves(adapter)
+    owned = old in paths
+    if owned:
+        paths.discard(old)
+        paths.add(new)
+    if old in saves:
+        recorded = saves.pop(old)
+        # A rename keeps the modified time; anything else is not the session's.
+        saves[new] = recorded if recorded == _modified_time(destination) else None
+    if owned or saves.get(new) is not None:
+        _record_identity(adapter, destination)
 
 
 def _modified_time(path: str) -> float | None:
@@ -140,6 +210,7 @@ def session_saves(adapter: Any) -> dict[str, float | None]:
 def record_save(adapter: Any, path: str) -> None:
     """Record that this session saved ``path`` (and when the file then changed)."""
     session_saves(adapter)[normalize(path)] = _modified_time(path)
+    _record_identity(adapter, path)
 
 
 def saved_by_session(adapter: Any, path: str) -> bool:
@@ -215,6 +286,7 @@ def modified_references(adapter: Any, assembly: Any) -> list[Reference]:
             or not os.path.exists(path)
             or normalize(path) in session_paths(adapter)
             or saved_by_session(adapter, path)
+            or moved_session_file(adapter, path)
         )
         key = normalize(path) if path else f"<unsaved {len(references)}>"
         references.setdefault(key, Reference(path=path, new=new))
