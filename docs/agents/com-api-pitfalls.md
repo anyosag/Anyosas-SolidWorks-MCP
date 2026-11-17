@@ -1494,6 +1494,38 @@ From the same probe:
 
 ---
 
+## 54. The Dipper's reports: what the code now assumes, still to be measured
+
+Reported by "The Dipper" build (SOLIDWORKS 2026 SP4.1, a multibody master of about
+160 features), fixed without SolidWorks on `dipper-fixes`.
+`tests/scripts/probe_dipper_fixes.py` settles each:
+
+- **`MoveDocument` on a Google Drive for desktop drive** returned 2 for a closed part
+  that a local disk moves (0). `move_document` now moves such a file as a plain file and
+  says so in `method`; its plan blocks a source another program holds open (opened for
+  `DELETE` only, full sharing) and warns about a cloud-sync folder. Open: what Drive
+  returns, and whether its file system keeps file ids (`st_ino`) through a rename,
+  which the save guard's rename check needs.
+- **A fillet made with the rollback bar up lost 2 of 4 edges on roll-forward** and only
+  warned (`swFeatureErrorFilletNoEdge`). `add_fillet` / `add_chamfer` read the new
+  feature (`IModelDocExtension.GetLastFeatureAdded`, flagged; else `FeatureByName` with
+  the tree's name) and its definition's `GetEdgeCount` without `AccessSelections`.
+  Open: `GetLastFeatureAdded` under late binding; `GetEdgeCount` after the loss;
+  whether `GetWhatsWrongCount` counts warnings (`rebuild_inspector` skips
+  `GetWhatsWrong` at 0) and is current right after `EditRollback`; whether
+  `ForceRebuild3` returns False for warnings alone.
+- **A blind cut's floor**: only planar faces whose `IFace2.Normal` looks back at the
+  sketch count, so the code assumes `Normal` points out of the material on a cut's
+  faces, as it does for the top face `select_face_edges` picks.
+- **`CreateCornerRectangle` drew a 2 x 2 square** for a 2 x 64 rectangle on an offset
+  plane, with `AddToDB` on since `create_sketch`. `add_rectangle` now turns
+  `swSketchInference` (249) off around the call and reads the lines back. Open: which
+  setting squared it.
+- **A circle's centre** is read with `GetCenterPoint2` on the segment's late-bound
+  dispatch, to find contours that cross after a failed extrude.
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests
