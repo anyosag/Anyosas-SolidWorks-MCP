@@ -902,6 +902,36 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "create_axis", lambda adapter: adapter.create_axis(reference)
         )
 
+    async def create_axis_through(
+        self, point_mm: list[float], second_point_mm: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Create a reference axis through two points using pool."""
+        return await self._execute_with_pool(
+            "create_axis_through",
+            lambda adapter: adapter.create_axis_through(point_mm, second_point_mm),
+        )
+
+    async def create_plane_through(
+        self, point_mm: list[float], normal: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Create a plane through a point, square to a normal, using pool."""
+        return await self._execute_with_pool(
+            "create_plane_through",
+            lambda adapter: adapter.create_plane_through(point_mm, normal),
+        )
+
+    async def plane_axes(self, plane: str) -> AdapterResult[dict[str, Any]]:
+        """Read a plane's sketch axes using pool."""
+        return await self._execute_with_pool(
+            "plane_axes", lambda adapter: adapter.plane_axes(plane)
+        )
+
+    async def get_open_sketch_axes(self) -> AdapterResult[dict[str, Any]]:
+        """Read the open sketch's axes using pool."""
+        return await self._execute_with_pool(
+            "get_open_sketch_axes", lambda adapter: adapter.get_open_sketch_axes()
+        )
+
     async def create_reference_point(
         self,
         mode: str,

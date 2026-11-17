@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -222,6 +222,10 @@ class ExtrusionParameters(BaseModel):
             sketch normal, negative against it. 0 starts on the plane.
         draft_outward (bool): With ``draft_angle``, draft outward (the far
             end wider) instead of SolidWorks' default inward draft.
+        regions (str | None): ``"all"`` builds from every region the sketch's
+            contours enclose, which SolidWorks unions: contours that cross or
+            touch make one solid, and a hole inside a contour is filled.
+            None uses the sketch as it is.
     """
 
     depth: float
@@ -241,6 +245,7 @@ class ExtrusionParameters(BaseModel):
     feature_scope: bool = False
     auto_select: bool = True
     sketch_name: str | None = None
+    regions: Literal["all"] | None = None
 
 
 class RevolveParameters(BaseModel):
@@ -1556,6 +1561,69 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="create_axis is not implemented by this adapter",
+        )
+
+    async def create_axis_through(
+        self, point_mm: list[float], second_point_mm: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Create a reference axis through two model points.
+
+        Args:
+            point_mm (list[float]): A point on the axis, ``[x, y, z]`` mm.
+            second_point_mm (list[float]): Another, which sets its direction.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The axis's name, the 3D sketch it is
+            built on, its direction and where SolidWorks says it runs, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_axis_through is not implemented by this adapter",
+        )
+
+    async def create_plane_through(
+        self, point_mm: list[float], normal: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Create a reference plane through a point, square to a direction.
+
+        Args:
+            point_mm (list[float]): A point on the plane, ``[x, y, z]`` mm.
+            normal (list[float]): The plane's normal, any length.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The plane's name, its ``axes`` and
+            whether its normal points the way asked, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_plane_through is not implemented by this adapter",
+        )
+
+    async def plane_axes(self, plane: str) -> AdapterResult[dict[str, Any]]:
+        """Read a plane's sketch axes and origin without opening a sketch.
+
+        Args:
+            plane (str): A default plane's short or tree name, or a plane's name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``plane``, ``axes``, ``frame`` and
+            ``method``, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="plane_axes is not implemented by this adapter",
+        )
+
+    async def get_open_sketch_axes(self) -> AdapterResult[dict[str, Any]]:
+        """Read the open sketch's axes and origin in model coordinates.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``x``, ``y``, ``normal``,
+            ``origin_mm`` (unrounded) and ``summary``, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="get_open_sketch_axes is not implemented by this adapter",
         )
 
     async def create_reference_point(

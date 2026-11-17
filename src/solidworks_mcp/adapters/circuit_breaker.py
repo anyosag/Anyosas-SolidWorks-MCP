@@ -1048,6 +1048,40 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"reference": reference},
         )
 
+    async def create_axis_through(
+        self, point_mm: list[float], second_point_mm: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Create a reference axis through two points through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_axis_through",
+            lambda: self.adapter.create_axis_through(point_mm, second_point_mm),
+            input_dict={"point_mm": point_mm, "second_point_mm": second_point_mm},
+        )
+
+    async def create_plane_through(
+        self, point_mm: list[float], normal: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Create a plane through a point, square to a normal, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_plane_through",
+            lambda: self.adapter.create_plane_through(point_mm, normal),
+            input_dict={"point_mm": point_mm, "normal": normal},
+        )
+
+    async def plane_axes(self, plane: str) -> AdapterResult[dict[str, Any]]:
+        """Read a plane's sketch axes through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "plane_axes",
+            lambda: self.adapter.plane_axes(plane),
+            input_dict={"plane": plane},
+        )
+
+    async def get_open_sketch_axes(self) -> AdapterResult[dict[str, Any]]:
+        """Read the open sketch's axes through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "get_open_sketch_axes", lambda: self.adapter.get_open_sketch_axes()
+        )
+
     async def create_reference_point(
         self,
         mode: str,

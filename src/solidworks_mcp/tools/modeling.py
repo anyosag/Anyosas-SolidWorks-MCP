@@ -20,7 +20,9 @@ from ..adapters.base import (
 )
 from ..adapters.solidworks.cut_check import shortfall_warning
 from ..adapters.solidworks.edge_feature_check import warnings as edge_feature_warnings
+from ..adapters.solidworks.plane_frame import add, scale, two_points, unit, vector
 from ..adapters.solidworks.rebuild_diagnostics import issues_warning
+from ..adapters.solidworks.reference_geometry import LINE_MM
 from .input_compat import CompatInput
 from .sketching import AddSketchTextInput, text_warnings
 from .tool_boundary import (
@@ -326,6 +328,24 @@ _DRAFT_OUTWARD_CUT = (
 )
 
 
+_REGIONS = (
+    "'all' builds it from every region the sketch's contours enclose, which "
+    "SolidWorks unions into one: for circles or polygons that cross or touch. "
+    "A contour wholly inside another is filled too. Left out, a failure because "
+    "contours cross is retried this way when no contour lies inside another, "
+    "with a warning"
+)
+
+
+def _regions_reply(block: dict[str, Any], applied: Any) -> list[str]:
+    """Put ``regions`` in a feature's reply block; the automatic union's note."""
+    if not isinstance(applied, dict) or applied.get("regions") != "all":
+        return []
+    block["regions"] = "all"
+    note = applied.get("regions_note")
+    return [str(note)] if note else []
+
+
 def _check_draft(draft_angle: float, draft_outward: bool) -> None:
     """Refuse a draft direction given without a draft angle.
 
@@ -469,6 +489,7 @@ class CreateExtrusionInput(CompatInput):
     )
     end_condition: str = Field(default="Blind", description="End condition type")
     merge_result: bool = Field(default=True, description="Merge with existing geometry")
+    regions: Literal["all"] | None = Field(default=None, description=_REGIONS)
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the create extrusion input.
@@ -828,6 +849,7 @@ class CreateCutExtrudeInput(CompatInput):
             "active sketch."
         ),
     )
+    regions: Literal["all"] | None = Field(default=None, description=_REGIONS)
 
     def model_post_init(self, __context: Any) -> None:
         if self.depth <= 0:
@@ -1824,12 +1846,43 @@ class CreateReferencePlaneInput(CompatInput):
     flip: bool = Field(
         default=False, description="Reverse the offset side or the angle direction"
     )
+    point: list[float] | None = Field(
+        default=None,
+        description=(
+            "[x, y, z] in mm the plane passes through, with normal, instead of "
+            "reference or face_point"
+        ),
+    )
+    normal: list[float] | None = Field(
+        default=None,
+        description=(
+            "With point: the plane's normal [x, y, z], any length; [0.866, 0, 0.5] "
+            "is a vertical plane at 30 degrees to the Right Plane"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
-        if bool(self.reference.strip()) == (self.face_point is not None):
-            raise ValueError("give exactly one of reference or face_point")
+        given = [
+            bool(self.reference.strip()),
+            self.face_point is not None,
+            self.point is not None,
+        ]
+        if sum(given) != 1:
+            raise ValueError("give exactly one of reference, face_point or point")
         if self.face_point is not None and len(self.face_point) != 3:
             raise ValueError("face_point must be [x, y, z] in millimetres")
+        if self.point is not None:
+            if self.normal is None:
+                raise ValueError("a plane through point needs normal")
+            if self.offset or self.angle or self.axis or self.flip:
+                raise ValueError(
+                    "point and normal set the plane alone: no offset, angle, axis "
+                    "or flip (give the normal the other way to turn it)"
+                )
+            vector(self.point, "point")
+            unit(vector(self.normal, "normal"), "normal")
+        elif self.normal is not None:
+            raise ValueError("normal goes with point")
         if self.angle and not self.axis:
             raise ValueError("an angled plane needs axis, the axis to rotate about")
 
@@ -1842,13 +1895,55 @@ class CreateAxisInput(CompatInput):
     """
 
     reference: str = Field(
-        description="Principal axis direction: 'x', 'y' or 'z' "
-        "(case-insensitive; a leading +/- is stripped)"
+        default="",
+        description="Principal axis direction through the origin: 'x', 'y' or 'z' "
+        "(case-insensitive; a leading +/- is stripped); leave it out with point",
+    )
+    point: list[float] | None = Field(
+        default=None,
+        description=(
+            "Instead of reference: [x, y, z] in mm the axis passes through, with "
+            "direction or second_point"
+        ),
+    )
+    direction: list[float] | None = Field(
+        default=None,
+        description="With point: the axis direction [x, y, z], any length; [0, 1, 0] is vertical",
+    )
+    second_point: list[float] | None = Field(
+        default=None,
+        description="With point, instead of direction: another point [x, y, z] in mm on the axis",
     )
 
     def model_post_init(self, __context: Any) -> None:
-        if not self.reference.strip():
-            raise ValueError("reference is required")
+        if self.point is None:
+            if not self.reference.strip():
+                raise ValueError(
+                    "reference is required, or point with direction or second_point"
+                )
+            if self.direction is not None or self.second_point is not None:
+                raise ValueError("direction and second_point go with point")
+            return
+        if self.reference.strip():
+            raise ValueError("give reference or point, not both")
+        if (self.direction is None) == (self.second_point is None):
+            raise ValueError("with point, give direction or second_point")
+        self.line()  # refuses bad or coincident points now
+
+    def line(self) -> tuple[list[float], list[float]]:
+        """Two points on the axis, mm: ``point``, and ``second_point`` or one along ``direction``.
+
+        Raises:
+            ValueError: A point or the direction isn't three numbers, the
+                direction has no length, or the points coincide.
+        """
+        start = vector(self.point, "point")
+        if self.second_point is not None:
+            end = vector(self.second_point, "second_point")
+        else:
+            end = add(start, scale(unit(vector(self.direction, "direction")), LINE_MM))
+        first, second = two_points(start, end)
+        return list(first), list(second)
 
 
 class CreateReferencePointInput(CompatInput):
@@ -1945,8 +2040,20 @@ class PatternCircularInput(CompatInput):
         description="Names of the features to pattern. At least one required.",
     )
     axis: str = Field(
+        default="",
         description="Name of the axis to rotate about, e.g. 'Axis1' as "
-        "created by create_axis"
+        "created by create_axis; leave it out with axis_point",
+    )
+    axis_point: list[float] | None = Field(
+        default=None,
+        description=(
+            "Instead of axis: [x, y, z] in mm the axis passes through, with "
+            "axis_direction; the axis is made first (as create_axis with point)"
+        ),
+    )
+    axis_direction: list[float] | None = Field(
+        default=None,
+        description="With axis_point: the axis direction [x, y, z], any length",
     )
     count: int = Field(
         description="Total number of instances including the original. "
@@ -1977,8 +2084,17 @@ class PatternCircularInput(CompatInput):
     def model_post_init(self, __context: Any) -> None:
         if not self.features:
             raise ValueError("features must contain at least one name")
-        if not self.axis.strip():
-            raise ValueError("axis is required")
+        if self.axis_point is None:
+            if not self.axis.strip():
+                raise ValueError("axis is required, or axis_point with axis_direction")
+            if self.axis_direction is not None:
+                raise ValueError("axis_direction goes with axis_point")
+        else:
+            if self.axis.strip():
+                raise ValueError("give axis or axis_point, not both")
+            if self.axis_direction is None:
+                raise ValueError("axis_point needs axis_direction")
+            self.axis_line()
         if self.count < 2:
             raise ValueError("count must be at least 2")
         if self.angle is not None and self.step_angle is not None:
@@ -1993,6 +2109,16 @@ class PatternCircularInput(CompatInput):
                     f"{turned:g} degrees, a full turn or more: the last instance "
                     "would land on an earlier one"
                 )
+
+    def axis_line(self) -> tuple[list[float], list[float]]:
+        """Two points (mm) on the axis ``axis_point`` and ``axis_direction`` give.
+
+        Raises:
+            ValueError: Not three numbers each, or a direction of no length.
+        """
+        start = vector(self.axis_point, "axis_point")
+        direction = unit(vector(self.axis_direction, "axis_direction"))
+        return list(start), list(add(start, scale(direction, LINE_MM)))
 
     def spacing(self) -> dict[str, Any]:
         """How the pattern is spaced, for the adapter and the reply.
@@ -2483,19 +2609,18 @@ async def register_modeling_tools(
         """Extrude the sketch you just closed into a solid boss, added to the active part.
 
         Use it after `exit_sketch`; to remove material, use `create_cut_extrude`. It
-        extrudes the sketch `sketch_name` names, or the one `exit_sketch` closed last;
-        a name that isn't in the feature tree fails before anything is built. End
-        conditions: Blind (default), MidPlane, ThroughAll, UpToNext; `both_directions`
-        means MidPlane. `start_offset_mm` starts it off the sketch plane, with no
-        reference plane; a `draft_angle` tapers inward unless `draft_outward`. With
+        extrudes the sketch `sketch_name` names, or the one `exit_sketch` closed last.
+        End conditions: Blind (default), MidPlane, ThroughAll, UpToNext;
+        `both_directions` means MidPlane. `start_offset_mm` starts it off the sketch
+        plane; a `draft_angle` tapers inward unless `draft_outward`. With
         `thin_feature` and `thin_thickness` it makes a wall from the sketch's outline,
-        and an open chain works. A text sketch (`add_sketch_text`) extrudes too.
-        Needs: an open part and a closed profile (open is fine when thin). Changes:
-        adds a Boss-Extrude feature. Returns: `extrusion` (`name`, `sketch` when one
-        was named, `depth`, the `end_condition` SolidWorks used, `both_directions`,
-        `thin` when thin, and the start offset and draft when set) and
-        `measured_change` (volume, bounding box and solid-body count before and after;
-        left out when the model can't be read).
+        and an open chain works. Contours that cross (touching circles, hexagons):
+        `regions: "all"` builds their union. Needs: an open part and a closed profile
+        (open is fine when thin). Changes: adds a Boss-Extrude feature. Returns:
+        `extrusion` (`name`, `sketch` when named, `depth`, the `end_condition` used,
+        `both_directions`, `thin`, `regions`, and the start offset and draft when
+        set) and `measured_change` (volume, bounding box and solid-body count before
+        and after).
 
         Args:
             input_data: The extrusion. `depth` (mm) is required; `sketch_name`,
@@ -2523,6 +2648,7 @@ async def register_modeling_tools(
             feature_scope=False,
             auto_select=True,
             sketch_name=input_data.sketch_name,
+            regions=input_data.regions,
         )
 
         before = await _read_summary(adapter)
@@ -2547,13 +2673,14 @@ async def register_modeling_tools(
                 "side": input_data.thin_side,
             }
         extrusion.update(_offset_and_draft(input_data))
+        notes = _regions_reply(extrusion, applied)
         reply = {
             "status": "success",
             "message": f"Created extrusion: {name}",
             "extrusion": extrusion,
             "execution_time": result.execution_time,
         }
-        return _attach_measured_change(reply, before, after)
+        return _add_warnings(_attach_measured_change(reply, before, after), notes)
 
     @mcp.tool()
     async def create_revolve(input_data: CreateRevolveInput) -> dict[str, Any]:
@@ -2788,8 +2915,8 @@ async def register_modeling_tools(
         tried only when that one has no material. `direction_flipped` says the cut
         went the other way. For a sketch inside the body, use MidPlane (blind) or
         ThroughAllBoth. `start_offset_mm` starts the cut off the sketch plane; a
-        `draft_angle` narrows it with depth unless `draft_outward`. A text sketch
-        (`add_sketch_text`) cuts too. Needs: an open part with a solid body.
+        `draft_angle` narrows it with depth unless `draft_outward`. For contours that
+        cross, `regions: "all"` cuts their union. Needs: an open part with a solid body.
         Changes: adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`,
         `sketch_name`, `direction_flipped`, and the options set) and
         `measured_change` (volume, bounding box and solid-body count before and
@@ -2818,6 +2945,7 @@ async def register_modeling_tools(
             feature_scope=False,
             auto_select=True,
             sketch_name=input_data.sketch_name,
+            regions=input_data.regions,
         )
         if input_data.reverse_direction is not None:
             # Set only when given: left unset, the adapter picks the side.
@@ -2852,8 +2980,11 @@ async def register_modeling_tools(
         if isinstance(feature_params, dict) and feature_params.get("mid_plane"):
             reply["cut_extrude"]["end_condition"] = "MidPlane"
         reply["cut_extrude"].update(_offset_and_draft(input_data))
+        notes = _regions_reply(reply["cut_extrude"], feature_params)
         reply = _attach_measured_change(reply, before, after)
-        return _flag_a_shallow_cut(reply, feature_params, input_data)
+        return _add_warnings(
+            _flag_a_shallow_cut(reply, feature_params, input_data), notes
+        )
 
     async def _text_sketch(
         input_data: EmbossTextInput,
@@ -3914,24 +4045,30 @@ async def register_modeling_tools(
     async def create_reference_plane(
         input_data: CreateReferencePlaneInput,
     ) -> dict[str, Any]:
-        """Add a reference plane offset from, at an angle to, or on a plane or flat face.
+        """Add a reference plane offset from, at an angle to, or on a plane or face, or through any point.
 
         Use it to sketch somewhere other than the three default planes: pass the new
         plane's name to `create_sketch`. Offset: `reference` and a non-zero `offset`
         (mm). Angle: `reference`, `angle` (degrees) and `axis`, an axis lying in the
         reference (make one with `create_axis`). Face: `face_point`, a point on a flat
-        face (sloped or not), with an `offset` or 0 for a plane on the face. Needs: an
-        open part. Changes: adds a plane feature. Returns: `plane` with `name` and the
-        inputs used.
+        face (sloped or not), with an `offset` or 0 for a plane on the face. Anywhere:
+        `point` (mm) and `normal`, built on a line in a 3D sketch of its own (no
+        sketch may be open). Needs: an open part. Changes: adds a plane feature (and
+        that 3D sketch). Returns: `plane` with `name`, the inputs used and `axes`
+        (where a sketch on it points; null when unread), and a `warning` when the
+        normal came out reversed.
 
         Args:
-            input_data: The plane. Exactly one of `reference` and `face_point`;
-                then `offset`, or `angle` with `axis`; `flip` is off.
+            input_data: The plane. Exactly one of `reference`, `face_point` and
+                `point`; then `offset`, or `angle` with `axis`, or `normal` with
+                `point`; `flip` is off.
 
         Returns:
             dict[str, Any]: The new plane.
         """
         input_data = normalize_input(input_data, CreateReferencePlaneInput)
+        if input_data.point is not None:
+            return await _plane_through(input_data)
         result = await adapter.create_reference_plane(
             input_data.reference,
             input_data.offset,
@@ -3949,22 +4086,97 @@ async def register_modeling_tools(
             "execution_time": result.execution_time,
         }
 
+    async def _plane_through(input_data: CreateReferencePlaneInput) -> dict[str, Any]:
+        """``create_reference_plane`` with ``point`` and ``normal``."""
+        require_capability(
+            adapter,
+            "create_plane_through",
+            "The active adapter cannot make a plane through a point; nothing was made.",
+        )
+        result = await adapter.create_plane_through(
+            list(input_data.point or []), list(input_data.normal or [])
+        )
+        require_success(result, context="Failed to create reference plane")
+        data = result.data if isinstance(result.data, dict) else {}
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Created reference plane: {data.get('name', 'Plane')}",
+            "plane": data,
+            "execution_time": result.execution_time,
+        }
+        notes = []
+        normal = (data.get("axes") or {}).get("normal")
+        if data.get("normal_matches") is False:
+            notes.append(
+                f"SolidWorks pointed the plane's normal the other way, to {normal}: "
+                "a sketch on it faces that way, and an extrusion grows along it "
+                "unless reverse_direction is set."
+            )
+        if data.get("through_point") is False:
+            notes.append(
+                "The plane read back doesn't pass through point; check it with "
+                "plane_axes before sketching on it."
+            )
+        return _add_warnings(reply, notes)
+
+    async def _axis_through(start: list[float], end: list[float]) -> dict[str, Any]:
+        """Make a reference axis through two points; its data.
+
+        Raises:
+            UnsupportedOperationError: The adapter can't.
+            ToolOperationError: SolidWorks made no axis.
+        """
+        require_capability(
+            adapter,
+            "create_axis_through",
+            "The active adapter cannot make an axis through a point; nothing was made.",
+        )
+        result = await adapter.create_axis_through(start, end)
+        require_success(result, context="Failed to create axis")
+        return dict(result.data) if isinstance(result.data, dict) else {}
+
     @mcp.tool()
     async def create_axis(input_data: CreateAxisInput) -> dict[str, Any]:
-        """Add a reference axis along the model's x, y or z direction, through the origin.
+        """Add a reference axis along the model's x, y or z through the origin, or through any point.
 
-        Use it before `pattern_circular`, which rotates features about an axis. It is
-        built where two default planes meet. Needs: an open part. Changes: adds an axis
-        feature. Returns: `axis` with `name` (e.g. "Axis1", for
-        `create_reference_plane`'s `axis`), `reference`, `planes` and the feature counts.
+        Use it before `pattern_circular`, which rotates features about an axis, or for
+        `create_reference_plane`'s `axis`. `reference` builds it where two default
+        planes meet. `point` with `direction` or `second_point` (mm) builds it on a
+        line in a 3D sketch of its own, so a plane or a pattern can turn about a
+        vertical axis through any centre; no sketch may be open. Needs: an open part.
+        Changes: adds an axis feature (and that 3D sketch). Returns: `axis` with
+        `name` (e.g. "Axis1"), `reference` and `planes`, or `point_mm`, `direction`,
+        `sketch` and `read_back` (where SolidWorks says it runs), and the feature
+        counts.
 
         Args:
-            input_data: The axis. `reference` ("x", "y" or "z") is required.
+            input_data: The axis. `reference` ("x", "y" or "z"), or `point` with
+                `direction` or `second_point`.
 
         Returns:
             dict[str, Any]: The new axis.
         """
         input_data = normalize_input(input_data, CreateAxisInput)
+        if input_data.point is not None:
+            start, end = input_data.line()
+            data = await _axis_through(start, end)
+            reply: dict[str, Any] = {
+                "status": "success",
+                "message": (
+                    f"Created {data.get('name') or 'an axis'} through {start} mm "
+                    f"along {data.get('direction')}"
+                ),
+                "axis": data,
+                "execution_time": 0.0,
+            }
+            read_back = data.get("read_back")
+            if isinstance(read_back, dict) and read_back.get("on_line") is False:
+                reply["warning"] = (
+                    "The axis SolidWorks made doesn't run along the line asked for: "
+                    f"it reads from {read_back.get('start_mm')} to "
+                    f"{read_back.get('end_mm')} mm."
+                )
+            return reply
         result = await adapter.create_axis(input_data.reference)
         require_success(result, context="Failed to create axis")
         data = result.data if isinstance(result.data, dict) else {}
@@ -4063,8 +4275,9 @@ async def register_modeling_tools(
     async def pattern_circular(input_data: PatternCircularInput) -> dict[str, Any]:
         """Repeat features of the active part around an axis, e.g. a ring of bosses or ribs.
 
-        Create the axis first with `create_axis`. Bosses and cuts both work (a ring of
-        holes is a patterned cut). Give `angle` to spread the instances evenly over
+        Name an axis made by `create_axis`, or give `axis_point` and `axis_direction`
+        (mm) and an axis is made there first, kept for later patterns (a cage's six
+        faces: one cut, one pattern). Bosses and cuts both work. Give `angle` to spread the instances evenly over
         that many degrees (360 by default), or `step_angle` for the degrees between
         neighbours, e.g. 3 instances 60 degrees apart; `reverse_direction` turns the
         other way. It fails when the volume doesn't change, which means no instance
@@ -4084,16 +4297,28 @@ async def register_modeling_tools(
         """
         input_data = normalize_input(input_data, PatternCircularInput)
         spacing = input_data.spacing()
+        axis, made = input_data.axis, None
+        if input_data.axis_point is not None:
+            made = await _axis_through(*input_data.axis_line())
+            axis = str(made.get("name") or "")
         result = await adapter.pattern_circular(
             input_data.features,
-            input_data.axis,
+            axis,
             input_data.count,
             spacing["angle"],
             spacing["equal_spacing"],
             input_data.reverse_direction,
         )
+        if not result.is_success and made is not None:
+            # A failed call leaves the part as it was: the axis goes, with its sketch.
+            await adapter.delete_feature(str(made.get("sketch") or axis))
         require_success(result, context="Failed to pattern feature")
         data = result.data if isinstance(result.data, dict) else {}
+        if made is not None:
+            data["axis_created"] = {
+                key: made.get(key)
+                for key in ("name", "sketch", "point_mm", "direction")
+            }
         # The adapter's angle/equal_spacing are SolidWorks' two readings of one
         # number; the reply gives both angles plainly instead.
         for key in ("angle", "equal_spacing"):
@@ -4105,7 +4330,7 @@ async def register_modeling_tools(
             "status": "success",
             "message": (
                 f"Patterned {', '.join(input_data.features)} around "
-                f"{input_data.axis} ({input_data.count} instances, "
+                f"{axis} ({input_data.count} instances, "
                 f"{data['step_angle']:g} degrees apart)"
             ),
             "pattern": data,

@@ -34,6 +34,7 @@ from .solidworks.drawing_standard import gtol_problem
 from .solidworks.feature_editing import missing_ids_message
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
+from .solidworks.plane_frame import Frame, sub, two_points, unit, vector
 from .solidworks.saving import confirmation_result
 from .solidworks.sketch import (
     ARC_DIRECTION_FLAGS,
@@ -336,6 +337,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # pattern_circular the same way known_sources validates mirror
         # sources.
         self._axes: list[str] = []
+        # The frame of each plane whose geometry the mock knows: a plane
+        # offset from one it knows, or one made through a point square to a
+        # normal (whose sketch x the mock picks, see Frame.through). Angled
+        # and face planes have none.
+        self._plane_frames: dict[str, Frame] = {}
         # Reference points created via create_reference_point, in creation
         # order, invented "PointN" names on the same pattern as _axes.
         self._reference_points: list[str] = []
@@ -2331,6 +2337,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "sketch_name": sketch,
                 "start_offset": params.start_offset,
                 "draft_outward": params.draft_outward,
+                "regions": getattr(params, "regions", None),
             },
             properties={"created": datetime.now().isoformat(), "mock": True},
         )
@@ -2593,9 +2600,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["sketch_operation"],
             metadata={
                 "plane": plane_used,
-                # The mock knows the default planes' axes; a reference
-                # plane's would need its geometry, which it doesn't keep.
-                "axes": default_plane_axes(default_key) if default_key else None,
+                # The default planes' axes, and a reference plane's when the
+                # mock knows its geometry (_plane_frames).
+                "axes": self._mock_axes_of(plane_used),
             },
         )
 
@@ -6123,6 +6130,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self.__dict__.setdefault("_plane_definitions", {})[
             self._reference_planes[-1]
         ] = {"offset": abs(offset) if offset and not angle else None, "flip": flip}
+        base = self._mock_frame_of(reference) if face_point is None else None
+        if base is not None and offset and not angle:
+            # The side is the offset's sign, turned by flip.
+            self._plane_frames[self._reference_planes[-1]] = base.offset(
+                -offset if flip else offset
+            )
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
@@ -6134,6 +6147,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "angle": angle or None,
                 "axis": axis if angle else None,
                 "flip": flip,
+                "axes": self._mock_axes_of(self._reference_planes[-1]),
                 "features_before": before,
                 "features_after": after,
             },
@@ -6189,6 +6203,161 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "planes": [plane_a, plane_b],
                 "features_before": before,
                 "features_after": after,
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    def _mock_frame_of(self, plane: str | None) -> Frame | None:
+        """The frame of a plane the mock knows, by any name create_sketch takes."""
+        if not plane:
+            return None
+        key, candidates = plane_candidates_for(plane)
+        if key is not None:
+            return Frame.from_mapping(default_plane_axes(key))
+        return self._plane_frames.get(candidates[0])
+
+    def _mock_axes_of(self, plane: str | None) -> dict[str, Any] | None:
+        """``create_sketch``'s ``axes`` for a plane, or None when unknown."""
+        frame = self._mock_frame_of(plane)
+        return frame.describe() if frame is not None else None
+
+    def _mock_sketch_open_refusal(self) -> AdapterResult[dict[str, Any]] | None:
+        """The live adapter's refusal while a sketch is open, or None."""
+        if self._current_sketch is None:
+            return None
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(
+                "A sketch is open; exit_sketch first. The axis or plane is built "
+                "on a 3D sketch of its own, and opening it would close yours."
+            ),
+        )
+
+    async def get_open_sketch_axes(self) -> AdapterResult[dict[str, Any]]:
+        """Mock reading the open sketch's frame: its plane's, when the mock knows it."""
+        if self._current_sketch is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "No sketch is open: open one with create_sketch or "
+                    "edit_sketch first."
+                ),
+            )
+        plane = self._sketches.get(self._current_sketch)
+        frame = self._mock_frame_of(plane)
+        if frame is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"The mock keeps no geometry for {plane!r}, so model points "
+                    "can't be placed on its sketch."
+                ),
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={**frame.as_dict(), "summary": frame.describe()["summary"]},
+        )
+
+    async def plane_axes(self, plane: str) -> AdapterResult[dict[str, Any]]:
+        """Mock reading a plane's sketch axes: the default planes and known ones."""
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        key, candidates = plane_candidates_for(plane)
+        name = candidates[0]
+        if key is None and name not in self._reference_planes:
+            kind = self._mock_feature_kind(name)
+            error = (
+                f"{name!r} is a {kind}, not a plane; create_reference_plane makes one."
+                if kind
+                else f"Plane '{plane}' not found in the part. Use Front, Top or "
+                "Right, or a plane made by create_reference_plane (list_features "
+                "names them)."
+            )
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
+        frame = self._mock_frame_of(name)
+        if frame is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"The mock keeps no geometry for {name!r}.",
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "plane": name,
+                "axes": frame.describe(),
+                "frame": frame.as_dict(),
+                "method": "plane_transform",
+            },
+        )
+
+    async def create_axis_through(
+        self, point_mm: list[float], second_point_mm: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a reference axis through two points: a 3D sketch and an axis."""
+        try:
+            start, end = two_points(point_mm, second_point_mm)
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        refusal = self._mock_sketch_open_refusal()
+        if refusal is not None:
+            return refusal
+        await asyncio.sleep(self._delays["feature_operation"])
+        self._operation_count += 1
+        before = self._feature_tree_count
+        self._feature_tree_count += 2  # the 3D sketch and the axis
+        self._axes.append(f"Axis{len(self._axes) + 1}")
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "name": self._axes[-1],
+                "sketch": f"3DSketch{len(self._axes)}",
+                "point_mm": list(start),
+                "second_point_mm": list(end),
+                "direction": [round(c, 9) + 0.0 for c in unit(sub(end, start))],
+                "read_back": {
+                    "start_mm": list(start),
+                    "end_mm": list(end),
+                    "on_line": True,
+                    "same_sense": True,
+                },
+                "features_before": before,
+                "features_after": self._feature_tree_count,
+            },
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def create_plane_through(
+        self, point_mm: list[float], normal: list[float]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a plane through a point square to ``normal``; its sketch x is the mock's pick."""
+        try:
+            frame = Frame.through(vector(point_mm, "point"), vector(normal, "normal"))
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        refusal = self._mock_sketch_open_refusal()
+        if refusal is not None:
+            return refusal
+        await asyncio.sleep(self._delays["feature_operation"])
+        self._operation_count += 1
+        before = self._feature_tree_count
+        self._feature_tree_count += 2  # the 3D sketch and the plane
+        name = f"Plane{len(self._reference_planes) + 1}"
+        self._reference_planes.append(name)
+        self._plane_frames[name] = frame
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "name": name,
+                "point_mm": list(frame.origin_mm),
+                "normal": [round(c, 9) + 0.0 for c in frame.normal],
+                "sketch": f"3DSketch{len(self._reference_planes)}",
+                "axes": frame.describe(),
+                "normal_matches": True,
+                "through_point": True,
+                "features_before": before,
+                "features_after": self._feature_tree_count,
             },
             execution_time=self._delays["feature_operation"],
         )

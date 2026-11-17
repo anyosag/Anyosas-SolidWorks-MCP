@@ -135,7 +135,7 @@ def test_the_message_names_the_sketch_and_at_most_three_pairs() -> None:
     assert text == (
         "Sketch 'Sketch5': sketch contours intersect (pair 0; pair 1; pair 2; and "
         "2 more); an extrusion needs disjoint regions or one outline that is "
-        "their union."
+        "their union (regions: 'all' builds that union)."
     )
     assert "and" not in sc.message("S", ["one"]).split("(")[1].split(")")[0]
 
