@@ -443,6 +443,8 @@ async def step_mated_sweep(
         "sweep_status": reply["status"],
         "sweep_message": reply.get("message"),
         "sweep_error": reply.get("error_type"),
+        "sweep_warning": reply.get("warning"),
+        "mates": (reply.get("data") or {}).get("mates"),
         "positive": (reply.get("data") or {}).get("positive"),
         "mate_deleted": deleted["status"],
     }

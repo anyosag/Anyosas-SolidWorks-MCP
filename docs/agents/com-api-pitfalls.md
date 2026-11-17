@@ -1254,8 +1254,10 @@ coordinates. SolidWorks' "Zoom to Region" example multiplies each point by
 
 - `IMathUtility.CreatePoint` and `IMathPoint.MultiplyTransform` must be flagged as
   methods first ("Member not found" otherwise).
-- Still open: the picture comes out a few mm off centre horizontally, in the front
-  view too (about 1 mm there, about 4 mm for a 12 x 20 mm face in the right view).
+- The picture came out a few mm off centre horizontally, in the front view too
+  (about 1 mm there, about 4 mm for a 12 x 20 mm face in the right view): the
+  FeatureManager pane, which the zoom leaves room for and `SaveBMP` doesn't.
+  `export_image` hides it while it zooms (#56).
 
 Reported 2026-11-12 by the Cellvis DishRack build. Measured the same day: in the
 right view a box around the +X face zooms onto that face and fills the picture's
@@ -1494,157 +1496,197 @@ From the same probe:
 
 ---
 
-## 54. Save Bodies raises a Yes/No task dialog and leaves an untitled assembly
+## 54. Save Bodies leaves an untitled assembly and the derived part open
 
 Reported by The Dipper build (SOLIDWORKS 2026 SP4.1), every call of six:
 `IFeatureManager.CreateSaveBodyFeature(Bodies, FilePaths, "", False, True)`
-showed a "SOLIDWORKS Design" task dialog with Yes and No. The watchdog cancelled
-it and the call returned `solidworks_dialog`, yet the part file was written
-correctly and an untitled assembly (Assem3, Assem5, ...) was left open and active.
-Two such calls, and the wrong-document errors after them, opened the circuit
-breaker.
+showed a "SOLIDWORKS Design" task dialog with Yes and No, the watchdog cancelled
+it, and the call returned `solidworks_dialog`; the file was written anyway and an
+untitled assembly was left open and active. `tests/scripts/probe_save_bodies.py`
+(SOLIDWORKS 2026 SP4.1, 2026-11-17, six runs):
 
-- **The dialog's text** is drawn in a `DirectUIHWND`, which `GetWindowText` and
-  `WM_GETTEXT` can't read. The watchdog now reads a task dialog with UI
-  Automation (`dialogs.read_accessible`: `comtypes` and `UIAutomationCore.dll`,
-  on a thread with its own COM apartment).
-- **The API:** `CreateSaveBodyFeature(Bodies, FilePaths, AssemName, ConsumeBody,
-  CopyCustomProperty)` (gen_py DISPID 150). Save Bodies has no
-  `swFeatureNameID_e` value, so `CreateDefinition` can't make one, and no swconst
-  enum or toggle names it. `ISaveBodyFeatureData` (`GetDefinition`) has
-  `GetSaveBodies(Bodies, FilePaths, Flags)`, `AddSaveBodies` (which "saves them
-  as part documents on disk"), `RemoveSaveBodies`, and `AssemblyPath`,
-  `ConsumeBody`, `CopyCustomProperties`.
-- **What the tools do** (`adapters/solidworks/save_bodies.py`): they read the
-  file back (there, fresh, holding a solid of the body's volume), close any
-  untitled assembly that appeared during the call, make the part active again,
-  and treat a cancelled dialog as a `warning` when the file checks out. A
-  `solidworks_dialog` no longer counts toward the circuit breaker
-  (`error_classifier.NOT_BREAKER_FAILURES`).
-- **Not measured yet**, for `tests/scripts/probe_save_bodies.py`: what the
-  dialog says; whether `CopyCustomProperty` False or a `None` `AssemName` avoids
-  it; the Save Bodies feature's `GetTypeName2`; whether `GetSaveBodies` needs
-  `AccessSelections`; whether a derived part rebuilt with its master open takes
-  the master's new body (`resplit_bodies`).
+- **No dialog** in any run. The watchdog reads a task dialog's text with UI
+  Automation (`dialogs.read_accessible`; its `DirectUIHWND` gives
+  `GetWindowText` nothing), but what The Dipper's dialog said is still unknown.
+- **`AssemName`.** `""` left an untitled assembly (Assem31, Assem43, ...) open,
+  modified and active every time, with `CopyCustomProperty` True or False. A
+  `.sldasm` path saved that assembly instead (unmodified, no untitled one).
+  `None` is a type mismatch (argument 3).
+- **The derived part opens** in a window of its own, unmodified, and keeps its
+  `~$` lock file until it is closed: the likely source of The Dipper's lock
+  files. `save_body_as_part` now closes it as well as the untitled assembly
+  when it opened during the call and has no changes
+  (`save_bodies.close_stray_assemblies`).
+- **Reading the feature.** `GetTypeName2` is `CreateAssemFeat`.
+  `ISaveBodyFeatureData.GetSaveBodies` reads without `AccessSelections` and
+  leaves the part clean; it names the body after the feature (`Save Bodies1`,
+  #51) and flags it True although `ConsumeBody` reads False.
+- **Editing it.** Inside `AccessSelections(model, null)` `GetSaveBodies` gave
+  one empty body (no name, no path, 0 mm³); `RemoveSaveBodies`, `AddSaveBodies`
+  and `ModifyDefinition` all returned True, and nothing changed: no file was
+  written, the feature kept its file. So `edit_save_bodies` refuses `files`.
+  `consume_body` and `assembly_path` read back as set; `copy_custom_properties`
+  stayed False, with or without the access, and the tool now says so instead of
+  reporting success (it checks every option it sets).
+- **A master change.** A dimension change and rebuild of the master leaves the
+  derived file untouched (same time and size); `resplit_bodies` rewrote it
+  holding the body's new volume (6000 to 9000 mm³ for a 10 to 15 mm block).
+- **STL per part** from an assembly of the derived part: a closed mesh,
+  `volume_ratio` 1.0, the user's STL options the same before and after.
 
 **Parts a closed assembly leaves loaded.** The same build found two `~$` lock
-files beside parts after closing the assembly that loaded them, and
-`list_open_documents` gave no way to close them. `CloseDoc` "closes the document
-without saving it" when it is modified, and for a document other loaded
-documents use it only releases the window (API help). So `close_model` with
-`close_leftovers` closes only documents with no window, not active, used by no
-open document (its components, or its file references), and without unsaved
-changes, then checks they went (`adapters/solidworks/loaded_documents.py`). The
-probe settles whether `GetDocuments` or the `GetFirstDocument` walk lists them,
-and whether the open master is what keeps them.
+files beside parts after closing the assembly that loaded them. `CloseDoc`
+"closes the document without saving it" when it is modified, and for a
+document other loaded documents use it only releases the window (API help). So
+`close_model` with `close_leftovers` closes only documents with no window, not
+active, used by no open document (its components, or its file references), and
+without unsaved changes, then checks they went
+(`adapters/solidworks/loaded_documents.py`). In the probe `GetDocuments` and
+the `GetFirstDocument` walk listed the same documents, but the case itself
+didn't arise: the derived part was open in its own window, so closing the
+assembly left it open, not loaded without one.
 
-## 55. The Dipper's other reports: what the code now assumes, still to be measured
+## 55. The Dipper's other reports, measured
 
 Reported by "The Dipper" build (SOLIDWORKS 2026 SP4.1, a multibody master of about
-160 features), fixed without SolidWorks on `dipper-fixes`.
-`tests/scripts/probe_dipper_fixes.py` settles each:
+160 features). `tests/scripts/probe_dipper_fixes.py` (2026-11-17):
 
-- **`MoveDocument` on a Google Drive for desktop drive** returned 2 for a closed part
-  that a local disk moves (0). `move_document` now moves such a file as a plain file and
-  says so in `method`; its plan blocks a source another program holds open (opened for
-  `DELETE` only, full sharing) and warns about a cloud-sync folder. Open: what Drive
-  returns, and whether its file system keeps file ids (`st_ino`) through a rename,
-  which the save guard's rename check needs.
-- **A fillet made with the rollback bar up lost 2 of 4 edges on roll-forward** and only
-  warned (`swFeatureErrorFilletNoEdge`). `add_fillet` / `add_chamfer` read the new
-  feature (`IModelDocExtension.GetLastFeatureAdded`, flagged; else `FeatureByName` with
-  the tree's name) and its definition's `GetEdgeCount` without `AccessSelections`.
-  Open: `GetLastFeatureAdded` under late binding; `GetEdgeCount` after the loss;
-  whether `GetWhatsWrongCount` counts warnings (`rebuild_inspector` skips
-  `GetWhatsWrong` at 0) and is current right after `EditRollback`; whether
-  `ForceRebuild3` returns False for warnings alone.
-- **A blind cut's floor**: only planar faces whose `IFace2.Normal` looks back at the
-  sketch count, so the code assumes `Normal` points out of the material on a cut's
-  faces, as it does for the top face `select_face_edges` picks.
-- **`CreateCornerRectangle` drew a 2 x 2 square** for a 2 x 64 rectangle on an offset
-  plane, with `AddToDB` on since `create_sketch`. `add_rectangle` now turns
-  `swSketchInference` (249) off around the call and reads the lines back. Open: which
-  setting squared it.
-- **A circle's centre** is read with `GetCenterPoint2` on the segment's late-bound
-  dispatch, to find contours that cross after a failed extrude.
+- **`MoveDocument` returned 2 on a local disk too**, for a closed part and for a
+  copy of it SolidWorks had never opened, with nothing of the probe's loaded;
+  a separate test gave 2 for copies moved to a new folder, to a new name, and
+  both. (#53's 0 was a part moved under its own name the day before; what
+  decides it is not found. The Drive case was not run.) The
+  plain file move (`move_document`'s fallback, `method` says so) moved it and
+  repointed the assembly that used it. On NTFS `os.rename` kept `st_dev`,
+  `st_ino` and the modified time, which the save guard's rename check needs.
+- **Fillet edges.** A fillet made with the rollback bar up kept both its edges
+  on roll-forward here. A fillet whose edge a later cut removed rebuilt with
+  `swFeatureErrorFilletNoEdge` (13) as a warning, and its definition still read
+  `GetEdgeCount` 2: the count keeps a lost edge, so only the warning shows the
+  loss. `GetWhatsWrongCount` counts warnings (1) and is current right after
+  `EditRollback`; `ForceRebuild3` returns True with only warnings.
+  `GetLastFeatureAdded` gives the new feature under late binding.
+- **A blind cut's floor** (faces whose `IFace2.Normal` looks back at the
+  sketch): 800 mm² for a slab cut inside a block, 100 mm² for a 10 x 10 cut
+  down from the top after it flipped.
+- **`CreateCornerRectangle`** drew 2 x 64 mm right on an offset plane in all
+  four combinations of `AddToDB` and `swSketchInference` (the user's toggles
+  249, 95 and 9 on). The square The Dipper saw is not reproduced; the
+  `inference_off` guard and the read-back stay.
+- **Crossing circles.** Two r 18 circles 35.5 mm apart, extruded 5 mm, built
+  from every region: 10168.78 mm³, the union to 0.01 mm³.
 
-## 56. Views from any side, Z-up views and hidden components: what the code assumes
+## 56. Views from any side, Z-up views and hidden components: measured
 
-From The Dipper build, written without SolidWorks; `tests/scripts/probe_r2_views.py`
-settles each:
+From The Dipper build; `tests/scripts/probe_r2_views.py` (2026-11-17):
 
-- **`IModelView.Orientation3`** takes model to view coordinates as `p . R`, so `R`'s
-  columns are screen right, screen up and toward the viewer (front = identity; the
-  isometric matrix users report fits). `export_image`'s `view_direction` writes it
-  through `CreateTransform`, keeping the translation and scale it read, and reads it
-  back. `up_axis: "z"` reads SolidWorks' own matrix after `ShowNamedView2` and turns
-  it by -90 degrees about X (`view_matrix.z_up`). Open: whether the property keeps a
-  transform it is given; `IModelView.UpAxisFlyout` (swViewOrientationUpAxisFlyout_e)
-  may be a native alternative.
-- **`swStandardViews_e`**: trimetric is 8, dimetric 9 (SOLIDWORKS 2026 swconst);
-  `export_image` had them the other way round.
-- **Hiding a component**: `IComponent2.Visible` (0 hidden, 1 shown), read back; if
-  SolidWorks keeps it, select it and `HideComponent2` / `ShowComponent2`. Open: which
-  one SolidWorks takes, whether it marks the assembly modified, and whether it stays
-  hidden after a save and reopen.
+- **`IModelView.Orientation3`** takes model to view coordinates as `p . R`:
+  `R`'s columns are screen right, screen up and toward the viewer. The seven
+  standard views read the table in `view_matrix`; trimetric is 8 (no two
+  equal components toward the viewer) and dimetric 9 (two at 0.3333). The
+  property keeps a `CreateTransform` it is given, read back exactly.
+- **Z-up.** `view_matrix.z_up` pictures stood: the 20 x 20 x 80 tower's
+  outline was 2.9 to 3.95 times taller than wide, against 0.81 in the
+  standard isometric. SolidWorks' own `IModelView.UpAxisFlyout` = 1 gives
+  other views: its front looks from +X (right +Y), its right from +Y, its
+  top has screen up -X, its isometric looks from (+1, +1, +1). `up_axis: "z"`
+  keeps the Y-up front's side (front from -Y, right +X) and doesn't touch that
+  setting.
+- **Framing.** The first run's pictures were 0.33 of their width right of
+  centre. SolidWorks draws the FeatureManager pane over the left of the
+  graphics area (311 of 542 px while minimized), `ViewZoomtofit2` and
+  `ViewZoomTo2` centre the model in what it leaves, and `SaveBMP` renders the
+  whole area: the "few mm off centre" of #42. `export_image` now hides the
+  pane while it zooms (`IModelDocExtension.HideFeatureManager`,
+  `adapters/solidworks/feature_pane.py`) and shows it again: every picture
+  came out centred (0.001 of the width), filling 83-86 % of the height, and a
+  zoom box 97 %.
+- **Hiding a component**: `IComponent2.Visible` 0 and 1 both read back, as did
+  `HideComponent2` / `ShowComponent2`; `method` is `Visible`. A cover hidden
+  so stayed hidden after a save, a close and a reopen; `hide_components`
+  shows it again after a picture, also when the export fails.
 
-## 57. The Dipper's second round: what the code now assumes, still to be measured
+## 57. The Dipper's second round, measured
 
-Reported by "The Dipper" (SOLIDWORKS 2026 SP4.1, about 400 calls on a cradle of four
-truss cages), fixed without SolidWorks on `r2-fixes`. `tests/scripts/probe_r2_fixes.py`
-settles each:
+`tests/scripts/probe_r2_fixes.py` (2026-11-17):
 
-- **An empty sketch** (#45). `exit_sketch` reads the open sketch's `GetSketchSegments`,
-  `GetSketchPoints2` and `GetSketchTextSegments`; when all read and are empty it looks
-  the name up after the exit and reports `discarded` when it is gone. Open: that
-  `FeatureByName` finds a sketch while it is open, and whether a sketch with only a
-  point is kept.
-- **A body split off by a sketch edit.** `edit_sketch` counts `GetBodies2` before
-  `EditSketch` (the part is assumed to show rolled back while a sketch is edited) and
-  `exit_sketch` counts again after `InsertSketch(True)`. `rebuild_model` counts around
-  `ForceRebuild3`. Open: the counts during the edit, and that the rebuild is done by
-  the time `InsertSketch(True)` returns.
-- **A cut that meets nothing** (`swFeatureErrorCutNotIntersectModel`, 71). Its
-  definition's `FeatureScope`, `AutoSelect` and `FeatureScopeBodies` (properties on
-  `IExtrudeFeatureData2` in the gen_py wrapper) are read without `AccessSelections`.
-  Open: whether they read so, and whether a cut made with feature scope and auto-select
-  on keeps its first body after a split or picks again on rebuild.
-- **The save guard after a restart** (`file_ledger.py`). A file the server created, or
-  saved with the document's `IModelDoc2.GetUpdateStamp` unchanged since, counts as the
-  server's own when the file is as the server left it and the same SolidWorks process
-  (id and `GetProcessTimes` start) holds it. `IModelDocExtension.NeedsRebuild2` alone
-  can't tell a needed rebuild from an edit. Open: that the stamp stays put through a
-  save and a rebuild and moves on a model edit and a custom property edit.
+- **An empty sketch** (#45). `FeatureByName` finds the sketch while it is open;
+  `exit_sketch` reports it `discarded` and it is gone after. A sketch with only
+  a point is kept.
+- **A body split off by a sketch edit.** While the sketch is edited the part
+  counts 1 body (rolled back), and 2 right after `InsertSketch(True)` returns:
+  the rebuild is done by then, and `exit_sketch` warns.
+- **A cut that meets nothing** (71). `FeatureScope` (True) and `AutoSelect`
+  (False) read without `AccessSelections`; `FeatureScopeBodies` read None and
+  `GetFeatureScopeBodiesCount` -1. Inside `AccessSelections(model, null
+  dispatch)` it gave the body (count 1); `None` as the component is a type
+  mismatch (#11). `rebuild_model` reads it inside the access and releases it:
+  "The cut acts only on Boss-Extrude1. The part has 2 solid bodies".
+- **The update stamp** (`file_ledger.py`). A save leaves `GetUpdateStamp`
+  where it was (106, then 124 and 124); `ForceRebuild3` moves it (106 to 120),
+  as do a model edit (to 124) and a dimension change (139 to 142). A custom
+  property `Add3` doesn't, and leaves `GetSaveFlag` False. So a file the
+  server only saved and then rebuilt reads as changed and the guard asks
+  (the safe side); a file it created is its own regardless.
+
+## 58. Planes, axes and regions anywhere: measured
+
+`tests/scripts/probe_r2_sketching.py`, 29 checks of 29 (2026-11-17):
+
+- **A plane's frame.** `IRefPlane.Transform` is the frame a sketch on the plane
+  takes (rows 0-2 sketch x, y and normal, elements 9-11 the origin, metres) on
+  Front, Top, Right, an offset plane, an angled plane and planes through a
+  point; an empty sketch on each is deleted on exit.
+- **Axes and planes through a point.** `Insert3DSketch`, `CreateLine`, the line
+  picked as `Line1@3DSketch1` "EXTSKETCHSEGMENT" and `InsertAxis2(True)` make
+  an axis on the line. A Perpendicular / Coincident `InsertRefPlane` passes
+  through the point, and its normal faces along the direction asked; a plane
+  turned 30 degrees reads its normal to 1e-5 (0.500011, 0, 0.866019).
+- **Every region of a sketch.** The retry with every region built crossing
+  contours (9773.62 mm³ where the union is 9773.62), a contour inside another
+  stopped the automatic retry, `regions: "all"` filled that hole, and a cut of
+  every region removed 52181.10 mm³ as computed. A point 1 mm off the sketch
+  plane is refused before anything is drawn.
+
+## 59. Edge reads, ids and geometry queries: measured
+
+`tests/scripts/probe_dipper_edges.py` and `probe_query_geometry.py`
+(SOLIDWORKS 2026 SP4.1, 2026-11-17):
+
+- **Persistent ids.** `GetPersistReference3` gives a `memoryview` of a few
+  hundred bytes. The call that resolves one is
+  `IModelDocExtension.GetObjectByPersistReference3(id, byref errors)`; the
+  `GetObjectFromPersistReference3` the code first called is not a member, so
+  late binding raised `AttributeError` and every id read as gone. Ids now
+  resolve to the same edges after `ForceRebuild3` and a pocket depth change,
+  `add_fillet` takes them, and those of a deleted boss read as gone.
+- **Curved faces' normals.** `ISurface.EvaluateAtPoint` gives 11 numbers: the
+  surface normal, two principal directions, two curvatures (333.3 per metre on
+  a 3 mm hole). On eight faces the outward normal was the surface normal
+  reversed where `IFace2.FaceInSurfaceSense` read True, as is: the opposite of
+  the API help. Values 3-5 (a direction, not the normal) made a cylinder's
+  circle under a cone read concave; it reads convex now.
+- **An arc in a box.** `inside_box` took an arc's whole circle, so the arcs
+  where a 2 mm fillet meets a block's ends were left out of a box around the
+  fillet. An arc whose circle sticks out is now measured from its ends and a
+  point half way (`edge_rules.arc_extent`).
+- **`SelectByRay` with `Append` false adds to the selection** (11 entities
+  after 12 picks), so reading index 1 gave the first pick every time and
+  `query_geometry`'s picks found a pocket's floor and 4 of its 8 edges. Each
+  pick is now read and cleared: 5 of its 6 faces and all 8 edges in 2.3 s,
+  against 27 s to read the plate's 1,206 face boxes for the complete answer.
+- **`measure_clearance` between two 1,206-face plates** took 55 s full, 57 s
+  `coarse` and 55 s with `timeout_s` 1: reading the faces was nearly all of
+  it. `ClosestDistance` takes two components whole (10 mm with both points on
+  two blocks, 8.2679 mm on the turned arm, as its faces); `coarse` and
+  `timeout_s` now ask that first (`method: components`, exact, no faces), and
+  a face's twin is read only when its pair is measured: 0.43 s for `coarse`
+  and for `timeout_s` 1, 36 s for the full search, all 0.4 mm.
+- **`IMassProperty.Mass` read after `Volume`** on the same object gave the
+  volume: `set_density` reported 0.016 g for an 18.4 g block. Mass is read
+  first now (`density._mass_facts`, `get_mass_properties`).
 
 ---
-
-## 58. Planes, axes and regions anywhere: what r2-sketching assumes, still to be measured
-
-Written without SolidWorks for The Dipper's cage cuts (21 cuts on vertical planes
-at 30 and 60 degrees). `tests/scripts/probe_r2_sketching.py` settles each:
-
-- **A plane's frame.** `plane_axes` reads `IRefPlane.Transform` and takes it as the
-  frame `create_sketch` reports (`ModelToSketchTransform` inverted): rows 0-2 are
-  sketch x, y and the normal, elements 9-11 the origin in metres. The API help says
-  the transform takes a plane from the Front Plane's place to its own; that a sketch
-  on it takes the same x and origin is not measured.
-- **Axes and planes through a point** (`adapters/solidworks/reference_geometry.py`)
-  are built on one line in a 3D sketch of their own: `ISketchManager.Insert3DSketch`
-  (`True` opens and closes it), `CreateLine` in model metres with `AddToDB` on, the
-  line picked as `Line1@3DSketch1` "EXTSKETCHSEGMENT" (else at its midpoint). An axis
-  is `IModelDoc2.InsertAxis2(True)` on the line, read back with
-  `IRefAxis.GetRefAxisParams` (start and end, metres). A plane is `InsertRefPlane`
-  Perpendicular (2) to the line at mark 0 and Coincident (4) with its start point
-  ("EXTSKETCHPOINT" at the point) at mark 1; which way its normal points is read
-  back and a reversed one only warned about.
-- **Every region of a sketch** (`sketch_regions.py`), as SolidWorks' "Create Extrude
-  Feature Using Sketch Contours" macro does: `ISelectionMgr.EnableContourSelection`
-  on, the sketch at mark 4, each `ISketch.GetSketchRegions` item `Select2(True,
-  SelectData mark 4)` (else `Select(True, 4)`; `GetSketchContours` when no region
-  reads), then `FeatureExtrusion3` or `FeatureCut4`, which should union them. A
-  crossing failure is retried that way only when every segment belongs to a circle
-  or a closed loop of lines and none lies inside another, as every region fills a
-  hole.
 
 ## Adapter wiring traps — not COM, same silent-failure shape
 
