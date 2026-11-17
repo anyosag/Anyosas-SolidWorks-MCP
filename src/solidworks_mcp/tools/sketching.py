@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks.rebuild_diagnostics import body_count_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
@@ -962,11 +963,16 @@ async def register_sketching_tools(
         Call it after drawing and before `create_extrusion`, `create_revolve` or
         `create_cut_extrude`; those use the sketch closed last. Needs: an open sketch.
         Changes: leaves sketch editing; the sketch stays in the feature tree, renamed
-        to the `sketch_name` `create_sketch` was given. Returns: a message, plus, after
-        a `sketch_name`, `sketch` with `name` (the name in the feature tree, which later
-        tools take as `sketch_name`) and a `warning` when the name couldn't be given
-        (another feature has it). After an `edit_sketch` that changed nothing it
-        rebuilds nothing and says `sketch_unchanged`.
+        to the `sketch_name` `create_sketch` was given. An empty sketch does not stay:
+        SolidWorks deletes it, and the reply says `discarded` with a `warning`
+        (`create_sketch`'s reply already gave the plane's `axes`). After an
+        `edit_sketch` it rebuilds the part and gives `solid_body_count_before` and
+        `solid_body_count_after`, with a `warning` when the edit split a body off.
+        Returns: a message, plus, after a `sketch_name`, `sketch` with `name` (the name
+        in the feature tree, which later tools take as `sketch_name`) and a `warning`
+        when the name couldn't be given (another feature has it). After an
+        `edit_sketch` that changed nothing it rebuilds nothing and says
+        `sketch_unchanged`.
         """
         result = await adapter.exit_sketch()
 
@@ -978,6 +984,33 @@ async def register_sketching_tools(
         }
         metadata = getattr(result, "metadata", None)
         round_trip = metadata if isinstance(metadata, dict) else {}
+        discarded = round_trip.get("discarded")
+        if discarded:
+            names_on_exit.clear()  # nothing is left to name
+            reply["message"] += f"; SolidWorks discarded the empty sketch '{discarded}'"
+            reply["discarded"] = True
+            reply["sketch"] = {"name": discarded, "discarded": True}
+            reply["warning"] = (
+                f"SolidWorks deleted the sketch '{discarded}' because it had "
+                "nothing in it, so no later tool can find it by that name. Draw "
+                "before exit_sketch to keep a sketch. To read a plane's axes, "
+                "there is no need for an empty sketch: create_sketch's reply "
+                "already gave them (`sketch.axes`)."
+            )
+            return reply
+        counts = {
+            key: round_trip[key]
+            for key in (
+                "solid_body_count_before",
+                "solid_body_count_after",
+                "solid_bodies_after",
+            )
+            if key in round_trip
+        }
+        reply.update(counts)
+        split = body_count_warning(counts, "Rebuilding after the sketch edit")
+        if split:
+            reply["warning"] = split
         if round_trip.get("unchanged"):
             # An edit_sketch only read: left without a rebuild.
             reply["sketch_unchanged"] = True
@@ -994,9 +1027,12 @@ async def register_sketching_tools(
             if renamed.is_success:
                 name = (renamed.data or {}).get("new_name") or wanted
             else:
-                reply["warning"] = (
+                kept = (
                     f"The sketch keeps SolidWorks' name '{current}': it could "
                     f"not be named '{wanted}' ({renamed.error})."
+                )
+                reply["warning"] = " ".join(
+                    w for w in (reply.get("warning"), kept) if w
                 )
             reply["sketch"] = {"name": name}
         return reply

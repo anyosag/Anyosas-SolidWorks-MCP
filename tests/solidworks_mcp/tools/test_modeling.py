@@ -2190,6 +2190,47 @@ async def test_rebuild_model_tool_error_passes_data_through(
 
 
 @pytest.mark.asyncio
+async def test_rebuild_model_tool_warns_when_a_body_split_off(
+    mcp_server, mock_adapter, mock_config
+) -> None:
+    """The Dipper: a sketch edit left a second body, unseen until a cut missed."""
+    data = {
+        "rebuilt": True,
+        "errors": [
+            {
+                "feature": "Fillet1",
+                "severity": "warning",
+                "code_name": "x",
+                "description": "It lost an edge.",
+                "hint": "Reselect it.",
+            }
+        ],
+        "error_count": 0,
+        "warning_count": 1,
+        "summary": "Rebuilt with 1 warning(s): Fillet1.",
+        "solid_body_count_before": 1,
+        "solid_body_count_after": 2,
+        "solid_bodies_after": ["Strip", "Boss-Extrude5"],
+    }
+    mock_adapter.rebuild_model = AsyncMock(
+        return_value=AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)
+    )
+    await register_modeling_tools(mcp_server, mock_adapter, mock_config)
+
+    result = await (await _tool(mcp_server, "rebuild_model"))()
+
+    assert result["status"] == "success"
+    assert result["warning"].startswith("SolidWorks reports: Fillet1 warns x")
+    assert (
+        "The rebuild left the part 2 solid bodies where it had 1" in (result["warning"])
+    )
+    data.pop("errors")
+    data["warning_count"] = 0
+    only_split = await (await _tool(mcp_server, "rebuild_model"))()
+    assert only_split["warning"].startswith("The rebuild left the part 2 solid")
+
+
+@pytest.mark.asyncio
 async def test_rebuild_model_tool_no_model(
     mcp_server, mock_adapter, mock_config
 ) -> None:

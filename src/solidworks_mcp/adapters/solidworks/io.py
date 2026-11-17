@@ -2291,12 +2291,21 @@ class SolidWorksIOMixin:
         Returns:
             AdapterResult[dict[str, Any]]: ``rebuilt``, ``top_level_only``,
             ``errors`` (see ``rebuild_diagnostics.explain``), ``error_count``,
-            ``warning_count`` and a one-line ``summary``. ERROR - still
+            ``warning_count`` and a one-line ``summary``; for a part also
+            ``solid_body_count_before`` and ``solid_body_count_after``
+            (``rebuild_diagnostics.body_counts``: a rebuild that splits a body
+            off is otherwise silent until a scoped cut misses). ERROR - still
             carrying that ``data`` - when any error-severity entry remains or
             SolidWorks reports the rebuild itself failed.
         """
+        from .bodies import solid_body_names
         from .com_utils import strip_op_prefix
-        from .rebuild_diagnostics import explain, summarize
+        from .rebuild_diagnostics import (
+            body_count_warning,
+            body_counts,
+            explain,
+            summarize,
+        )
         from .rebuild_inspector import collect_rebuild_issues
 
         adapter = self._adapter(self)
@@ -2307,11 +2316,13 @@ class SolidWorksIOMixin:
 
         def _rebuild() -> dict[str, Any]:
             model = adapter.currentModel
+            bodies_before = solid_body_names(adapter, model)
             # ForceRebuild3 returns False whenever a feature fails to rebuild
             # (confirmed live 2026-10-13), so False is not "the rebuild call
             # broke" - collect the per-feature issues either way and only fall
             # back to a generic failure when SolidWorks names none.
             rebuilt = bool(model.ForceRebuild3(top_level_only))
+            counts = body_counts(bodies_before, solid_body_names(adapter, model))
             entries = [explain(i) for i in collect_rebuild_issues(adapter, model)]
             error_count, warning_count, summary = summarize(entries)
             if not rebuilt and not error_count:
@@ -2328,6 +2339,7 @@ class SolidWorksIOMixin:
                 "error_count": error_count,
                 "warning_count": warning_count,
                 "summary": summary,
+                **counts,
             }
 
         result = cast(
@@ -2338,7 +2350,8 @@ class SolidWorksIOMixin:
             result.error = strip_op_prefix(result.error, "rebuild_model")
         elif result.data and (result.data["error_count"] or not result.data["rebuilt"]):
             result.status = AdapterResultStatus.ERROR
-            result.error = result.data["summary"]
+            split = body_count_warning(result.data)
+            result.error = " ".join(w for w in (result.data["summary"], split) if w)
         return result
 
     async def get_model_info(self) -> AdapterResult[dict[str, Any]]:

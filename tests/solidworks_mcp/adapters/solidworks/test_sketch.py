@@ -1397,6 +1397,124 @@ def test_exit_sketch_reports_insert_sketch_failure() -> None:
     assert "cannot leave sketch" in (result.error or "")
 
 
+# ---- an empty sketch SolidWorks deletes (pitfall #45) ------------------------------
+
+
+def _empty_sketch(**reads: object) -> SimpleNamespace:
+    """An open sketch with nothing in it; ``reads`` replaces a reader."""
+    readers = {
+        "GetSketchSegments": lambda: None,
+        "GetSketchPoints2": lambda: None,
+        "GetSketchTextSegments": lambda: None,
+    }
+    return SimpleNamespace(**{**readers, **reads})
+
+
+def _exiting(open_sketch: object, left: object) -> tuple[_FakeSketchAdapter, Mock]:
+    """An adapter about to exit ``open_sketch``; ``FeatureByName`` answers ``left``."""
+    adapter = _FakeSketchAdapter()
+    adapter.currentSketchManager = SimpleNamespace(InsertSketch=Mock())
+    adapter.currentSketch = open_sketch
+    adapter._last_sketch_name = "Sketch27"
+    lookup = (
+        Mock(side_effect=left)
+        if isinstance(left, Exception)
+        else Mock(return_value=left)
+    )
+    adapter.currentModel = SimpleNamespace(
+        GetActiveSketch2=lambda: open_sketch, FeatureByName=lookup
+    )
+    return adapter, lookup
+
+
+def test_an_empty_sketch_solidworks_deleted_is_reported_discarded() -> None:
+    adapter, lookup = _exiting(_empty_sketch(), None)
+
+    result = sketch._exit_sketch_impl(adapter)
+
+    assert result.status == AdapterResultStatus.SUCCESS
+    assert result.metadata == {"discarded": "Sketch27"}
+    lookup.assert_called_once_with("Sketch27")
+    assert adapter._last_sketch_name is None  # no feature reaches for it
+
+
+@pytest.mark.parametrize(
+    "left", [SimpleNamespace(Name="Sketch27"), RuntimeError("busy")], ids=str
+)
+def test_an_empty_sketch_still_there_or_unread_is_not_discarded(left: object) -> None:
+    adapter, _lookup = _exiting(_empty_sketch(), left)
+
+    result = sketch._exit_sketch_impl(adapter)
+
+    assert result.metadata is None
+    assert adapter._last_sketch_name == "Sketch27"
+
+
+def _raises() -> None:
+    raise RuntimeError("not readable")
+
+
+@pytest.mark.parametrize(
+    "reads",
+    [
+        {"GetSketchSegments": lambda: (object(),)},
+        {"GetSketchPoints2": lambda: (object(),)},
+        {"GetSketchTextSegments": lambda: (object(),)},
+        {"GetSketchPoints2": _raises},
+    ],
+    ids=["a-segment", "a-point", "a-text", "unreadable"],
+)
+def test_a_sketch_with_something_or_unread_is_not_looked_up(
+    reads: dict[str, object],
+) -> None:
+    adapter, lookup = _exiting(_empty_sketch(**reads), None)
+
+    assert sketch._exit_sketch_impl(adapter).metadata is None
+    lookup.assert_not_called()
+    assert sketch.sketch_is_empty(adapter, None) is False
+
+
+# ---- an edit that splits a body off ------------------------------------------------
+
+
+def _edited(bodies_before: list[str] | None, bodies_after: list[str], name: str):  # noqa: ANN202
+    """A sketch edit_sketch opened (``name``) and changed, on a part of bodies."""
+    adapter, insert_sketch = _opened_for_reading(False)
+    adapter._opened_sketch["segments"][0]["end_mm"] = [25.0, 0.0]  # changed
+    adapter._opened_sketch["solid_bodies"] = bodies_before
+    adapter._opened_sketch["name"] = name
+    adapter.currentModel.GetBodies2 = lambda _kind, _visible: tuple(
+        SimpleNamespace(Name=n) for n in bodies_after
+    )
+    return adapter, insert_sketch
+
+
+def test_an_edit_that_splits_a_body_counts_the_bodies() -> None:
+    adapter, insert_sketch = _edited(["Strip"], ["Strip", "Boss-Extrude5"], "Sketch2")
+
+    result = sketch._exit_sketch_impl(adapter)
+
+    insert_sketch.assert_called_once_with(True)
+    assert result.metadata == {
+        "solid_body_count_before": 1,
+        "solid_body_count_after": 2,
+        "solid_bodies_after": ["Strip", "Boss-Extrude5"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("before", "name"),
+    [(None, "Sketch2"), (["Strip"], "Sketch9")],
+    ids=["not-counted", "another-sketch"],
+)
+def test_bodies_are_compared_only_for_the_sketch_edit_sketch_counted(
+    before: list[str] | None, name: str
+) -> None:
+    adapter, _insert = _edited(before, ["Strip", "Boss-Extrude5"], name)
+
+    assert sketch._exit_sketch_impl(adapter).metadata is None
+
+
 def test_check_fully_defined_by_name_and_with_no_sketch_anywhere() -> None:
     adapter = _FakeSketchAdapter()
     fully = SimpleNamespace(GetSketchStatus=lambda: True, IsFullyDefined=True)

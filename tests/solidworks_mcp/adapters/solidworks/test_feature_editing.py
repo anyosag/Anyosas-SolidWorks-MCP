@@ -922,6 +922,30 @@ def test_opening_a_sketch_records_how_it_was_found() -> None:
     assert opened["name"] == "Sketch2"
     assert opened["was_dirty"] is False
     assert [s["type"] for s in opened["segments"]] == ["line", "arc", "spline"]
+    assert opened["solid_bodies"] is None  # the fake part has no GetBodies2
+
+
+def test_opening_a_sketch_counts_the_bodies_before_it_opens() -> None:
+    """exit_sketch's rebuild compares them: the Dipper's edit split a body off."""
+    sketch = _sketch()
+    model = _Model([_Feature("Sketch2", "ProfileFeature", None)], sketch=sketch)
+    seen: list[str] = []
+
+    def get_bodies(_kind: int, _visible: bool) -> tuple[SimpleNamespace, ...]:
+        seen.append("GetBodies2")
+        return (SimpleNamespace(Name="Strip"),)
+
+    def edit_sketch() -> None:
+        seen.append("EditSketch")
+
+    model.GetBodies2 = get_bodies  # type: ignore[attr-defined]
+    model.EditSketch = edit_sketch  # type: ignore[attr-defined]
+    adapter = _Adapter(model)
+
+    fe.open_sketch(adapter, "Sketch2")
+
+    assert adapter._opened_sketch["solid_bodies"] == ["Strip"]
+    assert seen[0] == "GetBodies2"  # before the part shows rolled back
 
 
 def test_a_sketch_left_as_it_was_on_a_clean_part_is_unchanged() -> None:

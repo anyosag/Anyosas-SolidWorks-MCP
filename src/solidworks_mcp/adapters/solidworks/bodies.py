@@ -322,6 +322,29 @@ def body_names(adapter: Any, model: Any) -> list[str]:
     return [name for name, _body in solid_bodies(adapter, model)]
 
 
+#: What :func:`solid_body_names` reads when ``GetBodies2`` raised.
+_UNREAD = object()
+
+
+def solid_body_names(adapter: Any, model: Any) -> list[str] | None:
+    """The part's solid bodies by name, or None when they can't be read.
+
+    Unlike :func:`body_names`, a failed ``GetBodies2`` (an assembly has none)
+    is None, not an empty part, so a count before and after a rebuild is
+    only compared when both read. A part with no body yet answers null: [].
+    A body whose name doesn't read is counted as ``""``.
+    """
+    _flag(adapter, model, "GetBodies2")
+    raw = _attempt(adapter, lambda: model.GetBodies2(SOLID_BODY, False), _UNREAD)
+    if raw is _UNREAD:
+        return None
+    names = []
+    for item in as_list(raw):
+        body = _wrapped(adapter, item)
+        names.append(str(_attempt(adapter, lambda b=body: b.Name) or ""))
+    return names
+
+
 def find_bodies(adapter: Any, model: Any, names: Sequence[str]) -> dict[str, Any]:
     """The named solid bodies of the part.
 

@@ -316,3 +316,150 @@ async def test_rebuild_call_failure_reads_as_a_plain_sentence() -> None:
     result = await _IO(_Adapter(model)).rebuild_model()
     assert result.is_error
     assert result.error == "The object invoked has disconnected from its clients."
+
+
+# ---- bodies: a cut that meets nothing, and a rebuild that splits a body ------
+
+
+def _body(name: str) -> SimpleNamespace:
+    return SimpleNamespace(Name=name)
+
+
+class _ScopedCut(_Feature):
+    """A cut whose definition is scoped to some bodies (IExtrudeFeatureData2)."""
+
+    def __init__(self, name: str, definition: Any) -> None:
+        super().__init__(name, "Cut", code=71)
+        self._definition = definition
+
+    def GetDefinition(self):  # noqa: ANN201, N802
+        if isinstance(self._definition, Exception):
+            raise self._definition
+        return self._definition
+
+
+def _part(first: _Feature, issues: Any, bodies: list[list[str]]) -> SimpleNamespace:
+    """A part whose solid bodies are ``bodies[0]`` until a rebuild, then the next."""
+    model = _model(first, issues)
+    state = {"rebuilds": 0, "reads": 0}
+
+    def get_bodies(kind: int, visible_only: bool) -> tuple[Any, ...]:
+        assert (kind, visible_only) == (0, False)
+        state["reads"] += 1
+        names = bodies[min(state["rebuilds"], len(bodies) - 1)]
+        return tuple(_body(n) for n in names)
+
+    def rebuild(_top: bool) -> bool:
+        state["rebuilds"] += 1
+        return True
+
+    model.GetBodies2 = get_bodies
+    model.ForceRebuild3 = rebuild
+    model.state = state
+    return model
+
+
+def test_a_cut_that_meets_nothing_names_its_bodies_and_the_parts() -> None:
+    """The Dipper: a cut scoped to the strip missed once an edit split it."""
+    scoped = SimpleNamespace(
+        FeatureScope=True,
+        AutoSelect=False,
+        FeatureScopeBodies=(_body("Boss-Extrude1"),),
+    )
+    cut = _ScopedCut("Cut-Extrude7", scoped)
+    model = _part(cut, [(cut, 71, False)], [["Boss-Extrude1", "Boss-Extrude5"]])
+
+    (issue,) = ri.collect_rebuild_issues(_Adapter(model), model)
+
+    assert issue.scope == ri.BodyScope(
+        True, False, ["Boss-Extrude1"], ["Boss-Extrude1", "Boss-Extrude5"]
+    )
+
+
+def test_the_parts_bodies_are_read_once_for_every_cut() -> None:
+    first = _ScopedCut("Cut-Extrude1", SimpleNamespace(FeatureScope=False))
+    second = _ScopedCut("Cut-Extrude2", RuntimeError("no definition"))
+    fillet = _Feature("Fillet1", "Fillet", code=18, warning=True)
+    model = _part(
+        _chain(first, second, fillet),
+        [(first, 71, False), (second, 71, False), (fillet, 18, True)],
+        [["Body"]],
+    )
+
+    issues = ri.collect_rebuild_issues(_Adapter(model), model)
+
+    assert model.state["reads"] == 1
+    assert issues[0].scope == ri.BodyScope(False, None, None, ["Body"])
+    assert issues[1].scope == ri.BodyScope(None, None, None, ["Body"])
+    assert issues[2].scope is None  # only a cut that meets nothing
+
+
+class _UnreadableScope:
+    FeatureScope = True
+    AutoSelect = True
+
+    @property
+    def FeatureScopeBodies(self):  # noqa: ANN201, N802
+        raise RuntimeError("needs AccessSelections")
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        _UnreadableScope(),
+        SimpleNamespace(FeatureScope=True),
+        SimpleNamespace(FeatureScope=True, FeatureScopeBodies=None),
+    ],
+)
+def test_scope_bodies_that_dont_read_are_left_unknown(definition: Any) -> None:
+    cut = _ScopedCut("Cut-Extrude1", definition)
+    model = _model(cut, [(cut, 71, False)])  # no GetBodies2: not readable
+
+    (issue,) = ri.collect_rebuild_issues(_Adapter(model), model)
+
+    assert issue.scope is not None
+    assert issue.scope.feature_scope is True
+    assert issue.scope.bodies is None  # an empty list says nothing either
+    assert issue.scope.part_bodies is None
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_splits_a_body_off_says_so() -> None:
+    feature = _Feature("Boss-Extrude1", "Extrusion")
+    model = _part(feature, [], [["Strip"], ["Strip", "Boss-Extrude5"]])
+
+    result = await _IO(_Adapter(model)).rebuild_model()
+
+    assert result.is_success
+    assert result.data["solid_body_count_before"] == 1
+    assert result.data["solid_body_count_after"] == 2
+    assert result.data["solid_bodies_after"] == ["Strip", "Boss-Extrude5"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rebuild_that_split_a_body_says_so_in_its_error() -> None:
+    scoped = SimpleNamespace(
+        FeatureScope=True, AutoSelect=False, FeatureScopeBodies=(_body("Strip"),)
+    )
+    cut = _ScopedCut("Cut-Extrude7", scoped)
+    model = _part(cut, [(cut, 71, False)], [["Strip"], ["Strip", "Boss-Extrude5"]])
+
+    result = await _IO(_Adapter(model)).rebuild_model()
+
+    assert result.is_error
+    assert "left the part 2 solid bodies where it had 1" in (result.error or "")
+    (entry,) = result.data["errors"]
+    assert entry["scope"]["bodies"] == ["Strip"]
+    assert entry["hint"].startswith(
+        "The cut acts only on Strip. The part has 2 solid bodies: Strip, "
+        "Boss-Extrude5 (list_bodies). If an earlier edit split a body off"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_of_an_assembly_counts_no_bodies() -> None:
+    feature = _Feature("Mate1", "MateCoincident")
+
+    result = await _IO(_Adapter(_model(feature, []))).rebuild_model()
+
+    assert "solid_body_count_before" not in result.data

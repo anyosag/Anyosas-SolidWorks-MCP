@@ -726,7 +726,9 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     Records ``adapter._opened_sketch`` (the name, whether the document had
     unsaved changes before, and the segments as described) for
     :func:`unchanged_since_opened`: a sketch opened only to be read is left
-    without a rebuild.
+    without a rebuild. It also holds the part's solid bodies, read before the
+    sketch opens (``solid_bodies``), so ``exit_sketch``'s rebuild can say
+    when an edit split a body off.
 
     Args:
         adapter: A connected ``PyWin32Adapter`` with a ``currentModel``.
@@ -742,6 +744,7 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
         ValueError: It isn't a sketch.
         RuntimeError: SolidWorks didn't open it.
     """
+    from .bodies import solid_body_names
     from .visibility import SKETCH_TYPES
 
     model = adapter.currentModel
@@ -750,6 +753,8 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     if kind not in SKETCH_TYPES:
         raise ValueError(f"{name!r} is a {kind or 'feature'}, not a sketch.")
     was_dirty = save_flag(adapter, model)
+    # Before EditSketch, which shows the part rolled back to the sketch.
+    bodies = solid_body_names(adapter, model)
     _flag(adapter, feature, "Select2", "GetSpecificFeature2")
     _flag(adapter, model, "ClearSelection2", "EditSketch")
     _attempt(adapter, lambda: model.ClearSelection2(True))
@@ -775,6 +780,7 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
         "name": name,
         "was_dirty": was_dirty,
         "segments": [info for _segment, info in described],
+        "solid_bodies": bodies,
     }
     return {"sketch": name, "segments": segments}
 

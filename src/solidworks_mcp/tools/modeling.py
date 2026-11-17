@@ -20,7 +20,7 @@ from ..adapters.base import (
 )
 from ..adapters.solidworks.cut_check import shortfall_warning
 from ..adapters.solidworks.edge_feature_check import warnings as edge_feature_warnings
-from ..adapters.solidworks.rebuild_diagnostics import issues_warning
+from ..adapters.solidworks.rebuild_diagnostics import body_count_warning, issues_warning
 from .input_compat import CompatInput
 from .sketching import AddSketchTextInput, text_warnings
 from .tool_boundary import (
@@ -3846,11 +3846,15 @@ async def register_modeling_tools(
 
         Use it after `set_dimension` or other edits to confirm the model is sound.
         Failing features make the call an error whose `data.errors` names each one, its
-        SolidWorks error, what it depends on and a `hint`. Warnings alone (a fillet that
-        lost some edges: swFeatureErrorFilletNoEdge) still succeed, with a `warning`
-        naming each. Needs: an open part or assembly. Changes: rebuilds the model.
-        Returns: `data` with `rebuilt`, `errors`, `error_count`, `warning_count` and
-        `summary`.
+        SolidWorks error, what it depends on and a `hint`; a cut that meets nothing
+        (swFeatureErrorCutNotIntersectModel) also gives `scope`: the bodies it acts on
+        and the part's. Warnings alone (a fillet that lost some edges:
+        swFeatureErrorFilletNoEdge) still succeed, with a `warning` naming each. A
+        part's solid bodies are counted before and after, and a `warning` says when a
+        body split off. Needs: an open part or assembly. Changes: rebuilds the model.
+        Returns: `data` with `rebuilt`, `errors`, `error_count`, `warning_count`,
+        `summary`, and for a part `solid_body_count_before` and
+        `solid_body_count_after`.
 
         Args:
             input_data: Nothing is required: `top_level_only` is off (a full
@@ -3871,9 +3875,12 @@ async def register_modeling_tools(
         }
         if data is not None:
             response["data"] = data
-            warning = issues_warning(data.get("errors") or [])
-            if warning:
-                response["warning"] = warning
+            warnings = [
+                issues_warning(data.get("errors") or []),
+                body_count_warning(data),
+            ]
+            if any(warnings):
+                response["warning"] = " ".join(w for w in warnings if w)
         return response
 
     @mcp.tool()

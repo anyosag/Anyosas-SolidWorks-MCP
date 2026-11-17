@@ -2645,6 +2645,37 @@ def _sketch_offset_impl(
     )
 
 
+#: What a COM read gives when it raised.
+_NOT_READ = object()
+
+
+def sketch_is_empty(adapter: Any, sketch: Any) -> bool:
+    """Whether an open sketch has nothing in it: no segment, point or text.
+
+    True only when ``ISketch.GetSketchSegments``, ``GetSketchPoints2`` and
+    ``GetSketchTextSegments`` all read and give nothing (each answers null
+    on an empty sketch); a read that fails is not taken for empty.
+
+    Args:
+        adapter: The adapter (for ``_attempt``).
+        sketch: The open ``ISketch``, or None.
+
+    Returns:
+        bool: True for an empty sketch.
+    """
+    if sketch is None:
+        return False
+    from .com_utils import flag
+
+    readers = ("GetSketchSegments", "GetSketchPoints2", "GetSketchTextSegments")
+    flag(adapter, sketch, *readers)
+    for reader in readers:
+        found = adapter._attempt(lambda r=reader: getattr(sketch, r)(), _NOT_READ)
+        if found is _NOT_READ or found:
+            return False
+    return True
+
+
 def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
     """Exit any sketch-edit mode the active model is in and reset adapter state.
 
@@ -2671,13 +2702,26 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
     document's ``is_dirty`` afterwards: ``IModelDoc2.SetSaveFlag`` only
     sets the flag, so a flag SolidWorks set can't be cleared.
 
+    A sketch exited with nothing in it is deleted by SolidWorks (pitfall
+    #45). When the sketch's segments, points and texts all read and there
+    are none, its name is looked up after the exit; when it is gone,
+    ``metadata`` says ``discarded`` (the name) and ``_last_sketch_name`` is
+    cleared, so no later feature reaches for it. The Dipper made 19 empty
+    sketches to read their axes, and a later ``edit_sketch`` found none.
+
+    A sketch ``edit_sketch`` opened and changed is rebuilt on exit; the
+    part's solid bodies, counted before it opened and after the rebuild,
+    are in ``metadata`` (``rebuild_diagnostics.body_counts``). An outline
+    left 2.5 mm short of the strip became a second body that way, unseen.
+
     Args:
         adapter: A ``PyWin32Adapter`` with a non-``None`` ``currentModel``.
 
     Returns:
         AdapterResult[None]: On success, ``status`` is ``SUCCESS``, with
         ``metadata`` ``{"unchanged": True, "rebuilt": False, "is_dirty": ...}``
-        after a read-only round trip.
+        after a read-only round trip, ``discarded`` for an empty sketch
+        SolidWorks deleted, and the body counts after an edit.
         When neither SW nor the adapter has an active sketch,
         ``status`` is ``WARNING`` (already-exited is not a failure).
         When ``currentModel`` is ``None``, also returns ``WARNING`` so
@@ -2705,7 +2749,9 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
     round_trip: dict[str, Any] = {}
 
     def _exit_operation() -> str:
+        from .bodies import solid_body_names
         from .feature_editing import save_flag, unchanged_since_opened
+        from .rebuild_diagnostics import body_counts
 
         # ``GetActiveSketch2`` is a real zero-arg method on IModelDoc2.
         # Without flagging, pywin32 late binding resolves it as a property
@@ -2727,8 +2773,16 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
             adapter._opened_sketch = None
             return "no_active_sketch"
 
+        name = adapter._last_sketch_name
+        opened = getattr(adapter, "_opened_sketch", None) or {}
+        # The bodies edit_sketch counted, for the sketch it opened.
+        bodies_before = (
+            opened.get("solid_bodies") if opened.get("name") == name else None
+        )
+        open_sketch = adapter.currentSketch or sw_active
+        empty = sketch_is_empty(adapter, open_sketch)
         # Read before leaving: still in edit mode, as edit_sketch found it?
-        unchanged = unchanged_since_opened(adapter, adapter.currentSketch or sw_active)
+        unchanged = unchanged_since_opened(adapter, open_sketch)
 
         # Prefer the adapter's SketchManager handle when available (it was
         # captured at create_sketch time on the executor thread, so it's
@@ -2753,6 +2807,19 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
                 rebuilt=False,
                 is_dirty=save_flag(adapter, adapter.currentModel),
             )
+        elif bodies_before is not None:
+            round_trip.update(
+                body_counts(
+                    bodies_before, solid_body_names(adapter, adapter.currentModel)
+                )
+            )
+        if empty and name:
+            left = adapter._attempt(
+                lambda: adapter.currentModel.FeatureByName(name), _NOT_READ
+            )
+            if left is None:  # looked up, and gone
+                round_trip["discarded"] = name
+                adapter._last_sketch_name = None
         return "exited"
 
     result = cast(
