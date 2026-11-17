@@ -262,11 +262,29 @@ involved must be closed).
    still, use `set_component_state` (`fixed`); to let a sub-assembly's own
    mates move in the main assembly (a crank that turns), `flexible: true`.
 5. `check_interference`, then `verify_model` with `component_count`,
-   `mate_count` and `no_interference: true`. For a gap that must stay open
+   `mate_count` and `no_interference: true`. `check_interference` lists the
+   `top_pairs` that overlap most (components, count and volume); fix the
+   largest first. For a gap that must stay open
    (a latch's 0.25 mm play), `measure_clearance` with the two components
    gives the smallest gap and where it is; `export_image` with `section`
    (a plane and an offset) shows it cut open.
 6. `save_assembly`, or `pack_and_go_assembly` for a self-contained folder.
+
+## Pictures: a Z-up part, any side, a cover off
+
+- A part modelled with +Z up stands on end in the standard views:
+  `export_image` with `up_axis: "z"` turns them so +Z is up (front looks
+  from -Y, top from +Z). No throwaway assembly is needed.
+- Any other side: `view_direction`, the direction from the model toward
+  you ([1, -1, 1] is a Z-up isometric), and `up`, the direction shown
+  upward. Leave out `view_orientation` then. `view_axes` in the reply says
+  which model directions came out right, up and toward you. `zoom_box_mm`
+  still zooms to a box of the model in that view.
+- An assembly without a part in the way (a cover off): `hide_components`
+  hides components for that picture only and shows them again, also when it
+  fails. To keep them hidden, `set_component_visibility` with `visible:
+  false`; `visible: true` shows them again. Don't move a part aside instead:
+  hiding keeps its place and mates.
 
 ## A hinge, latch or lid that turns: where it stops, how close it passes
 
