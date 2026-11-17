@@ -194,6 +194,28 @@ def test_faces_only_picks_faces_only() -> None:
     assert log.calls["GetEdges"] == 0
 
 
+def test_a_wider_ball_holds_whole_walls_and_the_limit_cuts_the_list() -> None:
+    """At 4 mm each 4 x 3 mm wall lies wholly inside: its edges all count."""
+    model, _log = query_plate()
+
+    reply = gq.query_geometry(_Adapter(model), POCKET, 4.0, limit=2, read_all=True)
+
+    # Walls, floor and top; the pocket's 12 edges and nothing else.
+    assert reply["faces_found"] == 6 and len(reply["faces"]) == 2
+    assert reply["edges_found"] == 12 and len(reply["edges"]) == 2
+    assert reply["read"]["described"] == 4
+
+
+def test_picks_beyond_the_radius_are_not_listed() -> None:
+    """At 1 mm the rays still reach the walls (2 mm) and floor (1.5 mm): too far."""
+    model, _log = query_plate()
+
+    reply = gq.query_geometry(_Adapter(model), POCKET, 1.0)
+
+    assert reply["read"]["picks"] == 14
+    assert reply["method"] == "index" and reply["faces_found"] == 0
+
+
 def test_edges_only_lists_edges_only() -> None:
     model, _log = query_plate()
 
