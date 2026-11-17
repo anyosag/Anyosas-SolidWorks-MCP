@@ -262,6 +262,7 @@ async def test_missing_adapter_method_is_reported(
     payload = {
         "measure_entities": {"entities": ["Edge<1>"]},
         "set_material": {"material_name": "AISI 1020"},
+        "set_density": {"density_g_cm3": 1.15},
         "set_custom_property": {"name": "PartNo", "value": "1"},
         "export_flat_pattern": {"file_path": "C:/out/flat.dxf"},
     }.get(tool, {})

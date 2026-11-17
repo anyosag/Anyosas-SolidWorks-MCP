@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 183,
+  "total": 194,
   "by_level": {
    "stable": 107,
    "beta": 0,
-   "experimental": 37,
+   "experimental": 48,
    "planned": 39
   },
   "list": [
@@ -147,6 +147,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Add a driving dimension to sketch entities: linear, angular, radial or diameter."
+   },
+   {
+    "name": "add_sketch_text",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Write text in the open sketch, for a label to raise or cut into the part."
    },
    {
     "name": "add_spline",
@@ -314,7 +321,7 @@
     "family": "analysis",
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
-    "summary": "Check the active part for 3D printing (resin or FDM) in one orientation: overhangs, islands, bridges and suction cups."
+    "summary": "Check the active part for 3D printing (resin or FDM): overhangs, islands, bridges, suction cups; optionally the best orientation and thin features."
    },
    {
     "name": "check_sketch_fully_defined",
@@ -392,6 +399,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Cut material from the active part with a closed sketch profile: holes, slots, windows."
+   },
+   {
+    "name": "create_cut_revolve",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Cut material away by revolving a closed sketch around an axis: grooves, seats."
    },
    {
     "name": "create_detail_view",
@@ -531,7 +545,14 @@
     "family": "modeling",
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
-    "summary": "Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges."
+    "summary": "Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges, an offset plane's distance."
+   },
+   {
+    "name": "edit_save_bodies",
+    "family": "file_management",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Change a Save Bodies feature: the file a body is saved to, its assembly, or its options."
    },
    {
     "name": "edit_sketch",
@@ -539,6 +560,13 @@
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
     "summary": "Open an existing sketch for editing, listing its segments with ids."
+   },
+   {
+    "name": "emboss_text",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Raise a text label off the active part, or engrave it in, in one call."
    },
    {
     "name": "execute_macro",
@@ -560,6 +588,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Close the open sketch so a feature can use it."
+   },
+   {
+    "name": "export_assembly_parts_stl",
+    "family": "export",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Export every part of the active assembly to its own STL file, one per part."
    },
    {
     "name": "export_dwg",
@@ -884,6 +919,13 @@
     "summary": "List the files a part, assembly or drawing references, read from the file without opening it."
    },
    {
+    "name": "list_save_bodies",
+    "family": "file_management",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Read the active part's Save Bodies features: each body and the part file it is saved to."
+   },
+   {
     "name": "list_template_library",
     "family": "template_management",
     "level": "planned",
@@ -1017,6 +1059,13 @@
     "summary": "Repeat features of the active part around an axis, e.g. a ring of bosses or ribs."
    },
    {
+    "name": "pattern_linear",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Repeat features or bodies of the active part in a row or a grid: slots, holes, ribs."
+   },
+   {
     "name": "rebuild_model",
     "family": "modeling",
     "level": "stable",
@@ -1036,6 +1085,20 @@
     "level": "stable",
     "reason": "",
     "summary": "Let calls through again to operations the server paused after repeated failures."
+   },
+   {
+    "name": "resplit_bodies",
+    "family": "file_management",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Update the part files a multibody master's Save Bodies features already wrote, in place."
+   },
+   {
+    "name": "rotation_clearance",
+    "family": "analysis",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Turn a body or component about an axis through a point, over an angle range, and find the smallest gap and where it first hits."
    },
    {
     "name": "run_api_snippet",
@@ -1134,6 +1197,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Create or overwrite one text custom property on the active document, e.g. PartNo or DrawnBy."
+   },
+   {
+    "name": "set_density",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Give the active part a density, e.g. a resin's 1.15 g/cm³, so its mass means something without a library material."
    },
    {
     "name": "set_dimension",
@@ -1288,17 +1358,24 @@
     "level": "stable",
     "reason": "",
     "summary": "Check the active part or assembly against what you meant to build, one pass/fail check per expected value."
+   },
+   {
+    "name": "volume_by_plane",
+    "family": "analysis",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Measure the active part's volume, and mass, above and below a plane, without cutting it."
    }
   ]
  },
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 266,
+   "covered": 278,
    "total": 2838
   },
   "api": {
-   "covered": 323,
+   "covered": 342,
    "total": 5985
   },
   "interfaces": [
@@ -1315,8 +1392,10 @@
      "GetDocuments",
      "GetExecutablePath",
      "GetExportFileData",
+     "GetFirstDocument",
      "GetMassProperties",
      "GetMathUtility",
+     "GetModeler",
      "GetOpenDocumentByName",
      "GetUserPreferenceDoubleValue",
      "GetUserPreferenceIntegerValue",
@@ -1385,6 +1464,7 @@
      "GetSaveFlag",
      "GetTitle",
      "GetType",
+     "GetUpdateStamp",
      "GetUserPreferenceDoubleValue",
      "GetUserPreferenceIntegerValue",
      "GetUserPreferenceStringValue",
@@ -1397,6 +1477,7 @@
      "InsertProtrusionBlend2",
      "InsertProtrusionSwept4",
      "InsertSketch",
+     "InsertSketchText",
      "IsOpenedReadOnly",
      "Lock",
      "Parameter",
@@ -1432,8 +1513,11 @@
      "DeleteSelection2",
      "GetAnnotations",
      "GetCorrespondingEntity",
+     "GetLastFeatureAdded",
      "GetMassProperties",
      "GetPackAndGo",
+     "GetPersistReference3",
+     "GetUserPreferenceDouble",
      "GetUserPreferenceInteger",
      "GetUserPreferenceToggle",
      "GetWhatsWrong",
@@ -1444,6 +1528,7 @@
      "SaveAs3",
      "SavePackAndGo",
      "SelectByID2",
+     "SetUserPreferenceDouble",
      "SetUserPreferenceInteger",
      "SetUserPreferenceToggle"
     ],
@@ -1524,6 +1609,7 @@
      "FeatureExtrusion3",
      "FeatureExtrusionThin2",
      "FeatureFillet3",
+     "FeatureLinearPattern5",
      "FeatureRevolve2",
      "GetFeatureCount",
      "InsertCombineFeature",
@@ -1579,6 +1665,7 @@
      "FeatureByName",
      "FirstFeature",
      "GetBodies2",
+     "GetBody",
      "GetBox",
      "GetChildren",
      "GetConfigurationNames",
@@ -1603,6 +1690,7 @@
    {
     "name": "IFeature",
     "covered": [
+     "GetBody",
      "GetBox",
      "GetChildren",
      "GetDefinition",
@@ -1620,6 +1708,7 @@
      "GetSpecificFeature2",
      "GetTypeName",
      "GetTypeName2",
+     "GetUpdateStamp",
      "IsRolledBack",
      "IsSuppressed",
      "IsSuppressed2",

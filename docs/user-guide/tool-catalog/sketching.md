@@ -4,7 +4,7 @@ Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge
 
 > **Prerequisite:** An active part document with an active sketch edit session.
 
-**Total tools in this category: 23**
+**Total tools in this category: 24**
 
 ---
 
@@ -198,6 +198,35 @@ Draw whole outlines of lines and arcs in the open sketch in one call, in mm.
 ```json
 {
   "outlines": []
+}
+```
+
+---
+
+### `add_sketch_text`
+
+Write text in the open sketch, for a label to raise or cut into the part.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `text` | `str` | ✅ | `` | The text to write, e.g. 'MAX' or 'DIPPER v2' |
+| `x` | `float` | — | `0.0` | Where the text starts (its left end), sketch x in mm |
+| `y` | `float` | — | `0.0` | Where the text starts (its baseline), sketch y in mm |
+| `height` | `float?` | — | `None` | Character height in mm; omit for the document's text height |
+| `font` | `str?` | — | `None` | Font name, e.g. 'Arial'; omit for the document's. A plain sans-serif font extrudes most reliably |
+| `angle` | `float` | — | `0.0` | Degrees counter-clockwise from sketch x: 90 reads upwards. The text follows a construction line drawn at that angle |
+| `bold` | `bool` | — | `False` | Bold characters |
+| `italic` | `bool` | — | `False` | Italic characters |
+
+**Sample call:**
+
+```json
+{
+  "text": "example"
 }
 ```
 

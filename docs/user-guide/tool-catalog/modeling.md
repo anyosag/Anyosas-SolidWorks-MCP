@@ -4,7 +4,7 @@ Create and manipulate SolidWorks parts, assemblies, and drawings. These are the 
 
 > **Prerequisite:** An active SolidWorks session. Most feature tools require an open Part document.
 
-**Total tools in this category: 38**
+**Total tools in this category: 41**
 
 ---
 
@@ -114,6 +114,8 @@ Close the active document, saving it first only if asked.
 |-----------|------|----------|---------|-------------|
 | `save` | `bool` | — | `False` | Save the model before closing |
 | `overwrite_modified_references` | `bool` | — | `False` | Set true only after the user agreed: lets saving an assembly also overwrite the user's own modified part files that a `confirmation_required` error listed. |
+| `close_leftovers` | `bool` | — | `False` | Also close documents SolidWorks still has loaded with no window that no open document uses, such as parts left by an assembly that was closed. Ones with unsaved changes stay open and are listed |
+| `keep_active` | `bool` | — | `False` | With close_leftovers: leave the active document open |
 
 **Sample call:**
 
@@ -137,6 +139,8 @@ Extrude the sketch you just closed into a solid boss, added to the active part.
 | `depth` | `float` | ✅ | `` | Extrusion depth in millimeters |
 | `reverse` | `bool?` | — | `None` | Reverse direction alias |
 | `draft_angle` | `float` | — | `0.0` | Draft angle in degrees |
+| `draft_outward` | `bool` | — | `False` | _DRAFT_OUTWARD_BOSS |
+| `start_offset_mm` | `float` | — | `0.0` | _START_OFFSET |
 | `reverse_direction` | `bool` | — | `False` | Reverse extrusion direction |
 | `both_directions` | `bool` | — | `False` | Extrude symmetrically about the sketch plane (mid-plane): `depth` is the total thickness, half on each side |
 | `thin_feature` | `bool` | — | `False` | Make a thin wall of `thin_thickness` from the sketch's outline; the sketch may be an open chain (a bent plate's centreline) |
@@ -180,6 +184,30 @@ Revolve a closed sketch around an axis, adding a solid to the active part.
 {
   "angle": 360.0
 }
+```
+
+---
+
+### `create_cut_revolve`
+
+Cut material away by revolving a closed sketch around an axis: grooves, seats.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sketch_name` | `str?` | — | `None` | Sketch to use, by its name in the feature tree (e.g. "Sketch2"); omit to use the sketch `exit_sketch` closed last |
+| `axis_entity` | `str?` | — | `None` | A reference axis to revolve about, by its name in the feature tree (e.g. "Axis1" from `create_axis`); omit to use the centreline drawn in the sketch |
+| `angle` | `float` | — | `360.0` | Degrees to revolve the profile; 360 (the default) cuts all round |
+| `reverse_direction` | `bool` | — | `False` | Revolve the other way round the axis |
+| `both_directions` | `bool` | — | `False` | Revolve `angle` degrees each way from the sketch (180 at most) |
+
+**Sample call:**
+
+```json
+{}
 ```
 
 ---
@@ -264,10 +292,38 @@ Cut material from the active part with a closed sketch profile: holes, slots, wi
 |-----------|------|----------|---------|-------------|
 | `depth` | `float` | ✅ | `` | Cut depth in millimeters |
 | `draft_angle` | `float` | — | `0.0` | Draft angle in degrees |
+| `draft_outward` | `bool` | — | `False` | _DRAFT_OUTWARD_CUT |
+| `start_offset_mm` | `float` | — | `0.0` | _START_OFFSET |
 | `reverse_direction` | `bool?` | — | `None` | Usually leave unset: a one-way cut then tries both sides of the sketch and keeps the one that removes more material (on a tie, the side along the sketch normal, where create_extrusion grows). true cuts along the sketch normal, the side create_extrusion grows into by default; false cuts against it (from a sketch on a face, into the part). A set side that has no material is cut the other way instead, and the reply sets direction_flipped |
-| `end_condition` | `str` | — | `Blind` | 'Blind' (cut 'depth' mm), 'ThroughAll' (through the body, one way) or 'ThroughAllBoth' (through the body both ways, for a sketch inside the body) |
+| `end_condition` | `str` | — | `Blind` | 'Blind' (cut 'depth' mm), 'MidPlane' ('depth' mm in total, half each side of the sketch plane), 'ThroughAll' (through the body, one way) or 'ThroughAllBoth' (through the body both ways, for a sketch inside the body) |
 | `both_directions` | `bool` | — | `False` | With end_condition 'ThroughAll', cut through the body both ways (same as 'ThroughAllBoth') |
 | `sketch_name` | `str?` | — | `None` | Sketch to cut from, e.g. 'Sketch3'. If omitted, the sketch most recently created/exited in this session is used, but only if it still exists in the model — there is no other fallback. Pass this explicitly whenever more than one unconsumed sketch could exist, or after any operation that might have changed the active sketch. |
+
+**Sample call:**
+
+```json
+{
+  "depth": 25.0
+}
+```
+
+---
+
+### `emboss_text`
+
+Raise a text label off the active part, or engrave it in, in one call.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `plane` | `str?` | — | `None` | Plane to write on: 'Front', 'Top', 'Right' or a plane in the part (e.g. 'Plane1'). Give this or face_point |
+| `face_point` | `List[float]?` | — | `None` | Instead of plane: [x, y, z] mm on a flat face; a reference plane is made on the face and the text written on it |
+| `depth` | `float` | ✅ | `` | How far the text stands up (emboss) or goes in (engrave), mm |
+| `mode` | `Literal['emboss', 'engrave']` | — | `emboss` | 'emboss' raises the text off the part; 'engrave' cuts it in |
+| `reverse_direction` | `bool?` | — | `None` | Usually leave unset: an emboss that adds nothing (it grew into the part) is made again the other way, and an engrave cuts the side with more material. Set it to choose, as create_extrusion's and create_cut_extrude's reverse_direction |
 
 **Sample call:**
 
@@ -291,13 +347,15 @@ Round edges of the active part with a constant-radius fillet.
 |-----------|------|----------|---------|-------------|
 | `radius` | `float` | ✅ | `` | Fillet radius in millimeters |
 | `edge_names` | `List[str]` | ✅ | `` | Edges (or faces) to fillet. Accepts a topology name (e.g. 'Edge<1>'), a coordinate hint in metres ('x,y,z') to select the nearest edge, or 'face:x,y,z' to select a whole face — which fillets every edge bounding it in one call. Prefer 'face:' over a coordinate on an edge that sits exactly on a shared boundary between two faces (e.g. a hole rim flush with a flat face): the nearest-edge match there can silently resolve to a different, unrelated edge. Leave empty to use whatever is *currently selected* in the live SolidWorks UI (e.g. entities read back via get_selected_entities and left selected) without touching the selection — this is the most reliable option when the user has hand-picked specific edges, since it never round-trips through coordinates. Falls back to filleting all edges only if nothing at all is selected. |
+| `edge_ids` | `List[str]` | ✅ | `` | Edges by the ids select_edges gave with with_ids (they last across rebuilds); they are selected first. Not with edge_names |
 
 **Sample call:**
 
 ```json
 {
   "radius": 15.0,
-  "edge_names": "MCP_Demo_Part"
+  "edge_names": "MCP_Demo_Part",
+  "edge_ids": []
 }
 ```
 
@@ -317,13 +375,15 @@ Bevel edges of the active part with a chamfer: `distance` along one face at `ang
 | `angle` | `float` | — | `45.0` | Chamfer angle in degrees, between 0 and 90; 45 makes both legs equal to distance |
 | `flip` | `bool` | — | `False` | Measure distance along the edge's other face (swaps the long and short legs of an angled chamfer) |
 | `edge_names` | `List[str]` | ✅ | `` | Edges (or faces) to chamfer. Accepts a topology name (e.g. 'Edge<1>'), a coordinate hint in metres ('x,y,z') to select the nearest edge, or 'face:x,y,z' to select a whole face — which chamfers every edge bounding it in one call. Prefer 'face:' over a coordinate on an edge that sits exactly on a shared boundary between two faces (e.g. a hole rim flush with a flat face): the nearest-edge match there can silently resolve to a different, unrelated edge. Leave empty to use whatever is *currently selected* in the live SolidWorks UI (e.g. entities read back via get_selected_entities and left selected) without touching the selection — this is the most reliable option when the user has hand-picked specific edges, since it never round-trips through coordinates. Falls back to chamfering all edges only if nothing at all is selected. |
+| `edge_ids` | `List[str]` | ✅ | `` | Edges by the ids select_edges gave with with_ids (they last across rebuilds); they are selected first. Not with edge_names |
 
 **Sample call:**
 
 ```json
 {
   "distance": 10.0,
-  "edge_names": "MCP_Demo_Part"
+  "edge_names": "MCP_Demo_Part",
+  "edge_ids": []
 }
 ```
 
@@ -481,6 +541,9 @@ Place a component of the active assembly: put its origin at a point, turn it, an
 | `rotation_deg` | `List[float]?` | — | `None` | Turns [rx, ry, rz] in degrees about the assembly's X, then Y, then Z axis (right-hand rule), from unturned: [0, 90, 0] points the component's X axis along -Z. Leave it and matrix out to keep its turn |
 | `matrix` | `List[List[float]]?` | — | `None` | The component's X, Y and Z axes in assembly coordinates, three rows of three numbers, orthonormal; instead of rotation_deg |
 | `fixed` | `bool?` | — | `None` | true leaves it fixed, false floating; leave it out to keep its state (a fixed component is floated for the move and fixed again) |
+| `turn_deg` | `float` | — | `0.0` | Then turn it this many degrees (right-hand rule about turn_axis) from where it is, about an axis through turn_pivot_mm: a lid opened 30 degrees about its hinge. Applied after origin_mm and rotation_deg or matrix |
+| `turn_axis` | `str | List[float]?` | — | `None` | The direction of the turn's axis in assembly coordinates: 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]; needed with turn_deg |
+| `turn_pivot_mm` | `List[float]?` | — | `None` | A point on the turn's axis, [x, y, z] mm in assembly coordinates (a point on the hinge pin's axis); the origin when omitted |
 
 **Sample call:**
 
@@ -633,16 +696,21 @@ Select the edges of the active part that match rules, ready for `add_fillet` or 
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `feature` | `str?` | — | `None` | Take the edges of the faces this feature made, e.g. 'Cut-Extrude2' (the cut's walls and rims). Give at most one of feature, face_point, side and plane; none takes every edge of the part |
+| `feature` | `str?` | — | `None` | Take the edges of the faces this feature made, e.g. 'Cut-Extrude2' (the cut's walls and rims). Give at most one of feature, face_point, side, plane, between_faces and edge_ids; none takes every edge of the part |
 | `face_point` | `List[float]?` | — | `None` | Take the edges of the face at this point, [x, y, z] mm |
 | `side` | `str?` | — | `None` | Take the edges of the furthest flat face facing this way: top, bottom, front, back, right, left or +X..-Z |
 | `plane` | `str?` | — | `None` | Take the edges of the face(s) lying on this plane, e.g. 'Top Plane' |
+| `between_faces` | `List[List[float]]?` | — | `None` | Take the edges two faces share: a point on each, [[x, y, z], [x, y, z]] mm, e.g. where a wall meets a floor |
+| `edge_ids` | `List[str]?` | — | `None` | Take the edges with these ids, as an earlier call with with_ids gave them. They last across rebuilds while the feature that made the edge stays |
+| `body` | `str?` | — | `None` | Keep only this solid body's edges, by its name now (list_bodies: a feature renames the bodies it changes). With feature: that feature's edges on this body |
 | `edge_type` | `str` | — | `all` | Keep 'all' (the default), 'linear' or 'circular' edges |
 | `parallel_to` | `str | List[float]?` | — | `None` | Keep only straight edges along this direction: 'x', 'y', 'z' or [x, y, z] |
 | `parallel_tolerance_deg` | `float` | — | `1.0` | How many degrees off parallel_to an edge may be (default 1) |
 | `inside_box` | `List[List[float]]?` | — | `None` | Keep only edges wholly inside this box: [[xmin, ymin, zmin], [xmax, ymax, zmax]] in model mm |
 | `min_length` | `float?` | — | `None` | Keep only edges at least this long, mm |
 | `max_length` | `float?` | — | `None` | Keep only edges at most this long, mm |
+| `convexity` | `Literal['convex', 'concave', 'tangent']?` | — | `None` | Keep only 'convex' edges (outer edges, hole rims), 'concave' ones (inside corners, a pocket's floor edges) or 'tangent' ones (where a fillet meets a face). Read after every other filter, about ten calls an edge; one whose faces don't read is left out |
+| `with_ids` | `bool` | — | `False` | Also return edge_ids, one per selected edge (up to 100): ids that name the same edges after rebuilds, for edge_ids here or in add_fillet and add_chamfer |
 | `any_of` | `List[Dict[str, Any]]?` | — | `None` | Several rules in one call: select the edges any of them matches. Each rule takes the keys above (a source and filters) and is laid over the ones given outside any_of, e.g. {'feature': 'Boss-Extrude1', 'any_of': [{'inside_box': [[0,0,0],[5,5,5]]}, {'inside_box': [[20,0,0],[25,5,5]]}]}. Each source's edges are read once, so this is much faster than one call per rule |
 | `append` | `bool` | — | `False` | Add to the current selection instead of replacing it |
 
@@ -682,7 +750,7 @@ Show or hide planes, axes, points, origins and sketches in the active document.
 
 ### `edit_feature`
 
-Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges.
+Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges, an offset plane's distance.
 
 **Prerequisite:** SolidWorks running
 
@@ -698,6 +766,8 @@ Change an existing feature in place: an extrude's or cut's depth, end condition 
 | `radius` | `float?` | — | `None` | Fillet: the new radius, mm |
 | `edges` | `Literal['selection']?` | — | `None` | Fillet or chamfer: 'selection' replaces all its edges with the edges selected now (select_edges or select_face_edges first) |
 | `edge_rules` | `Dict[str, Any]?` | — | `None` | Fillet or chamfer: replace all its edges with those this select_edges query matches (it selects nothing). It takes select_edges' keys except append, any_of included, e.g. {'side': 'top', 'edge_type': 'linear'}. Not with edges |
+| `offset` | `float?` | — | `None` | Offset plane (create_reference_plane's offset): the new distance from its reference, mm. Moves the plane and what is built on it |
+| `flip` | `bool?` | — | `None` | Offset plane: true puts it on the other side of its reference, false on the first side (as create_reference_plane's flip) |
 
 **Sample call:**
 
@@ -919,6 +989,40 @@ Repeat features of the active part around an axis, e.g. a ring of bosses or ribs
   "features": [],
   "axis": "example",
   "count": 10.0
+}
+```
+
+---
+
+### `pattern_linear`
+
+Repeat features or bodies of the active part in a row or a grid: slots, holes, ribs.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `features` | `List[str]` | ✅ | `` | Names of the features to repeat (e.g. 'Cut-Extrude3'), or with `bodies` the solid bodies `list_bodies` names. At least one |
+| `direction` | `str` | ✅ | `` | 'Direction 1: ' + _DIRECTION |
+| `count` | `int` | ✅ | `` | Instances along direction, the original included (2 or more) |
+| `spacing` | `float` | ✅ | `` | Millimetres between neighbouring instances along direction |
+| `direction2` | `str?` | — | `None` | A second direction, for a grid, given the same way; omit for one row |
+| `count2` | `int?` | — | `None` | Instances along direction2, the first row included (2 or more) |
+| `spacing2` | `float?` | — | `None` | Millimetres between neighbouring rows along direction2 |
+| `reverse_direction` | `bool` | — | `False` | Repeat the other way along direction |
+| `reverse_direction2` | `bool` | — | `False` | Repeat the other way along direction2 |
+| `bodies` | `bool` | — | `False` | Repeat whole solid bodies instead of features |
+
+**Sample call:**
+
+```json
+{
+  "features": [],
+  "direction": "example",
+  "count": 10.0,
+  "spacing": 10.0
 }
 ```
 

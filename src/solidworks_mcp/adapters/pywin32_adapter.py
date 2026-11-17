@@ -353,6 +353,7 @@ _SELECTION_CLEARING_OPERATIONS = frozenset(
         "delete_feature",
         "delete_keep_body",
         "edit_feature",
+        "edit_save_bodies",
         "insert_component",
         "insert_part",
         "make_mating_negative",
@@ -360,6 +361,8 @@ _SELECTION_CLEARING_OPERATIONS = frozenset(
         "move_copy_body",
         "pattern_circular",
         "pattern_linear",
+        "resplit_bodies",
+        "save_body_as_part",
         "split_body",
         "suppress_feature",
     }

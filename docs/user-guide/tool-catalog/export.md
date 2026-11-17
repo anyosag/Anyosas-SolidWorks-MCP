@@ -4,7 +4,7 @@ Convert SolidWorks models to industry-standard interchange and manufacturing for
 
 > **Prerequisite:** An active document or a valid file path to an existing model.
 
-**Total tools in this category: 7**
+**Total tools in this category: 8**
 
 ---
 
@@ -64,13 +64,13 @@ Export the active document to STL, like File > Save As with the STL type.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `file_path` | `str` | ✅ | `` | Full path for the exported file |
-| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 | `resolution` | `Literal['coarse', 'fine', 'custom']?` | — | `None` | Mesh resolution for this file: coarse, fine, or custom with deviation_mm and angle_deg. Left out: the user's STL setting |
 | `deviation_mm` | `float?` | — | `None` | Largest distance between the mesh and the true surface, in mm. Smaller is finer; it makes the resolution custom |
 | `angle_deg` | `float?` | — | `None` | Largest angle between neighbouring facets, in degrees. Smaller is finer on small curved details; it makes the resolution custom |
 | `units` | `Literal['mm', 'cm', 'm', 'in', 'ft']?` | — | `None` | Units written in the file. Left out: the user's STL setting |
 | `binary` | `bool?` | — | `None` | Binary STL (true) or ASCII (false). Left out: the user's setting |
+| `file_path` | `str` | ✅ | `` | Full path for the exported file |
+| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 
 **Sample call:**
 
@@ -187,6 +187,34 @@ Export every matching SolidWorks file in a folder to one format.
 {
   "source_directory": "C:\\Temp\\mcp_demo",
   "output_directory": "C:\\Temp\\mcp_demo\\exports"
+}
+```
+
+---
+
+### `export_assembly_parts_stl`
+
+Export every part of the active assembly to its own STL file, one per part.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `resolution` | `Literal['coarse', 'fine', 'custom']?` | — | `None` | Mesh resolution for this file: coarse, fine, or custom with deviation_mm and angle_deg. Left out: the user's STL setting |
+| `deviation_mm` | `float?` | — | `None` | Largest distance between the mesh and the true surface, in mm. Smaller is finer; it makes the resolution custom |
+| `angle_deg` | `float?` | — | `None` | Largest angle between neighbouring facets, in degrees. Smaller is finer on small curved details; it makes the resolution custom |
+| `units` | `Literal['mm', 'cm', 'm', 'in', 'ft']?` | — | `None` | Units written in the file. Left out: the user's STL setting |
+| `binary` | `bool?` | — | `None` | Binary STL (true) or ASCII (false). Left out: the user's setting |
+| `folder` | `str` | ✅ | `` | Folder for the STL files; created if missing |
+| `name_pattern` | `str` | — | `{name}.stl` | Each file's name: {name} (the part file's name), {config} (the configuration the assembly uses), {assembly} and {index}; must end in .stl |
+
+**Sample call:**
+
+```json
+{
+  "folder": "example"
 }
 ```
 

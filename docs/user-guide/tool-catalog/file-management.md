@@ -4,7 +4,7 @@ Open, save, and manage SolidWorks documents. Load parts and assemblies, save-as 
 
 > **Prerequisite:** SolidWorks running. File-write operations need writable output paths.
 
-**Total tools in this category: 21**
+**Total tools in this category: 24**
 
 ---
 
@@ -413,6 +413,12 @@ List every document open in SolidWorks and say which one is active.
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `check_hidden` | `bool` | — | `False` | Also check each document loaded without a window of its own: which open documents use it, and whether it is left over from a closed assembly (with its ~$ lock file) |
+
 **Sample call:**
 
 ```json
@@ -455,6 +461,7 @@ Save one solid body of the active multibody part as a new part file (Insert > Fe
 |-----------|------|----------|---------|-------------|
 | `body_name` | `str` | ✅ | `` | Name of a solid body in the active part, e.g. 'Boss-Extrude1' |
 | `file_path` | `str` | ✅ | `` | Absolute path for the new .sldprt (parent directory must exist) |
+| `assembly_path` | `str?` | — | `None` | Also make an assembly of the saved part at this .sldasm path. Left out: no assembly (an untitled one SolidWorks makes anyway is closed) |
 
 **Sample call:**
 
@@ -463,6 +470,72 @@ Save one solid body of the active multibody part as a new part file (Insert > Fe
   "body_name": "MCP_Demo_Part",
   "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
+```
+
+---
+
+### `list_save_bodies`
+
+Read the active part's Save Bodies features: each body and the part file it is saved to.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `feature_name` | `str?` | — | `None` | A Save Bodies feature, e.g. 'Save Bodies1'. Left out: all of them |
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
+### `edit_save_bodies`
+
+Change a Save Bodies feature: the file a body is saved to, its assembly, or its options.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `feature_name` | `str` | ✅ | `` | The Save Bodies feature, e.g. 'Save Bodies1' |
+| `files` | `Dict[str, str]?` | — | `None` | Body name to the new .sldprt path its part is saved to; the folder must exist and the file must not |
+| `assembly_path` | `str?` | — | `None` | The .sldasm the feature makes of its parts; '' for none |
+| `consume_body` | `bool?` | — | `None` | Remove the saved bodies from the master part |
+| `copy_custom_properties` | `bool?` | — | `None` | Copy the master's custom properties to the parts |
+
+**Sample call:**
+
+```json
+{
+  "feature_name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `resplit_bodies`
+
+Update the part files a multibody master's Save Bodies features already wrote, in place.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `feature_name` | `str?` | — | `None` | A Save Bodies feature, e.g. 'Save Bodies1'. Left out: all of them |
+
+**Sample call:**
+
+```json
+{}
 ```
 
 ---

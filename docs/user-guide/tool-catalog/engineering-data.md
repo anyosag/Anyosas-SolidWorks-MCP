@@ -4,7 +4,7 @@ Read and edit the data drawings, BOMs and analyses are built from: every model d
 
 > **Prerequisite:** An active Part (or Assembly, for dimensions and measuring) document.
 
-**Total tools in this category: 8**
+**Total tools in this category: 9**
 
 ---
 
@@ -89,6 +89,29 @@ Assign a library material to the active part, e.g. "AISI 1020" or "6061-T6 (SS)"
 ```json
 {
   "material_name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `set_density`
+
+Give the active part a density, e.g. a resin's 1.15 g/cm³, so its mass means something without a library material.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `density_g_cm3` | `float` | ✅ | `` | The density, g/cm³: 1.15 for a typical resin, 1.24 for PLA |
+| `remove_material` | `bool` | — | `False` | Take the part's material off first: SolidWorks uses an assigned material's density instead of this one, so the call is refused while the part has one |
+
+**Sample call:**
+
+```json
+{
+  "density_g_cm3": 10.0
 }
 ```
 

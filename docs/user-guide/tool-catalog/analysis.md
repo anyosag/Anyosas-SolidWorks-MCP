@@ -4,7 +4,7 @@ Extract engineering properties from models: mass, volume, centre of mass, moment
 
 > **Prerequisite:** An active model (part or assembly) with solid geometry.
 
-**Total tools in this category: 8**
+**Total tools in this category: 10**
 
 ---
 
@@ -13,6 +13,12 @@ Extract engineering properties from models: mass, volume, centre of mass, moment
 Measure the active part or assembly's mass properties: volume, surface area, mass, centre of mass and moments of inertia.
 
 **Prerequisite:** Active model with solid geometry
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `density_g_cm3` | `float?` | — | `None` | Also give `mass_at_density`: the measured volume times this density, g/cm³ (a resin at 1.15), for a part with no material. SolidWorks' own `mass` is kept beside it; `set_density` makes SolidWorks use it |
 
 **Sample call:**
 
@@ -27,6 +33,12 @@ Measure the active part or assembly's mass properties: volume, surface area, mas
 Measure the active part or assembly's mass properties: volume, surface area, mass, centre of mass and moments of inertia.
 
 **Prerequisite:** Active model with solid geometry
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `density_g_cm3` | `float?` | — | `None` | Also give `mass_at_density`: the measured volume times this density, g/cm³ (a resin at 1.15), for a part with no material. SolidWorks' own `mass` is kept beside it; `set_density` makes SolidWorks use it |
 
 **Sample call:**
 
@@ -107,7 +119,7 @@ Measure the active part's thinnest walls before 3D printing it.
 
 ### `check_printability`
 
-Check the active part for 3D printing (resin or FDM) in one orientation: overhangs, islands, bridges and suction cups.
+Check the active part for 3D printing (resin or FDM): overhangs, islands, bridges, suction cups; optionally the best orientation and thin features.
 
 **Prerequisite:** SolidWorks running
 
@@ -115,16 +127,73 @@ Check the active part for 3D printing (resin or FDM) in one orientation: overhan
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `build_direction` | `str | List[float]` | ✅ | `` | The direction the part grows away from the build plate: 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]. A part printed upright on its base, with Y up in the model, is 'y' |
+| `build_direction` | `str | List[float]?` | — | `None` | The direction the part grows away from the build plate: 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]. A part printed upright on its base, with Y up in the model, is 'y'. Leave it out with `orientations` to check in the best one found |
+| `orientations` | `int?` | — | `None` | Try this many build directions (the six axes, the biggest flat faces on the plate, then directions in between; 26 is a good start) and report the one needing the least support as `orientations.best`, with `rotate_to_z`, the turn that makes it +Z for a slicer |
+| `min_feature_mm` | `float?` | — | `None` | Also list the regions thinner than this, mm (the printer's smallest feature, e.g. 0.4 on resin), from rays cast inward on the mesh: `thin_features` |
 | `support_angle_deg` | `float` | — | `45.0` | Surfaces facing the plate at less than this many degrees from horizontal need supports (default 45) |
 | `min_bridge_mm` | `float` | — | `5.0` | Only flat overhangs held at both ends longer than this are listed, mm |
 
 **Sample call:**
 
 ```json
+{}
+```
+
+---
+
+### `rotation_clearance`
+
+Turn a body or component about an axis through a point, over an angle range, and find the smallest gap and where it first hits.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `moving` | `str` | ✅ | `` | What turns: in a part, a body as `list_bodies` names it; in an assembly, a component as `list_components` names it (e.g. 'Lid-1') |
+| `other` | `str` | ✅ | `` | What it must clear: another body or component (e.g. 'Base-1') |
+| `axis` | `str | List[float]` | ✅ | `` | The direction of the turn's axis in the part's or assembly's coordinates: 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]. Positive angles turn by the right-hand rule about it |
+| `pivot_mm` | `List[float]` | ✅ | `` | A point on the axis, [x, y, z] mm: a point on the hinge pin's axis; the origin by default |
+| `range_deg` | `List[float]` | ✅ | `` | [from, to] degrees, from at most 0 to at least 0: 0 is where it is now. A lid that only opens: [0, 180]. Default [-180, 180] |
+| `step_deg` | `float` | — | `5.0` | The coarse step, degrees (default 5). Contacts and the closest pass are then narrowed to tolerance_deg. Smaller finds thinner walls: the reply's travel_per_step_mm is how far a point moves per step |
+| `tolerance_deg` | `float` | — | `0.1` | How finely contact angles and the closest pass are found, degrees |
+
+**Sample call:**
+
+```json
 {
-  "build_direction": "example"
+  "moving": "example",
+  "other": "example",
+  "axis": "example",
+  "pivot_mm": [],
+  "range_deg": []
 }
+```
+
+---
+
+### `volume_by_plane`
+
+Measure the active part's volume, and mass, above and below a plane, without cutting it.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `plane` | `str?` | — | `None` | A reference plane's name, e.g. 'Top Plane' or 'Fill line' (Top, Front and Right work too). `above` is the side its normal points to: +Y for Top Plane |
+| `point_mm` | `List[float]?` | — | `None` | Instead of plane: a point on it, [x, y, z] mm |
+| `normal` | `str | List[float]?` | — | `None` | With point_mm: the plane's normal, 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]; `above` is the side it points to |
+| `bodies` | `List[str]?` | — | `None` | Only these bodies, as `list_bodies` names them; all by default |
+| `enclosed` | `bool` | — | `False` | Also measure the space the bodies enclose on each side, open only at the plane: what a cup holds filled to that line (`enclosed_mm3`, `enclosed_ml`). Slower |
+| `density_g_cm3` | `float?` | — | `None` | The density for the masses, g/cm³ (a resin at 1.15); the part's own (its material or `set_density`) when omitted |
+
+**Sample call:**
+
+```json
+{}
 ```
 
 ---
