@@ -357,6 +357,7 @@ _SELECTION_CLEARING_OPERATIONS = frozenset(
         "mirror_feature",
         "move_copy_body",
         "pattern_circular",
+        "pattern_linear",
         "split_body",
         "suppress_feature",
     }

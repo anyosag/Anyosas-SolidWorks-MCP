@@ -217,10 +217,17 @@ class ExtrusionParameters(BaseModel):
         thin_side (str): Which side of the sketch a thin wall grows on:
             ``one_side``, ``other_side`` or ``mid_plane``.
         up_to_surface (str | None): The up to surface value.
+        start_offset (float): Start the feature this many mm from the sketch
+            plane instead of on it (``swStartOffset``): positive along the
+            sketch normal, negative against it. 0 starts on the plane.
+        draft_outward (bool): With ``draft_angle``, draft outward (the far
+            end wider) instead of SolidWorks' default inward draft.
     """
 
     depth: float
     draft_angle: float = 0.0
+    draft_outward: bool = False
+    start_offset: float = 0.0
     reverse_direction: bool = False
     both_directions: bool = False
     thin_feature: bool = False
@@ -250,6 +257,7 @@ class RevolveParameters(BaseModel):
             ``None`` for the sketch closed last.
         axis_entity (str | None): A reference axis to revolve about, by its
             tree name; ``None`` for the sketch's own centreline.
+        cut (bool): Remove material (a cut-revolve) instead of adding it.
     """
 
     angle: float
@@ -260,6 +268,7 @@ class RevolveParameters(BaseModel):
     merge_result: bool = True
     sketch_name: str | None = None
     axis_entity: str | None = None
+    cut: bool = False
 
 
 class SweepParameters(BaseModel):
@@ -814,6 +823,39 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="add_sketch_outlines is not implemented by this adapter",
+        )
+
+    async def add_sketch_text(
+        self,
+        text: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        height: float | None = None,
+        font: str | None = None,
+        angle: float = 0.0,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write text in the open sketch, for an extrude or cut to raise or sink.
+
+        Args:
+            text (str): The text.
+            x (float): Where the text starts, sketch x in mm. Defaults to 0.0.
+            y (float): Where the text starts, sketch y in mm. Defaults to 0.0.
+            height (float | None): Character height in mm; None keeps the
+                document's.
+            font (str | None): Font name; None keeps the document's.
+            angle (float): Degrees counter-clockwise from sketch x. Defaults to 0.0.
+            bold (bool): Bold characters. Defaults to False.
+            italic (bool): Italic characters. Defaults to False.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The text's ``id`` and what SolidWorks
+            reads back (``text``, ``position_mm``, ``font``, ``height_mm``).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_sketch_text is not implemented by this adapter",
         )
 
     async def set_sketch_construction(
@@ -1580,6 +1622,44 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="pattern_circular is not implemented by this adapter",
+        )
+
+    async def pattern_linear(
+        self,
+        features: list[str],
+        direction: str,
+        count: int,
+        spacing: float,
+        direction2: str | None = None,
+        count2: int = 1,
+        spacing2: float = 0.0,
+        reverse_direction: bool = False,
+        reverse_direction2: bool = False,
+        bodies: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Repeat features or bodies along one or two directions.
+
+        Args:
+            features (list[str]): Features (or, with ``bodies``, solid bodies)
+                to pattern.
+            direction (str): ``"x"``/``"-y"``..., an axis or plane name (its
+                normal), or ``"x,y,z"`` mm on a straight edge.
+            count (int): Instances along ``direction``, the original included.
+            spacing (float): Millimetres between neighbouring instances.
+            direction2 (str | None): A second direction, given the same way.
+            count2 (int): Instances along ``direction2``. Defaults to 1.
+            spacing2 (float): Millimetres between them. Defaults to 0.0.
+            reverse_direction (bool): Go the other way along ``direction``.
+            reverse_direction2 (bool): Go the other way along ``direction2``.
+            bodies (bool): Pattern solid bodies instead of features.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The pattern's ``name`` and inputs, or
+            error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="pattern_linear is not implemented by this adapter",
         )
 
     # Assembly Operations

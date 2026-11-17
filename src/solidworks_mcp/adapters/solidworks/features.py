@@ -407,6 +407,44 @@ class SolidWorksFeaturesMixin:
 
         return _with_volume_change(result, volume_before, volume_after)
 
+    async def pattern_linear(
+        self,
+        features: list[str],
+        direction: str,
+        count: int,
+        spacing: float,
+        direction2: str | None = None,
+        count2: int = 1,
+        spacing2: float = 0.0,
+        reverse_direction: bool = False,
+        reverse_direction2: bool = False,
+        bodies: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Repeat features or bodies along one or two directions (``patterns``).
+
+        Unlike :meth:`pattern_circular` it reads no volume: the tool measures
+        the part before and after with the summary read, which keeps the
+        selection and doesn't rebuild.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: See :func:`patterns.pattern_linear`.
+        """
+        from .patterns import pattern_linear
+
+        return pattern_linear(
+            self,
+            features,
+            direction,
+            count,
+            spacing,
+            direction2,
+            count2,
+            spacing2,
+            reverse_direction,
+            reverse_direction2,
+            bodies,
+        )
+
     async def mirror_feature(
         self,
         features: list[str],
@@ -529,6 +567,32 @@ _EXTRUSION_END_CONDITIONS = {
 #: ``swThinWallType_e`` for each ``thin_side``.
 _THIN_SIDES: dict[str, int] = {"one_side": 0, "other_side": 1, "mid_plane": 2}
 
+#: ``swStartConditions_e.swStartOffset``: the feature starts on a plane offset
+#: from the sketch plane by ``StartOffset`` (``swStartSketchPlane`` is 0).
+_START_OFFSET = 3
+
+
+def _start_condition(adapter: Any, offset_mm: float) -> tuple[int, float, bool]:
+    """``T0``, ``StartOffset`` and ``FlipStartOffset`` for an extrude or a cut.
+
+    ``FeatureExtrusion3``, ``FeatureExtrusionThin2`` and ``FeatureCut4`` take
+    the start the same way: ``T0`` (``swStartConditions_e``), a positive
+    offset in metres, and a flag for its side. Before ``start_offset`` the
+    Dipper build made about 32 reference planes only to start features at a
+    depth.
+
+    Args:
+        adapter: Adapter whose ``constants`` may hold ``swStartSketchPlane``.
+        offset_mm: Signed offset in mm: positive along the sketch normal,
+            negative against it (``FlipStartOffset``); 0 starts on the plane.
+
+    Returns:
+        tuple[int, float, bool]: ``(T0, StartOffset in metres, FlipStartOffset)``.
+    """
+    if not offset_mm:
+        return adapter.constants.get("swStartSketchPlane", 0), 0.0, False
+    return _START_OFFSET, abs(float(offset_mm)) / 1000.0, float(offset_mm) < 0.0
+
 
 def _extrusion_end_condition(
     adapter: Any, end_condition: str, both_directions: bool
@@ -598,6 +662,13 @@ def _create_extrusion_impl(
               :func:`_extrusion_end_condition`.
             - ``auto_fillet_corners`` (bool): Round sharp thin-wall corners.
             - ``fillet_corners_radius`` (float): Corner fillet radius in mm.
+            - ``start_offset`` (float): Start this many mm off the sketch
+              plane (:func:`_start_condition`).
+            - ``draft_outward`` (bool): ``Ddir1``; False is SolidWorks'
+              default inward draft (pitfall #53: a 3 deg draft on a 40 x 20 x
+              10 mm block came out 7689 mm³ with it False, and
+              ``GetDraftOutward`` read False). The API help says the reverse
+              (True for inward); the measurement is what counts here.
 
     Returns:
         AdapterResult[SolidWorksFeature]: On success, ``data`` is a
@@ -645,6 +716,8 @@ def _create_extrusion_impl(
             auto_fillet_corners=bool(getattr(params, "auto_fillet_corners", False)),
             fillet_corners_radius=float(getattr(params, "fillet_corners_radius", 0.0)),
             thin_side=str(getattr(params, "thin_side", "one_side") or "one_side"),
+            start_offset=float(getattr(params, "start_offset", 0.0) or 0.0),
+            draft_outward=bool(getattr(params, "draft_outward", False)),
         )
         if normalized.thin_side not in _THIN_SIDES:
             raise ValueError(
@@ -660,7 +733,8 @@ def _create_extrusion_impl(
             else None
         )
         feature_manager = adapter.currentModel.FeatureManager
-        t0 = adapter.constants.get("swStartSketchPlane", 0)
+        t0, start_m, flip_start = _start_condition(adapter, normalized.start_offset)
+        draft_dir = normalized.draft_outward  # Ddir1: True drafts outward
         end_name, t1 = _extrusion_end_condition(
             adapter,
             str(getattr(params, "end_condition", "Blind") or "Blind"),
@@ -678,9 +752,9 @@ def _create_extrusion_impl(
                     normalized.depth / 1000.0,
                     0.0,
                     bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                    False,
-                    False,
-                    False,
+                    False,  # Dchk2
+                    draft_dir,  # Ddir1
+                    False,  # Ddir2
                     math.radians(normalized.draft_angle),
                     0.0,
                     False,
@@ -698,8 +772,8 @@ def _create_extrusion_impl(
                     False,
                     True,
                     t0,
-                    0.0,
-                    False,
+                    start_m,  # StartOffset
+                    flip_start,  # FlipStartOffset
                 )
             except Exception:
                 feature = feature_manager.FeatureExtruThin2(
@@ -732,9 +806,9 @@ def _create_extrusion_impl(
                     normalized.depth / 1000.0,
                     0.0,
                     bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                    False,
-                    False,
-                    False,
+                    False,  # Dchk2
+                    draft_dir,  # Ddir1
+                    False,  # Ddir2
                     math.radians(normalized.draft_angle),
                     0.0,
                     False,
@@ -745,8 +819,8 @@ def _create_extrusion_impl(
                     False,
                     True,
                     t0,
-                    0.0,
-                    False,
+                    start_m,  # StartOffset
+                    flip_start,  # FlipStartOffset
                 )
             except Exception:
                 feature = feature_manager.FeatureExtrusion2(
@@ -758,9 +832,9 @@ def _create_extrusion_impl(
                     normalized.depth / 1000.0,
                     0.0,
                     bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                    False,
-                    False,
-                    False,
+                    False,  # Dchk2
+                    draft_dir,  # Ddir1
+                    False,  # Ddir2
                     math.radians(normalized.draft_angle),
                     0.0,
                     False,
@@ -771,8 +845,8 @@ def _create_extrusion_impl(
                     False,
                     True,
                     t0,
-                    0.0,
-                    False,
+                    start_m,  # StartOffset
+                    flip_start,  # FlipStartOffset
                 )
 
         if not feature:
@@ -792,6 +866,8 @@ def _create_extrusion_impl(
                 "both_directions": normalized.both_directions,
                 "end_condition": end_name,
                 "sketch_name": sketch_used,
+                "start_offset": normalized.start_offset,
+                "draft_outward": normalized.draft_outward,
             },
             properties={"created": datetime.now().isoformat()},
         )
@@ -861,11 +937,16 @@ def _create_revolve_impl(
             - ``thin_feature`` (bool): Produce a thin-wall body.
             - ``thin_thickness`` (float | None): Wall thickness in mm.
             - ``merge_result`` (bool): Merge with existing bodies.
+            - ``cut`` (bool): ``IsCut``: remove the revolved profile from the
+              part (a groove, a conical seat) instead of adding it. The
+              Dipper build made each conical groove from two drafted
+              cut-extrudes for want of this. A cut is never thin.
 
     Returns:
         AdapterResult[SolidWorksFeature]: On success, ``data`` is a
-        ``SolidWorksFeature`` whose ``type`` is ``"Revolve"``.  On failure,
-        ``status`` is ``ERROR``.
+        ``SolidWorksFeature`` whose ``type`` is ``"Revolve"`` (or
+        ``"Cut-Revolve"``).  On failure, ``status`` is ``ERROR``; a cut that
+        SolidWorks built nothing from says "built no feature".
 
     Raises:
         Exception: Propagated through ``_handle_com_operation`` when
@@ -895,6 +976,7 @@ def _create_revolve_impl(
             Exception: If ``FeatureRevolve2`` returns ``None``.
         """
         sketch_used = _select_revolve_inputs(adapter, params)
+        is_cut = bool(getattr(params, "cut", False))
 
         # Detect SW major version for FeatureRevolve2 API choice
         revolve_sw_major = 0
@@ -923,12 +1005,12 @@ def _create_revolve_impl(
             # belongs, so SolidWorks rejected every revolve with
             # "Parameter not optional".
             feature_manager = adapter.currentModel.FeatureManager
-            is_thin = bool(params.thin_feature and params.thin_thickness)
+            is_thin = bool(params.thin_feature and params.thin_thickness) and not is_cut
             feature = feature_manager.FeatureRevolve2(
                 not params.both_directions,  # SingleDir
                 True,  # IsSolid
                 is_thin,  # IsThin
-                False,  # IsCut
+                is_cut,  # IsCut
                 params.reverse_direction,  # ReverseDir
                 False,  # BothDirectionUpToSameEntity
                 0,  # Dir1Type (swEndCondBlind)
@@ -953,8 +1035,8 @@ def _create_revolve_impl(
             feature = feature_manager.FeatureRevolve2(
                 not params.both_directions,
                 True,
-                params.thin_feature,
-                False,
+                params.thin_feature and not is_cut,  # IsThin
+                is_cut,  # IsCut
                 params.reverse_direction,
                 False,
                 adapter.constants["swEndCondBlind"],
@@ -973,22 +1055,35 @@ def _create_revolve_impl(
                 True,
             )
 
+        if not feature and is_cut and revolve_sw_major != 33:
+            # Named as a cut that built nothing, which the classifier reads as
+            # feature_not_built. (SW 2025 may return nothing for a revolve it
+            # built, so there the tool's volume check has to tell.)
+            sketch = sketch_used or getattr(adapter, "_last_sketch_name", None)
+            raise Exception(
+                f"SolidWorks built no feature from sketch '{sketch}': the "
+                "cut-revolve removed no material. Check that the profile is "
+                "closed, lies on one side of the axis, and overlaps the solid "
+                "body."
+            )
         # IModelDoc2.FeatureRevolve2 returns None (void) on SW 2025
         if not feature and revolve_sw_major != 33:
             raise Exception("Failed to create revolve feature")
 
+        kind = "Cut-Revolve" if is_cut else "Revolve"
         return SolidWorksFeature(
-            name=feature.Name if feature else "Revolve-Auto",
-            type="Revolve",
+            name=feature.Name if feature else f"{kind}-Auto",
+            type=kind,
             id=adapter._get_feature_id(feature) if feature else "revolve_auto",
             parameters={
                 "angle": params.angle,
                 "reverse_direction": params.reverse_direction,
                 "both_directions": params.both_directions,
-                "thin_feature": params.thin_feature,
+                "thin_feature": params.thin_feature and not is_cut,
                 "thin_thickness": params.thin_thickness,
                 "sketch_name": sketch_used,
                 "axis_entity": getattr(params, "axis_entity", None),
+                "cut": is_cut,
             },
             properties={"created": datetime.now().isoformat()},
         )
@@ -1568,6 +1663,22 @@ def _cut_end_condition(params: Any) -> tuple[bool, bool]:
     return through_one, through_both
 
 
+def _cut_mid_plane(params: Any) -> bool:
+    """Whether a cut is blind mid-plane: ``depth`` in total, half each side.
+
+    Before this, ``"MidPlane"`` fell through to a one-way blind cut, and the
+    only cut both ways was Through All both ways (``ThroughAllBoth``).
+
+    Args:
+        params: The cut's parameters (``end_condition``).
+
+    Returns:
+        bool: True for ``"MidPlane"`` (any case, with or without ``_``/space).
+    """
+    end_condition = str(getattr(params, "end_condition", None) or "")
+    return "".join(c for c in end_condition.lower() if c not in " _-") == "midplane"
+
+
 #: ``reverse_direction`` (``FeatureCut4``'s ``Dir``) that cuts along the sketch
 #: normal, the side ``create_extrusion`` grows into.
 _ALONG_NORMAL = True
@@ -1657,9 +1768,13 @@ def _create_cut_extrude_impl(
             - ``end_condition`` (str): ``"Blind"`` (default),
               ``"ThroughAll"`` / ``"through_all"``, or ``"ThroughAllBoth"`` /
               ``"through_all_both"`` (through all in both directions, cut as a
-              double-ended Through All feature).
+              double-ended Through All feature), or ``"MidPlane"`` (blind,
+              ``depth`` in total, half each side; no side to choose).
             - ``both_directions`` (bool): With ``"ThroughAll"``, cut through
               all in both directions (same as ``"ThroughAllBoth"``).
+            - ``start_offset`` (float): Start the cut this many mm off the
+              sketch plane (:func:`_start_condition`).
+            - ``draft_outward`` (bool): ``Ddir1``, as for a boss.
             - ``feature_scope`` (bool): Limit cut to selected bodies.
             - ``auto_select`` (bool): Auto-select bodies in scope.
             - ``sketch_name`` (str | None): Sketch to cut from. See sketch
@@ -1721,6 +1836,8 @@ def _create_cut_extrude_impl(
             feature_scope=bool(getattr(params, "feature_scope", False)),
             auto_select=bool(getattr(params, "auto_select", True)),
             sketch_name=sketch_name or getattr(params, "sketch_name", None) or None,
+            start_offset=float(getattr(params, "start_offset", 0.0) or 0.0),
+            draft_outward=bool(getattr(params, "draft_outward", False)),
         )
         feature_manager = adapter.currentModel.FeatureManager
 
@@ -1732,8 +1849,9 @@ def _create_cut_extrude_impl(
         through_all = adapter.constants["swEndCondThroughAll"]
         depth_m = normalized.depth / 1000.0
         through_one, through_both = _cut_end_condition(params)
+        mid_plane = _cut_mid_plane(params)
 
-        t0 = adapter.constants.get("swStartSketchPlane", 0)
+        t0, start_m, flip_start = _start_condition(adapter, normalized.start_offset)
         feature = None
         fallback_errors: list[str] = []
 
@@ -1780,6 +1898,19 @@ def _create_cut_extrude_impl(
                     wanted,
                 ),
             ]
+        elif mid_plane:
+            # Blind both ways, ``depth`` in total: one single-ended call with
+            # T1=swEndCondMidPlane, as a mid-plane boss is made. Both sides
+            # are cut, so there is no side to choose and none to flip to.
+            forms = [
+                (
+                    " [MidPlane]",
+                    True,
+                    adapter.constants.get("swEndCondMidPlane", 6),
+                    blind,
+                    wanted,
+                )
+            ]
         else:
             # One direction (Blind or Through All) is single-ended: Sd means
             # "single direction" (#193). The side asked for is cut first; left
@@ -1822,9 +1953,9 @@ def _create_cut_extrude_impl(
                 depth_m,  # D1
                 0.0,  # D2
                 bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                False,
-                False,
-                False,  # Dchk2, Ddir1/2
+                False,  # Dchk2
+                normalized.draft_outward,  # Ddir1: True drafts outward (#53)
+                False,  # Ddir2
                 math.radians(normalized.draft_angle),  # Dang1
                 0.0,  # Dang2
                 False,
@@ -1838,8 +1969,8 @@ def _create_cut_extrude_impl(
                 False,  # AutoSelectComponents
                 False,  # PropagateFeatureToParts
                 t0,  # T0
-                0.0,  # StartOffset
-                False,  # FlipStartOffset
+                start_m,  # StartOffset
+                flip_start,  # FlipStartOffset
             ]
 
         # 1. FeatureCut4 (SW 2015+): 27 params, the 27th being
@@ -1897,7 +2028,7 @@ def _create_cut_extrude_impl(
             # Name what was tried so the caller doesn't retry the same thing.
             tried = "; ".join(
                 label.strip(" []")
-                if through_both
+                if through_both or mid_plane
                 else ("along" if form_reverse else "against") + " the sketch normal"
                 for label, _sd, _t1, _t2, form_reverse in forms
             )
@@ -1923,8 +2054,14 @@ def _create_cut_extrude_impl(
 
         # A blind cut's floor area, to tell whether its depth went into the
         # material (cut_check; the tool compares it with the volume removed).
+        # Not for a mid-plane cut or one started off the plane: a closed
+        # pocket's ceiling faces along the normal too, and would count twice.
         floor_mm2 = None
-        if not (through_one or through_both) and not normalized.draft_angle:
+        if (
+            not (through_one or through_both or mid_plane)
+            and not normalized.draft_angle
+            and not normalized.start_offset
+        ):
             sketch_feature = adapter._attempt(
                 lambda: adapter.currentModel.FeatureByName(target_sketch)
             )
@@ -1934,6 +2071,8 @@ def _create_cut_extrude_impl(
         flipped = used_reverse != wanted
         if through_both:
             choice = "both_directions"
+        elif mid_plane:
+            choice = "mid_plane"
         elif requested is not None:
             choice = "flipped" if flipped else "requested"
         elif flipped:
@@ -1960,6 +2099,9 @@ def _create_cut_extrude_impl(
                 # How the side was picked; see _create_cut_extrude_choosing_side.
                 "direction_choice": choice,
                 "floor_area_mm2": floor_mm2,
+                "mid_plane": mid_plane,
+                "start_offset": normalized.start_offset,
+                "draft_outward": normalized.draft_outward,
             },
             properties={"created": datetime.now().isoformat()},
         )
@@ -2076,7 +2218,7 @@ async def _create_cut_extrude_choosing_side(
 
     A ``reverse_direction`` the caller set is cut as it always was (that
     side, and the other only when it builds nothing), and a cut through all
-    both ways has no side to pick: both go straight to
+    both ways or a mid-plane cut has no side to pick: they go straight to
     :func:`_create_cut_extrude_impl`. Otherwise the cut goes along the sketch
     normal first, the side ``create_extrusion`` grows into. If that builds
     nothing, only the other side has material and the impl has cut it
@@ -2108,6 +2250,7 @@ async def _create_cut_extrude_choosing_side(
     if (
         not adapter.currentModel
         or through_both
+        or _cut_mid_plane(params)
         or _requested_cut_direction(params) is not None
     ):
         return _create_cut_extrude_impl(adapter, params)

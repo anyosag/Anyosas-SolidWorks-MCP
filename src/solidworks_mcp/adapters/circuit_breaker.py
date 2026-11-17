@@ -1111,6 +1111,48 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             },
         )
 
+    async def pattern_linear(
+        self,
+        features: list[str],
+        direction: str,
+        count: int,
+        spacing: float,
+        direction2: str | None = None,
+        count2: int = 1,
+        spacing2: float = 0.0,
+        reverse_direction: bool = False,
+        reverse_direction2: bool = False,
+        bodies: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Pattern features or bodies along directions through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "pattern_linear",
+            lambda: self.adapter.pattern_linear(
+                features,
+                direction,
+                count,
+                spacing,
+                direction2,
+                count2,
+                spacing2,
+                reverse_direction,
+                reverse_direction2,
+                bodies,
+            ),
+            input_dict={
+                "features": features,
+                "direction": direction,
+                "count": count,
+                "spacing": spacing,
+                "direction2": direction2,
+                "count2": count2,
+                "spacing2": spacing2,
+                "reverse_direction": reverse_direction,
+                "reverse_direction2": reverse_direction2,
+                "bodies": bodies,
+            },
+        )
+
     async def create_revolve(
         self, params: RevolveParameters
     ) -> AdapterResult[SolidWorksFeature]:
@@ -1319,6 +1361,35 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             "add_sketch_outlines",
             lambda: self.adapter.add_sketch_outlines(outlines),
             input_dict={"outlines": outlines},
+        )
+
+    async def add_sketch_text(
+        self,
+        text: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        height: float | None = None,
+        font: str | None = None,
+        angle: float = 0.0,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write text in the open sketch through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "add_sketch_text",
+            lambda: self.adapter.add_sketch_text(
+                text, x, y, height, font, angle, bold, italic
+            ),
+            input_dict={
+                "text": text,
+                "x": x,
+                "y": y,
+                "height": height,
+                "font": font,
+                "angle": angle,
+                "bold": bold,
+                "italic": italic,
+            },
         )
 
     async def set_sketch_construction(

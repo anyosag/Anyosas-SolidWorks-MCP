@@ -1796,6 +1796,11 @@ _SKETCH_PASSTHROUGHS = [
     ("set_window_state", ("minimize",)),
     ("save_file", ("C:/a.SLDASM", True)),
     ("close_model", (True, True)),
+    ("add_sketch_text", ("MAX", 1.0, 2.0, 4.0, "Arial", 90.0, True, False)),
+    (
+        "pattern_linear",
+        (["Cut-Extrude1"], "x", 8, 12.0, "-z", 2, 20.0, True, False, False),
+    ),
 ]
 
 

@@ -149,6 +149,32 @@ class SolidWorksSketchMixin:
     ) -> AdapterResult[dict[str, Any]]:
         return _add_sketch_outlines_impl(self, outlines)
 
+    async def add_sketch_text(
+        self,
+        text: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        height: float | None = None,
+        font: str | None = None,
+        angle: float = 0.0,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write text in the open sketch (``sketch_text.add_sketch_text``)."""
+        from .sketch_text import add_sketch_text
+
+        if not self._adapter(self).currentSketchManager:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        return _sketch_edit_operation(
+            self,
+            "add_sketch_text",
+            lambda: add_sketch_text(
+                self, text, x, y, height, font, angle, bold, italic
+            ),
+        )
+
     async def set_sketch_construction(
         self, entity_ids: list[str], construction: bool = True
     ) -> AdapterResult[dict[str, Any]]:
