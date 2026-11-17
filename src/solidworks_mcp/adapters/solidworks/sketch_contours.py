@@ -206,8 +206,8 @@ def crossings(found: list[Contour]) -> list[str]:
     ]
 
 
-def crossings_in(adapter: Any, sketch_name: str) -> list[str]:
-    """The crossing contours of the sketch named ``sketch_name`` (none when unread)."""
+def segments_in(adapter: Any, sketch_name: str) -> list[dict[str, Any]]:
+    """The described segments of the sketch named ``sketch_name`` (none when unread)."""
     from .feature_editing import describe_segments
 
     model = adapter.currentModel
@@ -218,8 +218,31 @@ def crossings_in(adapter: Any, sketch_name: str) -> list[str]:
     sketch = _attempt(adapter, lambda: feature.GetSpecificFeature2())
     if sketch is None:
         return []
-    described = [info for _segment, info in describe_segments(adapter, sketch)]
-    return crossings(contours(described))
+    return [info for _segment, info in describe_segments(adapter, sketch)]
+
+
+def crossings_in(adapter: Any, sketch_name: str) -> list[str]:
+    """The crossing contours of the sketch named ``sketch_name`` (none when unread)."""
+    return crossings(contours(segments_in(adapter, sketch_name)))
+
+
+def union_check_in(adapter: Any, sketch_name: str) -> dict[str, Any]:
+    """The sketch's crossing contours, and why its regions' union isn't safe.
+
+    Returns:
+        dict[str, Any]: ``crossing``, the crossing pairs (none when unread),
+        and ``refusal``, ``sketch_regions.union_refusal`` for them (None when
+        none cross, or building every region is their union).
+    """
+    from .sketch_regions import union_refusal
+
+    described = segments_in(adapter, sketch_name)
+    found = contours(described)
+    crossing = crossings(found)
+    return {
+        "crossing": crossing,
+        "refusal": union_refusal(described, found) if crossing else None,
+    }
 
 
 def message(sketch_name: str, found: list[str]) -> str:
@@ -229,5 +252,6 @@ def message(sketch_name: str, found: list[str]) -> str:
     )
     return (
         f"Sketch {sketch_name!r}: sketch contours intersect ({shown}); an extrusion "
-        "needs disjoint regions or one outline that is their union."
+        "needs disjoint regions or one outline that is their union (regions: "
+        "'all' builds that union)."
     )

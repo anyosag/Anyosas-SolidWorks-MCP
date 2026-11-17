@@ -48,6 +48,7 @@ from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.file_ledger import FileLedger, ledger_path
 from .solidworks.io import activate_doc
 from .solidworks.loaded_documents import SolidWorksLoadedDocumentsMixin
+from .solidworks.reference_geometry import SolidWorksReferenceGeometryMixin
 from .solidworks.save_bodies import SolidWorksSaveBodiesMixin
 from .solidworks.sessions import (
     SessionRegister,
@@ -221,6 +222,7 @@ _READ_ONLY_OPERATIONS = frozenset(
         "get_model_geometry_summary",
         "get_model_info",
         "get_model_update_stamp",
+        "get_open_sketch_axes",
         "get_sketch",
         "list_assembly_parts",
         "list_available_materials",
@@ -233,6 +235,7 @@ _READ_ONLY_OPERATIONS = frozenset(
         "list_model_dimensions",
         "list_open_documents",
         "list_references",
+        "plane_axes",
         "volume_by_plane",
     }
 )
@@ -346,9 +349,11 @@ _SELECTION_CLEARING_OPERATIONS = frozenset(
         "add_mate",
         "combine_bodies",
         "create_axis",
+        "create_axis_through",
         "create_cut_extrude",
         "create_extrusion",
         "create_loft",
+        "create_plane_through",
         "create_reference_plane",
         "create_reference_point",
         "create_revolve",
@@ -2271,6 +2276,7 @@ class PyWin32Adapter(
     SolidWorksFeaturesMixin,
     SolidWorksSaveBodiesMixin,
     SolidWorksLoadedDocumentsMixin,
+    SolidWorksReferenceGeometryMixin,
     SolidWorksIOMixin,
     SolidWorksSelectionMixin,
     SolidWorksAdapter,

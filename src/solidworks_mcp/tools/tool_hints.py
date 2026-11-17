@@ -275,6 +275,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "exit_sketch": _sets("Exit Sketch"),
     "check_sketch_fully_defined": _reads("Check Sketch Fully Defined"),
     "get_sketch": _reads("Get Sketch"),
+    "plane_axes": _reads("Get Plane Axes"),
     "add_arc": _adds("Add Sketch Arc"),
     "add_outlines": _adds("Add Sketch Outlines"),
     "add_sketch_text": _adds("Add Sketch Text"),

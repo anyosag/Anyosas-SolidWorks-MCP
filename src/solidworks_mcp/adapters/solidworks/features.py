@@ -17,7 +17,13 @@ from ..base import (
     SolidWorksFeature,
     SweepParameters,
 )
-from . import cut_check, edge_feature_check, limits, sketch_contours
+from . import (
+    cut_check,
+    edge_feature_check,
+    limits,
+    sketch_contours,
+    sketch_regions,
+)
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -29,17 +35,21 @@ class SolidWorksFeaturesMixin:
     async def create_extrusion(
         self, params: ExtrusionParameters
     ) -> AdapterResult[SolidWorksFeature]:
-        """Extrude a sketch; a failure says when the sketch's contours cross.
+        """Extrude a sketch; crossing contours are built as their union when safe.
 
         Args:
             params: The extrusion; see :func:`_create_extrusion_impl`.
 
         Returns:
             AdapterResult[SolidWorksFeature]: See :func:`_create_extrusion_impl`,
-            and :func:`_explain_profile_failure` for a failure.
+            and :func:`_union_or_explained` for a failure.
         """
-        return _explain_profile_failure(
-            self, _create_extrusion_impl(self, params), params
+
+        async def build(again: Any) -> AdapterResult[SolidWorksFeature]:
+            return _create_extrusion_impl(self, again)
+
+        return await _union_or_explained(
+            self, _create_extrusion_impl(self, params), params, build
         )
 
     async def create_revolve(
@@ -68,10 +78,14 @@ class SolidWorksFeaturesMixin:
         Returns:
             AdapterResult[SolidWorksFeature]: See
             :func:`_create_cut_extrude_choosing_side`, and
-            :func:`_explain_profile_failure` for a failure.
+            :func:`_union_or_explained` for a failure.
         """
+
+        async def build(again: Any) -> AdapterResult[SolidWorksFeature]:
+            return await _create_cut_extrude_choosing_side(self, again)
+
         result = await _create_cut_extrude_choosing_side(self, params)
-        return _explain_profile_failure(self, result, params)
+        return await _union_or_explained(self, result, params, build)
 
     async def add_fillet(
         self, radius: float, edge_names: list[str]
@@ -721,6 +735,9 @@ def _create_extrusion_impl(
               10 mm block came out 7689 mm³ with it False, and
               ``GetDraftOutward`` read False). The API help says the reverse
               (True for inward); the measurement is what counts here.
+            - ``regions`` (str | None): ``"all"`` extrudes every region of
+              the sketch (``sketch_regions.select_all``), which SolidWorks
+              unions.
 
     Returns:
         AdapterResult[SolidWorksFeature]: On success, ``data`` is a
@@ -777,12 +794,17 @@ def _create_extrusion_impl(
                 + ", ".join(_THIN_SIDES)
             )
         # A named sketch is found and selected first; without a name the
-        # sketch exit_sketch just closed is still selected, as before.
+        # sketch exit_sketch just closed is still selected, as before. Its
+        # regions need its name, so with regions the last one is resolved.
         requested = getattr(params, "sketch_name", None) or None
+        regions = getattr(params, "regions", None) == "all"
         sketch_used = (
             _resolve_profile_sketch(adapter, requested, purpose="extrude")
-            if requested
+            if requested or regions
             else None
+        )
+        picked = (
+            sketch_regions.select_all(adapter, str(sketch_used)) if regions else None
         )
         feature_manager = adapter.currentModel.FeatureManager
         t0, start_m, flip_start = _start_condition(adapter, normalized.start_offset)
@@ -793,113 +815,119 @@ def _create_extrusion_impl(
             normalized.both_directions,
         )
 
-        if normalized.thin_feature and normalized.thin_thickness:
-            try:
-                feature = feature_manager.FeatureExtrusionThin2(
-                    True,
-                    False,
-                    normalized.reverse_direction,
-                    t1,
-                    adapter.constants["swEndCondBlind"],
-                    normalized.depth / 1000.0,
-                    0.0,
-                    bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                    False,  # Dchk2
-                    draft_dir,  # Ddir1
-                    False,  # Ddir2
-                    math.radians(normalized.draft_angle),
-                    0.0,
-                    False,
-                    False,
-                    False,
-                    False,
-                    normalized.merge_result,
-                    normalized.thin_thickness / 1000.0,
-                    normalized.thin_thickness / 1000.0,
-                    0.0,  # EndThk
-                    _THIN_SIDES[normalized.thin_side],  # RevThinDir: swThinWallType_e
-                    0,  # CapEnds
-                    normalized.auto_fillet_corners,
-                    normalized.fillet_corners_radius / 1000.0,
-                    False,
-                    True,
-                    t0,
-                    start_m,  # StartOffset
-                    flip_start,  # FlipStartOffset
-                )
-            except Exception:
-                feature = feature_manager.FeatureExtruThin2(
-                    normalized.depth / 1000.0,
-                    0.0,
-                    False,
-                    math.radians(normalized.draft_angle),
-                    0.0,
-                    False,
-                    False,
-                    normalized.merge_result,
-                    False,
-                    True,
-                    normalized.thin_thickness / 1000.0,
-                    normalized.thin_thickness / 1000.0,
-                    False,
-                    False,
-                    False,
-                    adapter.constants["swEndCondBlind"],
-                    adapter.constants["swEndCondBlind"],
-                )
-        else:
-            try:
-                feature = feature_manager.FeatureExtrusion3(
-                    True,
-                    False,
-                    normalized.reverse_direction,
-                    t1,
-                    adapter.constants["swEndCondBlind"],
-                    normalized.depth / 1000.0,
-                    0.0,
-                    bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                    False,  # Dchk2
-                    draft_dir,  # Ddir1
-                    False,  # Ddir2
-                    math.radians(normalized.draft_angle),
-                    0.0,
-                    False,
-                    False,
-                    False,
-                    False,
-                    normalized.merge_result,
-                    False,
-                    True,
-                    t0,
-                    start_m,  # StartOffset
-                    flip_start,  # FlipStartOffset
-                )
-            except Exception:
-                feature = feature_manager.FeatureExtrusion2(
-                    True,
-                    False,
-                    normalized.reverse_direction,
-                    t1,
-                    adapter.constants["swEndCondBlind"],
-                    normalized.depth / 1000.0,
-                    0.0,
-                    bool(normalized.draft_angle),  # Dchk1: a draft only when on
-                    False,  # Dchk2
-                    draft_dir,  # Ddir1
-                    False,  # Ddir2
-                    math.radians(normalized.draft_angle),
-                    0.0,
-                    False,
-                    False,
-                    False,
-                    False,
-                    normalized.merge_result,
-                    False,
-                    True,
-                    t0,
-                    start_m,  # StartOffset
-                    flip_start,  # FlipStartOffset
-                )
+        try:
+            if normalized.thin_feature and normalized.thin_thickness:
+                try:
+                    feature = feature_manager.FeatureExtrusionThin2(
+                        True,
+                        False,
+                        normalized.reverse_direction,
+                        t1,
+                        adapter.constants["swEndCondBlind"],
+                        normalized.depth / 1000.0,
+                        0.0,
+                        bool(normalized.draft_angle),  # Dchk1: a draft only when on
+                        False,  # Dchk2
+                        draft_dir,  # Ddir1
+                        False,  # Ddir2
+                        math.radians(normalized.draft_angle),
+                        0.0,
+                        False,
+                        False,
+                        False,
+                        False,
+                        normalized.merge_result,
+                        normalized.thin_thickness / 1000.0,
+                        normalized.thin_thickness / 1000.0,
+                        0.0,  # EndThk
+                        # RevThinDir: swThinWallType_e
+                        _THIN_SIDES[normalized.thin_side],
+                        0,  # CapEnds
+                        normalized.auto_fillet_corners,
+                        normalized.fillet_corners_radius / 1000.0,
+                        False,
+                        True,
+                        t0,
+                        start_m,  # StartOffset
+                        flip_start,  # FlipStartOffset
+                    )
+                except Exception:
+                    feature = feature_manager.FeatureExtruThin2(
+                        normalized.depth / 1000.0,
+                        0.0,
+                        False,
+                        math.radians(normalized.draft_angle),
+                        0.0,
+                        False,
+                        False,
+                        normalized.merge_result,
+                        False,
+                        True,
+                        normalized.thin_thickness / 1000.0,
+                        normalized.thin_thickness / 1000.0,
+                        False,
+                        False,
+                        False,
+                        adapter.constants["swEndCondBlind"],
+                        adapter.constants["swEndCondBlind"],
+                    )
+            else:
+                try:
+                    feature = feature_manager.FeatureExtrusion3(
+                        True,
+                        False,
+                        normalized.reverse_direction,
+                        t1,
+                        adapter.constants["swEndCondBlind"],
+                        normalized.depth / 1000.0,
+                        0.0,
+                        bool(normalized.draft_angle),  # Dchk1: a draft only when on
+                        False,  # Dchk2
+                        draft_dir,  # Ddir1
+                        False,  # Ddir2
+                        math.radians(normalized.draft_angle),
+                        0.0,
+                        False,
+                        False,
+                        False,
+                        False,
+                        normalized.merge_result,
+                        False,
+                        True,
+                        t0,
+                        start_m,  # StartOffset
+                        flip_start,  # FlipStartOffset
+                    )
+                except Exception:
+                    feature = feature_manager.FeatureExtrusion2(
+                        True,
+                        False,
+                        normalized.reverse_direction,
+                        t1,
+                        adapter.constants["swEndCondBlind"],
+                        normalized.depth / 1000.0,
+                        0.0,
+                        bool(normalized.draft_angle),  # Dchk1: a draft only when on
+                        False,  # Dchk2
+                        draft_dir,  # Ddir1
+                        False,  # Ddir2
+                        math.radians(normalized.draft_angle),
+                        0.0,
+                        False,
+                        False,
+                        False,
+                        False,
+                        normalized.merge_result,
+                        False,
+                        True,
+                        t0,
+                        start_m,  # StartOffset
+                        flip_start,  # FlipStartOffset
+                    )
+
+        finally:
+            if regions:
+                sketch_regions.end(adapter)
 
         if not feature:
             raise Exception("Failed to create extrusion feature")
@@ -920,6 +948,8 @@ def _create_extrusion_impl(
                 "sketch_name": sketch_used,
                 "start_offset": normalized.start_offset,
                 "draft_outward": normalized.draft_outward,
+                "regions": "all" if regions else None,
+                "regions_selected": picked,
             },
             properties={"created": datetime.now().isoformat()},
         )
@@ -1831,6 +1861,9 @@ def _create_cut_extrude_impl(
             - ``auto_select`` (bool): Auto-select bodies in scope.
             - ``sketch_name`` (str | None): Sketch to cut from. See sketch
               resolution above.
+            - ``regions`` (str | None): ``"all"`` cuts every region of the
+              sketch (``sketch_regions.select_all``), which SolidWorks
+              unions; reselected before each variant.
         reverse: Cut exactly this way, whatever ``params`` says, and never
             the other way.
         sketch_name: The sketch to cut from, in place of
@@ -1896,6 +1929,8 @@ def _create_cut_extrude_impl(
         target_sketch = _resolve_profile_sketch(
             adapter, normalized.sketch_name, purpose="cut from"
         )
+        regions = getattr(params, "regions", None) == "all"
+        picked = sketch_regions.select_all(adapter, target_sketch) if regions else None
 
         blind = adapter.constants["swEndCondBlind"]
         through_all = adapter.constants["swEndCondThroughAll"]
@@ -2032,43 +2067,52 @@ def _create_cut_extrude_impl(
         optimize_geometry = sw_major == 33
         first_call = True
         used_reverse = wanted
-        for label, sd, t1, t2, form_reverse in forms:
-            used_reverse = form_reverse
-            args = _cut_args(sd, t1, t2, _cut_dir(form_reverse))
-            calls = (
-                (
-                    "FeatureCut4",
-                    lambda a=args: feature_manager.FeatureCut4(*a, optimize_geometry),
-                ),
-                ("FeatureCut3", lambda a=args: feature_manager.FeatureCut3(*a)),
-            )
-            for api_name, call in calls:
-                if not first_call:
-                    # The sketch is already explicitly selected (above) — no
-                    # guessing here. A failed FeatureCut can drop it, so
-                    # reselect the same sketch before the next variant.
-                    adapter._attempt(
-                        lambda: adapter.currentModel.Extension.SelectByID2(
-                            target_sketch,
-                            "SKETCH",
-                            0.0,
-                            0.0,
-                            0.0,
-                            False,
-                            0,
-                            _null_callout(),
-                            0,
+        try:
+            for label, sd, t1, t2, form_reverse in forms:
+                used_reverse = form_reverse
+                args = _cut_args(sd, t1, t2, _cut_dir(form_reverse))
+                calls = (
+                    (
+                        "FeatureCut4",
+                        lambda a=args: feature_manager.FeatureCut4(
+                            *a, optimize_geometry
                         ),
-                        default=False,
-                    )
-                first_call = False
-                feature, cut_error = adapter._attempt_with_error(call)
-                if cut_error is not None:
-                    fallback_errors.append(f"{api_name}{label}: {cut_error}")
+                    ),
+                    ("FeatureCut3", lambda a=args: feature_manager.FeatureCut3(*a)),
+                )
+                for api_name, call in calls:
+                    if not first_call and regions:
+                        sketch_regions.select_all(adapter, target_sketch)
+                    elif not first_call:
+                        # The sketch is already explicitly selected (above) — no
+                        # guessing here. A failed FeatureCut can drop it, so
+                        # reselect the same sketch before the next variant.
+                        adapter._attempt(
+                            lambda: adapter.currentModel.Extension.SelectByID2(
+                                target_sketch,
+                                "SKETCH",
+                                0.0,
+                                0.0,
+                                0.0,
+                                False,
+                                0,
+                                _null_callout(),
+                                0,
+                            ),
+                            default=False,
+                        )
+                    first_call = False
+                    feature, cut_error = adapter._attempt_with_error(call)
+                    if cut_error is not None:
+                        fallback_errors.append(f"{api_name}{label}: {cut_error}")
+                    if feature:
+                        break
                 if feature:
                     break
-            if feature:
-                break
+
+        finally:
+            if regions:
+                sketch_regions.end(adapter)
 
         if not feature:
             if fallback_errors:
@@ -2168,6 +2212,8 @@ def _create_cut_extrude_impl(
                 "mid_plane": mid_plane,
                 "start_offset": normalized.start_offset,
                 "draft_outward": normalized.draft_outward,
+                "regions": "all" if regions else None,
+                "regions_selected": picked,
             },
             properties={"created": datetime.now().isoformat()},
         )
@@ -2252,25 +2298,43 @@ def _edge_facts(
     }
 
 
-def _explain_profile_failure(
-    adapter: Any, result: AdapterResult[SolidWorksFeature], params: Any
+def _with_all_regions(params: Any, sketch_name: str) -> Any:
+    """``params`` for the same feature built from every region of ``sketch_name``."""
+    update = {"regions": "all", "sketch_name": sketch_name}
+    if hasattr(params, "model_copy"):
+        return params.model_copy(update=update)
+    return SimpleNamespace(**{**vars(params), **update})
+
+
+async def _union_or_explained(
+    adapter: Any,
+    result: AdapterResult[SolidWorksFeature],
+    params: Any,
+    build: Any,
 ) -> AdapterResult[SolidWorksFeature]:
-    """Say why an extrude or a cut built nothing when its sketch's contours cross.
+    """Say why an extrude or a cut built nothing when its contours cross, or build their union.
 
     The Dipper's overlapping rings gave a bare "Failed to create extrusion
-    feature". The sketch (``params.sketch_name``, else the one closed last)
-    is read only after a failure (``sketch_contours``), and its finding is
-    added to the error, where the classifier gives it its ``error_type``.
+    feature". After a failure the sketch (``params.sketch_name``, else the
+    one closed last) is read (``sketch_contours.union_check_in``). When its
+    contours cross, the error names them, and the classifier gives it its
+    ``error_type``. When every segment belongs to a closed contour and none
+    lies inside another, the feature is built again from every region
+    (``regions: "all"``), which is then exactly their union; the feature's
+    ``parameters`` carry ``regions_note`` for the reply's ``warning``.
 
     Args:
         adapter: A connected adapter.
         result: The extrude's or cut's result.
         params: Its parameters.
+        build: Builds the same feature again from parameters (awaitable).
 
     Returns:
         AdapterResult[SolidWorksFeature]: ``result``, its error extended when
-        contours cross.
+        contours cross; or the feature built from every region.
     """
+    from .com_utils import strip_op_prefix
+
     if result.is_success or not getattr(adapter, "currentModel", None):
         return result
     name = getattr(params, "sketch_name", None) or getattr(
@@ -2279,12 +2343,31 @@ def _explain_profile_failure(
     if not isinstance(name, str) or not name:
         return result
     read = adapter._handle_com_operation(
-        "read_sketch_contours", lambda: sketch_contours.crossings_in(adapter, name)
+        "read_sketch_contours", lambda: sketch_contours.union_check_in(adapter, name)
     )
-    found = read.data if read.is_success and isinstance(read.data, list) else []
-    if found:
-        result.error = f"{result.error}. {sketch_contours.message(name, found)}"
-    return result
+    found = read.data if read.is_success and isinstance(read.data, dict) else {}
+    crossing = found.get("crossing") or []
+    if not crossing:
+        return result
+    result.error = f"{result.error}. {sketch_contours.message(name, crossing)}"
+    if getattr(params, "regions", None) == "all":
+        return result
+    refusal = found.get("refusal")
+    if refusal:
+        result.error += f" Building every region was not tried: {refusal}."
+        return result
+    retry = await build(_with_all_regions(params, name))
+    if not retry.is_success:
+        why = strip_op_prefix(retry.error, "create_extrusion")
+        why = strip_op_prefix(why, "create_cut_extrude")
+        result.error += f" Building every region as one failed too: {why}"
+        return result
+    if retry.data is not None:
+        retry.data.parameters = {
+            **(retry.data.parameters or {}),
+            "regions_note": sketch_regions.note(name, crossing),
+        }
+    return retry
 
 
 def _facts_by_name(adapter: Any, feature: SolidWorksFeature) -> None:
@@ -4419,6 +4502,10 @@ def _create_reference_plane_impl(
                 "read, so it cannot be referenced by create_sketch."
             )
 
+        # Where a sketch on it points, so its x and y needn't be guessed.
+        from .reference_geometry import frame_of_named_plane
+
+        frame = frame_of_named_plane(adapter, str(name))
         return {
             "name": str(name),
             "reference": reference if face_point is None else None,
@@ -4427,6 +4514,7 @@ def _create_reference_plane_impl(
             "angle": angle or None,
             "axis": axis if angle else None,
             "flip": flip,
+            "axes": frame.describe() if frame is not None else None,
             "features_before": before,
             "features_after": after,
         }

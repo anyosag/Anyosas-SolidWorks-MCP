@@ -53,6 +53,31 @@ a plane 10 mm up; its name (e.g. "Plane1") goes into `create_sketch`.
   then `reference`, `angle` (degrees) and `axis`.
 - On or off a face, sloped or not: `face_point`, a point on the face in mm,
   with `offset` (0 puts the plane on the face).
+- Anywhere: `point` (mm) and `normal`, e.g. a vertical plane through a cell
+  centre at 30 degrees: `point: [20, 0, 10]`, `normal: [0.5, 0, 0.866]`. A
+  `warning` says when SolidWorks turned its normal the other way.
+- An axis anywhere: `create_axis` with `point` and `direction` (or
+  `second_point`), e.g. `point: [20, 0, 10]`, `direction: [0, 1, 0]` for a
+  vertical axis through that centre; then `angle` and `axis` turn a plane
+  about it. Both are built on a line in a 3D sketch of their own, so exit
+  any open sketch first.
+
+Every plane's reply has `axes`; `plane_axes` reads them for any plane
+without opening a sketch. A plane made from a face or a point has sketch
+axes you can't guess (x = +Z, y = (-0.5, 0.866, 0)): rather than working out
+sketch coordinates, draw by model points.
+
+## Drawing by model points on any plane
+
+1. `create_sketch` on the plane.
+2. Give `add_circle`, `add_line`, `add_rectangle`, `add_arc`,
+   `add_centerline` or `add_outlines` `coordinates: "model"`, with the z
+   values too (`center_z`, `z1`, `z2`; in `add_outlines` every point is
+   `[x, y, z]`, arc centres too). Each point is projected onto the sketch
+   plane; one more than 0.01 mm off it is refused, naming the point and its
+   distance. The reply keeps sketch coordinates and adds `projection`.
+3. A rectangle's sides still run along sketch x and y, and an arc's
+   `direction` is as seen looking against the plane's normal.
 
 ## Many holes or a whole outline in one call (a honeycomb deck)
 
@@ -131,6 +156,26 @@ Or cut one hole and repeat the feature: `create_axis`, then
 spread them evenly (360 by default), or `step_angle` for the degrees between
 holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
 `reverse_direction` goes the other way round.
+
+## The same cut on every face of a hexagonal cage
+
+1. One plane on one face (`create_reference_plane` with `point` and
+   `normal`), one sketch on it drawn by model points, one
+   `create_cut_extrude`.
+2. `pattern_circular` with the cut, `axis_point` (the cage's centre),
+   `axis_direction` (its axis, e.g. `[0, 1, 0]`) and `count: 6`. The axis is
+   made first and kept (`pattern.axis_created`), so the next pattern about it
+   can name it as `axis`. A pattern that fails removes the axis it made.
+
+## Circles or polygons that cross or touch
+
+SolidWorks won't extrude a sketch whose closed contours cross (two touching
+rings, a hexagon over a circle): the error says `sketch_contours_intersect`.
+Give `create_extrusion` or `create_cut_extrude` `regions: "all"` to build
+every region they enclose, which SolidWorks unions into one solid. A contour
+wholly inside another is filled too: draw holes in a sketch of their own and
+cut them. Without `regions`, such a failure is retried this way when no
+contour lies inside another, and the reply's `warning` says so.
 
 ## A row or grid of slots or holes
 

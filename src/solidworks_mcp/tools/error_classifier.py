@@ -259,8 +259,9 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         hint=(
             "Nothing was built: closed contours in the sketch cross or touch, so "
             "SolidWorks can't tell its regions apart. The message names them. "
-            "Move or resize them so the regions are apart (or one wholly inside "
-            "another, for a hole), or draw one outline that is their union "
+            "Give regions: 'all' to build every region they enclose as one solid "
+            "(a contour inside another is filled too), or move or resize them so "
+            "the regions are apart, or draw one outline that is their union "
             "(add_outlines with arcs), then extrude or cut again."
         ),
         patterns=(r"\bsketch contours intersect\b",),

@@ -82,10 +82,23 @@ async def test_default_planes_report_their_axes(adapter: MockSolidWorksAdapter) 
     assert result.metadata["axes"]["normal"] == [0.0, 1.0, 0.0]
 
 
-async def test_a_reference_plane_is_accepted_without_axes(
+async def test_an_offset_plane_has_its_base_planes_axes_moved(
     adapter: MockSolidWorksAdapter,
 ) -> None:
     plane = await adapter.create_reference_plane(reference="Front Plane", offset=5.0)
+
+    result = await adapter.create_sketch(plane.data["name"])
+
+    assert result.is_success
+    assert result.metadata["plane"] == plane.data["name"]
+    assert result.metadata["axes"]["origin_mm"] == [0.0, 0.0, 5.0]
+    assert plane.data["axes"] == result.metadata["axes"]
+
+
+async def test_a_face_plane_is_accepted_without_axes(
+    adapter: MockSolidWorksAdapter,
+) -> None:
+    plane = await adapter.create_reference_plane("", face_point=[1.0, 2.0, 3.0])
 
     result = await adapter.create_sketch(plane.data["name"])
 

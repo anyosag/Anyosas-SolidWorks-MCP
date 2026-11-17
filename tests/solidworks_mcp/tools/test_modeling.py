@@ -1501,7 +1501,9 @@ class TestReferenceGeometryTools:
 
     def test_create_reference_plane_input_rejects_blank_reference(self):
         """CreateReferencePlaneInput.model_post_init rejects a blank reference."""
-        with pytest.raises(ValueError, match="exactly one of reference or face_point"):
+        with pytest.raises(
+            ValueError, match="exactly one of reference, face_point or point"
+        ):
             CreateReferencePlaneInput(reference="   ", offset=10.0)
 
     def test_set_units_input_rejects_blank_unit_system(self):

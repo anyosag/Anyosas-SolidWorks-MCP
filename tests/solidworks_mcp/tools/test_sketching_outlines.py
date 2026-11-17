@@ -235,11 +235,11 @@ async def test_create_sketch_on_a_missing_plane_is_not_found(
     assert "Plane 'Plane7' not found" in result["message"]
 
 
-async def test_create_sketch_on_a_reference_plane_has_no_mock_axes(
+async def test_create_sketch_on_a_face_plane_has_no_mock_axes(
     tools: dict[str, Any],
 ) -> None:
     adapter: MockSolidWorksAdapter = tools["_adapter"]
-    plane = await adapter.create_reference_plane(reference="Top Plane", offset=10.0)
+    plane = await adapter.create_reference_plane("", face_point=[0.0, 0.0, 0.0])
     name = plane.data["name"]
 
     result = await tools["create_sketch"]({"plane": name})
@@ -247,6 +247,17 @@ async def test_create_sketch_on_a_reference_plane_has_no_mock_axes(
     assert result["status"] == "success", result
     assert result["sketch"]["plane"] == name
     assert "axes" not in result["sketch"]
+
+
+async def test_create_sketch_on_an_offset_plane_has_its_axes(
+    tools: dict[str, Any],
+) -> None:
+    adapter: MockSolidWorksAdapter = tools["_adapter"]
+    plane = await adapter.create_reference_plane(reference="Top Plane", offset=10.0)
+
+    result = await tools["create_sketch"]({"plane": plane.data["name"]})
+
+    assert result["sketch"]["axes"]["origin_mm"] == [0.0, 10.0, 0.0]
 
 
 async def test_add_arc_reports_direction_radius_and_sweep(

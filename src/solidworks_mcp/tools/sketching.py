@@ -8,12 +8,20 @@ import math
 from typing import Annotated, Any, Literal, Self, TypeVar
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks.plane_frame import (
+    OFF_PLANE_TOLERANCE_MM,
+    Frame,
+    project,
+)
 from ..adapters.solidworks.rebuild_diagnostics import body_count_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
+    InvalidInputError,
+    ToolOperationError,
+    describe_validation_error,
     normalize_input,
     require_capability,
     require_success,
@@ -24,6 +32,35 @@ TInput = TypeVar("TInput", bound=BaseModel)
 
 
 # Input schemas using Python 3.14 built-in types
+
+Coordinates = Literal["sketch", "model"]
+
+#: The ``coordinates`` field every drawing tool takes.
+_COORDINATES = (
+    "'sketch' (the default): points are x, y in the sketch's own mm. 'model': "
+    "points are x, y, z in model mm (give the z fields too), projected onto the "
+    f"open sketch's plane; a point more than {OFF_PLANE_TOLERANCE_MM:g} mm off "
+    "it is refused, naming it and its distance"
+)
+
+
+def _check_z(coordinates: str, given: dict[str, float | None]) -> None:
+    """Require the z fields with model coordinates, and refuse them without.
+
+    Raises:
+        ValueError: A z is missing with ``model``, or given with ``sketch``.
+    """
+    if coordinates == "model":
+        missing = [name for name, value in given.items() if value is None]
+        if missing:
+            raise ValueError(
+                f"coordinates 'model' needs {', '.join(missing)} (model mm)"
+            )
+    elif any(value is not None for value in given.values()):
+        raise ValueError(
+            f"{', '.join(n for n, v in given.items() if v is not None)} only go "
+            "with coordinates 'model'"
+        )
 
 
 class CreateSketchInput(CompatInput):
@@ -88,6 +125,15 @@ class AddLineInput(CompatInput):
     start_y: float | None = Field(default=None, description="Start point Y alias")
     end_x: float | None = Field(default=None, description="End point X alias")
     end_y: float | None = Field(default=None, description="End point Y alias")
+    z1: float | None = Field(
+        default=None,
+        description="Start point Z in model mm; only with coordinates 'model'",
+    )
+    z2: float | None = Field(
+        default=None,
+        description="End point Z in model mm; only with coordinates 'model'",
+    )
+    coordinates: Coordinates = Field(default="sketch", description=_COORDINATES)
     construction: bool = Field(default=False, description="Construction geometry flag")
 
     def model_post_init(self, __context: Any) -> None:
@@ -103,6 +149,14 @@ class AddLineInput(CompatInput):
         self.y1 = self.y1 if self.y1 is not None else self.start_y
         self.x2 = self.x2 if self.x2 is not None else self.end_x
         self.y2 = self.y2 if self.y2 is not None else self.end_y
+        _check_z(self.coordinates, {"z1": self.z1, "z2": self.z2})
+
+    def model_points(self) -> list[list[float]]:
+        """The start and end in model mm, for coordinates 'model'."""
+        return [
+            [self.x1 or 0.0, self.y1 or 0.0, self.z1 or 0.0],
+            [self.x2 or 0.0, self.y2 or 0.0, self.z2 or 0.0],
+        ]
 
 
 class AddCircleInput(CompatInput):
@@ -117,7 +171,11 @@ class AddCircleInput(CompatInput):
 
     center_x: float = Field(description="Circle center X coordinate in mm")
     center_y: float = Field(description="Circle center Y coordinate in mm")
+    center_z: float | None = Field(
+        default=None, description="Center Z in model mm; only with coordinates 'model'"
+    )
     radius: float = Field(description="Circle radius in mm")
+    coordinates: Coordinates = Field(default="sketch", description=_COORDINATES)
     construction: bool = Field(default=False, description="Construction geometry flag")
 
     def model_post_init(self, __context: Any) -> None:
@@ -134,6 +192,7 @@ class AddCircleInput(CompatInput):
         """
         if self.radius <= 0:
             raise ValueError("radius must be positive")
+        _check_z(self.coordinates, {"center_z": self.center_z})
 
 
 class AddRectangleInput(CompatInput):
@@ -167,6 +226,18 @@ class AddRectangleInput(CompatInput):
     corner1_y: float | None = Field(default=None, description="Corner 1 Y alias")
     corner2_x: float | None = Field(default=None, description="Corner 2 X alias")
     corner2_y: float | None = Field(default=None, description="Corner 2 Y alias")
+    z1: float | None = Field(
+        default=None,
+        description="First corner Z in model mm; only with coordinates 'model'",
+    )
+    z2: float | None = Field(
+        default=None,
+        description="Opposite corner Z in model mm; only with coordinates 'model'",
+    )
+    coordinates: Coordinates = Field(
+        default="sketch",
+        description=_COORDINATES + "; the sides still run along sketch x and y",
+    )
     construction: bool = Field(default=False, description="Construction geometry flag")
 
     def model_post_init(self, __context: Any) -> None:
@@ -185,8 +256,10 @@ class AddRectangleInput(CompatInput):
         self.y1 = self.y1 if self.y1 is not None else self.corner1_y
         self.x2 = self.x2 if self.x2 is not None else self.corner2_x
         self.y2 = self.y2 if self.y2 is not None else self.corner2_y
+        _check_z(self.coordinates, {"z1": self.z1, "z2": self.z2})
         if (
-            None not in (self.x1, self.y1, self.x2, self.y2)
+            self.coordinates == "sketch"
+            and None not in (self.x1, self.y1, self.x2, self.y2)
             and self.x1 == self.x2
             and self.y1 == self.y2
         ):
@@ -211,13 +284,32 @@ class AddArcInput(BaseModel):
     start_y: float = Field(description="Arc start point Y coordinate in mm")
     end_x: float = Field(description="Arc end point X coordinate in mm")
     end_y: float = Field(description="Arc end point Y coordinate in mm")
+    center_z: float | None = Field(
+        default=None, description="Center Z in model mm; only with coordinates 'model'"
+    )
+    start_z: float | None = Field(
+        default=None, description="Start Z in model mm; only with coordinates 'model'"
+    )
+    end_z: float | None = Field(
+        default=None, description="End Z in model mm; only with coordinates 'model'"
+    )
+    coordinates: Coordinates = Field(default="sketch", description=_COORDINATES)
     direction: Literal["ccw", "cw"] = Field(
         default="ccw",
         description=(
             "Which way the arc runs from start to end, looking at the sketch "
-            "(x right, y up): 'ccw' counter-clockwise (the default) or 'cw'"
+            "(x right, y up; in model coordinates, looking against its normal): "
+            "'ccw' counter-clockwise (the default) or 'cw'"
         ),
     )
+
+    @model_validator(mode="after")
+    def _z_with_model(self) -> Self:
+        _check_z(
+            self.coordinates,
+            {"center_z": self.center_z, "start_z": self.start_z, "end_z": self.end_z},
+        )
+        return self
 
 
 #: An outline's points closer than this (mm) are the same point: the last
@@ -231,7 +323,14 @@ _ARC_RADIUS_TOLERANCE_MM = 1e-3
 
 Point2 = Annotated[
     list[float],
-    Field(min_length=2, max_length=2, description="A point [x, y] in sketch mm"),
+    Field(
+        min_length=2,
+        max_length=3,
+        description=(
+            "A point [x, y] in sketch mm, or [x, y, z] in model mm with "
+            "coordinates 'model'"
+        ),
+    ),
 ]
 
 
@@ -346,8 +445,48 @@ class Outline(BaseModel):
             raise ValueError("'segments' needs 'start'")
         if self.points is not None and self.start is not None:
             raise ValueError("'start' goes with 'segments', not 'points'")
-        self.resolve()  # refuses a degenerate outline before anything is drawn
+        sizes = {len(point) for _label, point in self.labelled_points()}
+        if len(sizes) > 1:
+            raise ValueError("give every point as [x, y], or every one as [x, y, z]")
+        if sizes != {3}:
+            # Model points are checked once they are on the sketch plane.
+            self.resolve()  # refuses a degenerate outline before anything is drawn
         return self
+
+    def dimension(self) -> int:
+        """How many numbers each point has: 2 (sketch) or 3 (model)."""
+        return len(self.labelled_points()[0][1])
+
+    def labelled_points(self) -> list[tuple[str, list[float]]]:
+        """Every point of the outline with where it is, in input order."""
+        found: list[tuple[str, list[float]]] = []
+        if self.points is not None:
+            found += [(f"points[{i}]", p) for i, p in enumerate(self.points)]
+        if self.start is not None:
+            found.append(("start", self.start))
+        for i, step in enumerate(self.segments or []):
+            found.append((f"segments[{i}].to", step.to))
+            if step.center is not None:
+                found.append((f"segments[{i}].center", step.center))
+        return found
+
+    def on_sketch(self, flat: list[tuple[float, float]]) -> "Outline":
+        """This outline with its points replaced, in :meth:`labelled_points` order.
+
+        Raises:
+            ValidationError: The outline isn't drawable in the sketch.
+        """
+        data = self.model_dump()
+        points = iter([list(p) for p in flat])
+        if data["points"] is not None:
+            data["points"] = [next(points) for _ in data["points"]]
+        if data["start"] is not None:
+            data["start"] = next(points)
+        for step in data["segments"] or []:
+            step["to"] = next(points)
+            if step["center"] is not None:
+                step["center"] = next(points)
+        return Outline.model_validate(data)
 
     def resolve(self) -> list[dict[str, Any]]:
         """The outline as the segments the adapter draws.
@@ -455,6 +594,26 @@ class GetSketchInput(CompatInput):
             raise ValueError("name is required")
 
 
+class PlaneAxesInput(CompatInput):
+    """Input schema for reading a plane's sketch axes.
+
+    Attributes:
+        plane (str): The plane, by any name ``create_sketch`` takes.
+    """
+
+    plane: str = Field(
+        description=(
+            "The plane: 'Front' ('XY'), 'Top' ('XZ'), 'Right' ('YZ'), or a "
+            "plane's name, e.g. 'Plane3'"
+        )
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.plane = self.plane.strip()
+        if not self.plane:
+            raise ValueError("plane is required")
+
+
 class DeleteSketchEntitiesInput(CompatInput):
     """Input schema for deleting entities of the open sketch.
 
@@ -504,6 +663,24 @@ class AddOutlinesInput(CompatInput):
             "arcs)"
         ),
     )
+    coordinates: Coordinates = Field(
+        default="sketch",
+        description=(
+            _COORDINATES + "; every point is then [x, y, z], an arc's centre "
+            "too, and an arc's direction is as seen looking against the normal"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _points_match_coordinates(self) -> Self:
+        wanted = 3 if self.coordinates == "model" else 2
+        for index, outline in enumerate(self.outlines):
+            if outline.dimension() != wanted:
+                raise ValueError(
+                    f"outlines[{index}]: with coordinates '{self.coordinates}' "
+                    f"every point is {'[x, y, z]' if wanted == 3 else '[x, y]'}"
+                )
+        return self
 
 
 class AddSketchTextInput(CompatInput):
@@ -743,6 +920,59 @@ async def register_sketching_tools(
     # SolidWorks' name -> the name asked for.
     names_on_exit: dict[str, str] = {}
 
+    async def _on_sketch(
+        points: list[list[float]], labels: list[str]
+    ) -> tuple[list[tuple[float, float]], dict[str, Any]]:
+        """Model points as the open sketch's (x, y), for coordinates 'model'.
+
+        Returns:
+            tuple: The sketch points (mm) and the reply's ``projection``.
+
+        Raises:
+            UnsupportedOperationError: The adapter can't read the sketch's axes.
+            InvalidInputError: A point is off the sketch plane.
+            ToolOperationError: The axes couldn't be read.
+        """
+        require_capability(
+            adapter,
+            "get_open_sketch_axes",
+            "The active adapter can't read the open sketch's axes, so model "
+            "coordinates can't be used; give sketch coordinates. Nothing was drawn.",
+        )
+        read = await adapter.get_open_sketch_axes()
+        require_success(read, context="Failed to read the open sketch's axes")
+        frame = Frame.from_mapping(read.data)
+        if frame is None:
+            raise ToolOperationError(
+                "The open sketch's axes didn't read as a plane; nothing was drawn."
+            )
+        try:
+            flat, off = project(frame, points, labels)
+        except ValueError as exc:
+            raise InvalidInputError(str(exc)) from exc
+        return flat, {
+            "coordinates": "model",
+            "axes": (read.data or {}).get("summary"),
+            "max_off_plane_mm": round(off, 6),
+        }
+
+    async def _line_ends(
+        input_data: AddLineInput,
+    ) -> tuple[float, float, float, float, dict[str, Any] | None]:
+        """A line's ends in sketch mm, projected for coordinates 'model'."""
+        if input_data.coordinates != "model":
+            return (
+                input_data.x1 or 0.0,
+                input_data.y1 or 0.0,
+                input_data.x2 or 0.0,
+                input_data.y2 or 0.0,
+                None,
+            )
+        (a, b), projection = await _on_sketch(
+            input_data.model_points(), ["start", "end"]
+        )
+        return a[0], a[1], b[0], b[1], projection
+
     async def _make_construction(entity_id: Any, construction: bool, what: str) -> None:
         """Turn a just-drawn entity into construction geometry when asked.
 
@@ -822,25 +1052,24 @@ async def register_sketching_tools(
         """Draw a straight line between two points in the open sketch, in mm.
 
         Use it for profiles made of straight edges; for a closed box, use
-        `add_rectangle`, and for a revolve axis, `add_centerline`. Needs: an open sketch
+        `add_rectangle`, and for a revolve axis, `add_centerline`. With `coordinates:
+        "model"` the ends are model points on the sketch plane. Needs: an open sketch
         (`create_sketch`). Changes: adds a line (a construction line with
-        `construction`). Returns: `line` with `id`, `start`, `end` and `length`. Its
-        `id` is what `add_sketch_constraint` and `add_sketch_dimension` take.
+        `construction`). Returns: `line` with `id`, `start`, `end` (sketch mm) and
+        `length`, and `projection` for model points. Its `id` is what
+        `add_sketch_constraint` and `add_sketch_dimension` take.
 
         Args:
             input_data: The line. Give `x1`, `y1`, `x2`, `y2` (mm; or `start_x`,
-                `start_y`, `end_x`, `end_y`); `construction` is off.
+                `start_y`, `end_x`, `end_y`), and `z1`, `z2` with `coordinates`
+                "model"; `construction` is off.
 
         Returns:
             dict[str, Any]: The line added.
         """
         input_data = normalize_input(input_data, AddLineInput)
-        result = await adapter.add_line(
-            input_data.x1,  # type: ignore[arg-type]
-            input_data.y1,  # type: ignore[arg-type]
-            input_data.x2,  # type: ignore[arg-type]
-            input_data.y2,  # type: ignore[arg-type]
-        )
+        x1, y1, x2, y2, projection = await _line_ends(input_data)
+        result = await adapter.add_line(x1, y1, x2, y2)
 
         require_success(result, context="Failed to add line")
         line_id = (
@@ -849,9 +1078,7 @@ async def register_sketching_tools(
             else result.data
         )
         await _make_construction(line_id, input_data.construction, "line")
-        x1, y1 = input_data.x1 or 0.0, input_data.y1 or 0.0
-        x2, y2 = input_data.x2 or 0.0, input_data.y2 or 0.0
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Added line from ({x1}, {y1}) to ({x2}, {y2})",
             "line": {
@@ -863,27 +1090,36 @@ async def register_sketching_tools(
             },
             "execution_time": result.execution_time,
         }
+        if projection is not None:
+            reply["projection"] = projection
+        return reply
 
     @mcp.tool()
     async def add_circle(input_data: AddCircleInput) -> dict[str, Any]:
         """Draw a circle in the open sketch from its centre and radius, in mm.
 
-        Use it for holes and round bosses. Needs: an open sketch (`create_sketch`).
-        Changes: adds a circle (a construction circle with `construction`). Returns:
-        `circle` with `id`, `center`, `radius` and `diameter`. Its `id` is what
-        `add_sketch_constraint` and `add_sketch_dimension` take.
+        Use it for holes and round bosses. With `coordinates: "model"` the centre is a
+        model point (`center_z` too) on the sketch plane, so no axes need working out.
+        Needs: an open sketch (`create_sketch`). Changes: adds a circle (a
+        construction circle with `construction`). Returns: `circle` with `id`,
+        `center` (sketch mm), `radius` and `diameter`, and `projection` for a model
+        point. Its `id` is what `add_sketch_constraint` and `add_sketch_dimension` take.
 
         Args:
             input_data: The circle. `center_x`, `center_y` and `radius` (mm) are
-                required; `construction` is off.
+                required, and `center_z` with `coordinates` "model";
+                `construction` is off.
 
         Returns:
             dict[str, Any]: The circle added.
         """
         input_data = normalize_input(input_data, AddCircleInput)
-        result = await adapter.add_circle(
-            input_data.center_x, input_data.center_y, input_data.radius
-        )
+        cx, cy, projection = input_data.center_x, input_data.center_y, None
+        if input_data.coordinates == "model":
+            ((cx, cy),), projection = await _on_sketch(
+                [[cx, cy, input_data.center_z or 0.0]], ["center"]
+            )
+        result = await adapter.add_circle(cx, cy, input_data.radius)
 
         require_success(result, context="Failed to add circle")
         circle_id = (
@@ -892,42 +1128,56 @@ async def register_sketching_tools(
             else result.data
         )
         await _make_construction(circle_id, input_data.construction, "circle")
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Added circle at ({input_data.center_x}, {input_data.center_y}) with radius {input_data.radius}mm",
+            "message": f"Added circle at ({cx}, {cy}) with radius {input_data.radius}mm",
             "circle": {
                 "id": circle_id,
-                "center": {"x": input_data.center_x, "y": input_data.center_y},
+                "center": {"x": cx, "y": cy},
                 "radius": input_data.radius,
                 "construction": input_data.construction,
                 "diameter": input_data.radius * 2,
             },
             "execution_time": result.execution_time,
         }
+        if projection is not None:
+            reply["projection"] = projection
+        return reply
 
     @mcp.tool()
     async def add_rectangle(input_data: AddRectangleInput) -> dict[str, Any]:
         """Draw a closed, axis-aligned rectangle in the open sketch from two opposite corners, in mm.
 
-        Use it for blocks, plates and rectangular cut-outs. Needs: an open sketch
-        (`create_sketch`). Changes: adds four connected lines. Returns: `rectangle` with
-        `id`, `corner1`, `corner2`, `width`, `height` and `area`. Its `id` is what
-        `add_sketch_constraint` and `add_sketch_dimension` take.
+        Use it for blocks, plates and rectangular cut-outs. With `coordinates:
+        "model"` the corners are model points on the sketch plane; the sides still run
+        along sketch x and y. Needs: an open sketch (`create_sketch`). Changes: adds
+        four connected lines. Returns: `rectangle` with `id`, `corner1`, `corner2`
+        (sketch mm), `width`, `height` and `area`, and `projection` for model points.
+        Its `id` is what `add_sketch_constraint` and `add_sketch_dimension` take.
 
         Args:
             input_data: The rectangle. Give `x1`, `y1`, `x2`, `y2` (mm; or
-                `corner1_x` ... `corner2_y`); `construction` is off.
+                `corner1_x` ... `corner2_y`), and `z1`, `z2` with `coordinates`
+                "model"; `construction` is off.
 
         Returns:
             dict[str, Any]: The rectangle added.
         """
         input_data = normalize_input(input_data, AddRectangleInput)
-        result = await adapter.add_rectangle(
-            input_data.x1,  # type: ignore[arg-type]
-            input_data.y1,  # type: ignore[arg-type]
-            input_data.x2,  # type: ignore[arg-type]
-            input_data.y2,  # type: ignore[arg-type]
-        )
+        rx1, ry1 = input_data.x1 or 0.0, input_data.y1 or 0.0
+        rx2, ry2 = input_data.x2 or 0.0, input_data.y2 or 0.0
+        projection = None
+        if input_data.coordinates == "model":
+            ((rx1, ry1), (rx2, ry2)), projection = await _on_sketch(
+                [[rx1, ry1, input_data.z1 or 0.0], [rx2, ry2, input_data.z2 or 0.0]],
+                ["corner 1", "corner 2"],
+            )
+            if abs(rx1 - rx2) < 1e-9 or abs(ry1 - ry2) < 1e-9:
+                raise InvalidInputError(
+                    f"The corners land at ({rx1:g}, {ry1:g}) and ({rx2:g}, {ry2:g}) "
+                    "in the sketch: a side along sketch x or y has no length"
+                )
+        result = await adapter.add_rectangle(rx1, ry1, rx2, ry2)
 
         require_success(result, context="Failed to add rectangle")
         rect_id = (
@@ -936,12 +1186,10 @@ async def register_sketching_tools(
             else result.data
         )
         await _make_construction(rect_id, input_data.construction, "rectangle")
-        rx1, ry1 = input_data.x1 or 0.0, input_data.y1 or 0.0
-        rx2, ry2 = input_data.x2 or 0.0, input_data.y2 or 0.0
         width = abs(rx2 - rx1)
         height = abs(ry2 - ry1)
 
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Added rectangle from ({rx1}, {ry1}) to ({rx2}, {ry2})",
             "rectangle": {
@@ -955,6 +1203,9 @@ async def register_sketching_tools(
             },
             "execution_time": result.execution_time,
         }
+        if projection is not None:
+            reply["projection"] = projection
+        return reply
 
     @mcp.tool()
     async def exit_sketch() -> dict[str, Any]:
@@ -1085,41 +1336,50 @@ async def register_sketching_tools(
 
         Args:
             input_data: The arc. `center_x`, `center_y`, `start_x`, `start_y`,
-                `end_x` and `end_y` (mm) are all required; `direction` is "ccw".
+                `end_x` and `end_y` (mm) are all required, and the `_z` ones with
+                `coordinates` "model"; `direction` is "ccw".
 
         Returns:
             dict[str, Any]: The arc added.
         """
         input_data = normalize_input(input_data, AddArcInput)
+        center = [input_data.center_x, input_data.center_y]
+        start = [input_data.start_x, input_data.start_y]
+        end = [input_data.end_x, input_data.end_y]
+        projection = None
+        if input_data.coordinates == "model":
+            flat, projection = await _on_sketch(
+                [
+                    [*center, input_data.center_z or 0.0],
+                    [*start, input_data.start_z or 0.0],
+                    [*end, input_data.end_z or 0.0],
+                ],
+                ["center", "start", "end"],
+            )
+            center, start, end = (list(p) for p in flat)
         result = await adapter.add_arc(
-            input_data.center_x,
-            input_data.center_y,
-            input_data.start_x,
-            input_data.start_y,
-            input_data.end_x,
-            input_data.end_y,
+            center[0],
+            center[1],
+            start[0],
+            start[1],
+            end[0],
+            end[1],
             input_data.direction,
         )
 
         require_success(result, context="Failed to add arc")
         arc_id = result.data
-        center = [input_data.center_x, input_data.center_y]
-        start = [input_data.start_x, input_data.start_y]
-        end = [input_data.end_x, input_data.end_y]
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": (
                 f"Added {input_data.direction} arc centered at "
-                f"({input_data.center_x}, {input_data.center_y})"
+                f"({center[0]}, {center[1]})"
             ),
             "arc": {
                 "id": arc_id,
-                "center": {"x": input_data.center_x, "y": input_data.center_y},
-                "start_point": {
-                    "x": input_data.start_x,
-                    "y": input_data.start_y,
-                },
-                "end_point": {"x": input_data.end_x, "y": input_data.end_y},
+                "center": {"x": center[0], "y": center[1]},
+                "start_point": {"x": start[0], "y": start[1]},
+                "end_point": {"x": end[0], "y": end[1]},
                 "direction": input_data.direction,
                 "radius": round(_distance(center, start), 6),
                 "sweep_deg": round(
@@ -1128,6 +1388,9 @@ async def register_sketching_tools(
             },
             "execution_time": result.execution_time,
         }
+        if projection is not None:
+            reply["projection"] = projection
+        return reply
 
     @mcp.tool()
     async def add_outlines(input_data: AddOutlinesInput) -> dict[str, Any]:
@@ -1137,23 +1400,48 @@ async def register_sketching_tools(
         hexagons is one call with 25 `points` lists. Each outline is either `points`
         (a polygon) or `start` plus `segments`, each a line or an arc (`center`,
         `direction`) to `to`. Outlines close by default (`closed`), each segment
-        starting exactly where the last ended, so the loop is connected. Needs: an
-        open sketch (`create_sketch`). Changes: adds the segments; if SolidWorks
-        refuses one, the call removes what it drew and says which failed. Returns:
-        `outlines` with each one's segment `ids`, plus `segment_count`, `line_count`
-        and `arc_count`.
+        starting exactly where the last ended, so the loop is connected. With
+        `coordinates: "model"` every point is [x, y, z] in model mm on the sketch
+        plane. Needs: an open sketch (`create_sketch`). Changes: adds the segments;
+        if SolidWorks refuses one, the call removes what it drew and says which
+        failed. Returns: `outlines` with each one's segment `ids`, plus
+        `segment_count`, `line_count`, `arc_count`, and `projection` for model points.
 
         Args:
             input_data: The outlines. `outlines` is required: each needs `points`,
-                or `start` and `segments`; `closed` is on, `construction` off.
+                or `start` and `segments`; `closed` is on, `construction` off,
+                `coordinates` "sketch".
 
         Returns:
             dict[str, Any]: The segments drawn.
         """
         input_data = normalize_input(input_data, AddOutlinesInput)
+        sources, projection = list(input_data.outlines), None
+        if input_data.coordinates == "model":
+            labelled = [
+                (f"outlines[{i}].{label}", point)
+                for i, outline in enumerate(sources)
+                for label, point in outline.labelled_points()
+            ]
+            flat, projection = await _on_sketch(
+                [point for _label, point in labelled],
+                [label for label, _point in labelled],
+            )
+            projected = []
+            for index, outline in enumerate(sources):
+                count = len(outline.labelled_points())
+                try:
+                    projected.append(outline.on_sketch(flat[:count]))
+                except ValidationError as exc:
+                    raise InvalidInputError(
+                        f"outlines[{index}] on the sketch plane: "
+                        + describe_validation_error(exc)
+                    ) from exc
+                flat = flat[count:]
+            sources = projected
         outlines = [
             {"segments": outline.resolve(), "construction": outline.construction}
-            for outline in input_data.outlines
+            for outline in sources
         ]
         result = await adapter.add_sketch_outlines(outlines)
         require_success(result, context="Failed to draw outlines")
@@ -1172,7 +1460,7 @@ async def register_sketching_tools(
             )
         ]
         count = data.get("segment_count", 0)
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": (
                 f"Drew {len(replies)} outline(s): {count} segments "
@@ -1184,6 +1472,9 @@ async def register_sketching_tools(
             "arc_count": data.get("arc_count", 0),
             "execution_time": result.execution_time,
         }
+        if projection is not None:
+            reply["projection"] = projection
+        return reply
 
     @mcp.tool()
     async def add_sketch_text(input_data: AddSketchTextInput) -> dict[str, Any]:
@@ -1311,6 +1602,46 @@ async def register_sketching_tools(
         }
 
     @mcp.tool()
+    async def plane_axes(input_data: PlaneAxesInput) -> dict[str, Any]:
+        """Read where a sketch on a plane points: its x, y, normal and origin in the model.
+
+        Use it before sketching on a plane made from a face or a point, whose sketch
+        x and y can't be guessed, to work out sketch coordinates or a cut's side; to
+        draw by model points instead, give the `add_*` tools `coordinates: "model"`.
+        It reads the plane's own transform (IRefPlane.Transform): no sketch is made,
+        so the part doesn't change. Needs: an open part with the plane. Read-only.
+        Returns: `plane` (its tree name), `axes` (`x`, `y`, `normal`, `origin_mm` and
+        `summary`, as `create_sketch` reports them) and `method`.
+
+        Args:
+            input_data: The plane. `plane` is required.
+
+        Returns:
+            dict[str, Any]: The plane's axes.
+        """
+        input_data = normalize_input(input_data, PlaneAxesInput)
+        require_capability(
+            adapter,
+            "plane_axes",
+            "The active adapter cannot read a plane's axes; nothing was read.",
+        )
+        result = await adapter.plane_axes(input_data.plane)
+        require_success(
+            result, context=f"Failed to read the axes of {input_data.plane}"
+        )
+        data = result.data if isinstance(result.data, dict) else {}
+        axes = data.get("axes") or {}
+        name = data.get("plane") or input_data.plane
+        return {
+            "status": "success",
+            "message": f"{name}: {axes.get('summary', 'axes read')}",
+            "plane": name,
+            "axes": axes,
+            "method": data.get("method"),
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
     async def delete_sketch_entities(
         input_data: DeleteSketchEntitiesInput,
     ) -> dict[str, Any]:
@@ -1400,37 +1731,37 @@ async def register_sketching_tools(
         Use it as the axis for `create_revolve`, or as the line for `sketch_mirror` and
         symmetric relations. It is never part of the profile. Needs: an open sketch
         (`create_sketch`). Changes: adds a centreline. Returns: `centerline` with `id`,
-        `start_point` and `end_point`.
+        `start_point` and `end_point` (sketch mm), and `projection` for model points.
 
         Args:
             input_data: The line. Give `x1`, `y1`, `x2`, `y2` (mm; or `start_x`,
-                `start_y`, `end_x`, `end_y`); `construction` is not used.
+                `start_y`, `end_x`, `end_y`), and `z1`, `z2` with `coordinates`
+                "model"; `construction` is not used.
 
         Returns:
             dict[str, Any]: The centreline added.
         """
         input_data = normalize_input(input_data, AddLineInput)
+        x1, y1, x2, y2, projection = await _line_ends(input_data)
 
-        result = await adapter.add_centerline(
-            input_data.x1,  # type: ignore[arg-type]
-            input_data.y1,  # type: ignore[arg-type]
-            input_data.x2,  # type: ignore[arg-type]
-            input_data.y2,  # type: ignore[arg-type]
-        )
+        result = await adapter.add_centerline(x1, y1, x2, y2)
 
         require_success(result, context="Failed to add centerline")
         centerline_id = result.data
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Added centerline from ({input_data.x1}, {input_data.y1}) to ({input_data.x2}, {input_data.y2})",
+            "message": f"Added centerline from ({x1}, {y1}) to ({x2}, {y2})",
             "centerline": {
                 "id": centerline_id,
-                "start_point": {"x": input_data.x1, "y": input_data.y1},
-                "end_point": {"x": input_data.x2, "y": input_data.y2},
+                "start_point": {"x": x1, "y": y1},
+                "end_point": {"x": x2, "y": y2},
                 "type": "construction",
             },
             "execution_time": result.execution_time,
         }
+        if projection is not None:
+            reply["projection"] = projection
+        return reply
 
     @mcp.tool()
     async def add_polygon(input_data: dict[str, Any]) -> dict[str, Any]:

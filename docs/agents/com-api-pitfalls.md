@@ -1618,6 +1618,34 @@ settles each:
 
 ---
 
+## 58. Planes, axes and regions anywhere: what r2-sketching assumes, still to be measured
+
+Written without SolidWorks for The Dipper's cage cuts (21 cuts on vertical planes
+at 30 and 60 degrees). `tests/scripts/probe_r2_sketching.py` settles each:
+
+- **A plane's frame.** `plane_axes` reads `IRefPlane.Transform` and takes it as the
+  frame `create_sketch` reports (`ModelToSketchTransform` inverted): rows 0-2 are
+  sketch x, y and the normal, elements 9-11 the origin in metres. The API help says
+  the transform takes a plane from the Front Plane's place to its own; that a sketch
+  on it takes the same x and origin is not measured.
+- **Axes and planes through a point** (`adapters/solidworks/reference_geometry.py`)
+  are built on one line in a 3D sketch of their own: `ISketchManager.Insert3DSketch`
+  (`True` opens and closes it), `CreateLine` in model metres with `AddToDB` on, the
+  line picked as `Line1@3DSketch1` "EXTSKETCHSEGMENT" (else at its midpoint). An axis
+  is `IModelDoc2.InsertAxis2(True)` on the line, read back with
+  `IRefAxis.GetRefAxisParams` (start and end, metres). A plane is `InsertRefPlane`
+  Perpendicular (2) to the line at mark 0 and Coincident (4) with its start point
+  ("EXTSKETCHPOINT" at the point) at mark 1; which way its normal points is read
+  back and a reversed one only warned about.
+- **Every region of a sketch** (`sketch_regions.py`), as SolidWorks' "Create Extrude
+  Feature Using Sketch Contours" macro does: `ISelectionMgr.EnableContourSelection`
+  on, the sketch at mark 4, each `ISketch.GetSketchRegions` item `Select2(True,
+  SelectData mark 4)` (else `Select(True, 4)`; `GetSketchContours` when no region
+  reads), then `FeatureExtrusion3` or `FeatureCut4`, which should union them. A
+  crossing failure is retried that way only when every segment belongs to a circle
+  or a closed loop of lines and none lies inside another, as every region fills a
+  hole.
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests
