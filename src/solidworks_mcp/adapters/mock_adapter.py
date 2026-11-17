@@ -1745,9 +1745,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
     async def check_printability(
         self,
-        build_direction: str | list[float],
+        build_direction: str | list[float] | None,
         support_angle_deg: float = 45.0,
         min_bridge_mm: float = 5.0,
+        orientations: int = 0,
+        min_feature_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock the print check: the real check on the mock's STL (a tetrahedron).
 
@@ -1756,6 +1758,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             support_angle_deg: Down-facing surfaces under this angle need
                 supports.
             min_bridge_mm: Only longer bridges are listed.
+            orientations: How many build directions to try (0: none).
+            min_feature_mm: Report regions thinner than this (None: don't).
 
         Returns:
             AdapterResult[dict[str, Any]]: As the live adapter's.
@@ -1767,7 +1771,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error="check_printability requires an active part document.",
             )
-        return await check_part(self, build_direction, support_angle_deg, min_bridge_mm)
+        return await check_part(
+            self,
+            build_direction,
+            support_angle_deg,
+            min_bridge_mm,
+            orientations,
+            min_feature_mm,
+        )
 
     async def run_api_snippet(
         self, code: str, timeout_s: float = 60.0, compile_only: bool = False

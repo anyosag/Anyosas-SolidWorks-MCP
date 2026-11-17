@@ -46,9 +46,13 @@ async def test_a_part_is_checked(monkeypatch) -> None:
     harness = _Harness(1)
 
     result = await harness.check_printability("-y", 40.0, 8.0)
+    await harness.check_printability(None, 45.0, 5.0, 26, 0.4)
 
     assert result.data == {"ok": True}
-    assert calls == [(harness, "-y", 40.0, 8.0)]
+    assert calls == [
+        (harness, "-y", 40.0, 8.0, 0, None),
+        (harness, None, 45.0, 5.0, 26, 0.4),
+    ]
 
 
 async def test_an_assembly_is_refused() -> None:

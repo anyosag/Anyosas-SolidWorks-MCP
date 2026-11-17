@@ -894,20 +894,28 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
 
     async def check_printability(
         self,
-        build_direction: str | list[float],
+        build_direction: str | list[float] | None,
         support_angle_deg: float = 45.0,
         min_bridge_mm: float = 5.0,
+        orientations: int = 0,
+        min_feature_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Check printability through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "check_printability",
             lambda: self.adapter.check_printability(
-                build_direction, support_angle_deg, min_bridge_mm
+                build_direction,
+                support_angle_deg,
+                min_bridge_mm,
+                orientations,
+                min_feature_mm,
             ),
             input_dict={
                 "build_direction": build_direction,
                 "support_angle_deg": support_angle_deg,
                 "min_bridge_mm": min_bridge_mm,
+                "orientations": orientations,
+                "min_feature_mm": min_feature_mm,
             },
         )
 

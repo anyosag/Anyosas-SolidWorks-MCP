@@ -14,7 +14,6 @@ async def test_the_breaker_passes_every_argument() -> None:
     ok = AdapterResult(status=AdapterResultStatus.SUCCESS, data={})
     inner.check_printability = AsyncMock(return_value=ok)  # type: ignore[method-assign]
 
-    assert (
-        await CircuitBreakerAdapter(adapter=inner).check_printability("-y", 40.0, 8.0)
-    ) is ok
-    inner.check_printability.assert_awaited_once_with("-y", 40.0, 8.0)
+    breaker = CircuitBreakerAdapter(adapter=inner)
+    assert (await breaker.check_printability("-y", 40.0, 8.0, 12, 0.5)) is ok
+    inner.check_printability.assert_awaited_once_with("-y", 40.0, 8.0, 12, 0.5)

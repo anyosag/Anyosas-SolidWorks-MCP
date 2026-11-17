@@ -19,5 +19,5 @@ async def test_the_pool_passes_every_argument() -> None:
 
     pool._execute_with_pool = AsyncMock(side_effect=passthrough)  # type: ignore[method-assign]
 
-    assert (await pool.check_printability([0, 1, 0], 30.0, 2.0)) is ok
-    stub.check_printability.assert_awaited_once_with([0, 1, 0], 30.0, 2.0)
+    assert (await pool.check_printability([0, 1, 0], 30.0, 2.0, 26, 0.8)) is ok
+    stub.check_printability.assert_awaited_once_with([0, 1, 0], 30.0, 2.0, 26, 0.8)

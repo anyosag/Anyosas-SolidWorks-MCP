@@ -1330,22 +1330,28 @@ class SolidWorksAdapter(ABC):
 
     async def check_printability(
         self,
-        build_direction: str | list[float],
+        build_direction: str | list[float] | None,
         support_angle_deg: float = 45.0,
         min_bridge_mm: float = 5.0,
+        orientations: int = 0,
+        min_feature_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Check the active part for printing in one orientation.
 
         Args:
-            build_direction (str | list[float]): The direction the part
-                grows from the build plate: ``x``, ``-z`` ... or a vector.
+            build_direction (str | list[float] | None): The direction the part
+                grows from the build plate: ``x``, ``-z`` ... or a vector; None
+                to check in the best of ``orientations``.
             support_angle_deg (float): Down-facing surfaces under this angle
                 from horizontal need supports.
             min_bridge_mm (float): Only longer bridges are listed.
+            orientations (int): How many build directions to try (0: none).
+            min_feature_mm (float | None): Report regions thinner than this.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``down_facing``, ``islands``,
-            ``bridges``, ``suction_cups``, ``ok``, ``triangles`` and ``mesh``.
+            ``bridges``, ``suction_cups``, ``ok``, ``triangles`` and ``mesh``;
+            ``orientations`` and ``thin_features`` when asked.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
