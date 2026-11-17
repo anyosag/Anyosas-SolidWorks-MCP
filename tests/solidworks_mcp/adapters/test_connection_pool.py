@@ -906,6 +906,9 @@ class TestConnectionPoolAdapterExtras:
             async def set_component_state(self, component, fixed=None, flexible=None):
                 return _ok("state")
 
+            async def set_component_visibility(self, components, visible):
+                return _ok({"components": components, "visible": visible})
+
             async def add_chamfer(self, distance, edge_names, angle=45.0, flip=False):
                 return _ok("chamfer")
 
@@ -941,6 +944,8 @@ class TestConnectionPoolAdapterExtras:
             assert (await wrapped.undo()).is_success
             assert (await wrapped.add_mate("Comp1", "Comp2")).is_success
             assert (await wrapped.set_component_state("Comp1", fixed=True)).is_success
+            shown = await wrapped.set_component_visibility(["cover-1"], False)
+            assert shown.data == {"components": ["cover-1"], "visible": False}
             assert (await wrapped.add_chamfer(1.0, ["Edge1"])).is_success
             assert (await wrapped.get_selected_entities()).is_success
 

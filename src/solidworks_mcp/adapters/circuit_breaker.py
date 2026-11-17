@@ -2401,6 +2401,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"component": component, "fixed": fixed, "flexible": flexible},
         )
 
+    async def set_component_visibility(
+        self, components: list[str], visible: bool
+    ) -> AdapterResult[dict[str, Any]]:
+        """Hide or show components through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_component_visibility",
+            lambda: self.adapter.set_component_visibility(components, visible),
+            input_dict={"components": components, "visible": visible},
+        )
+
     async def add_mate(
         self,
         component_a: str,

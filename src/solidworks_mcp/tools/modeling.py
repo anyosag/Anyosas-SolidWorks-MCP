@@ -1667,6 +1667,30 @@ class SetComponentStateInput(CompatInput):
             raise ValueError("give fixed, flexible or both")
 
 
+class SetComponentVisibilityInput(CompatInput):
+    """Input schema for hiding and showing assembly components.
+
+    Attributes:
+        components (list[str]): Component names.
+        visible (bool): Show (true) or hide (false).
+    """
+
+    components: list[str] = Field(
+        min_length=1,
+        description=(
+            'Component names as list_components gives them, e.g. ["cover-1"]; a '
+            'part inside a sub-assembly as "hinge-1/pin-1"'
+        ),
+    )
+    visible: bool = Field(description="true shows them, false hides them")
+
+    def model_post_init(self, __context: Any) -> None:
+        names = [n.strip() for n in self.components if n and n.strip()]
+        if not names:
+            raise ValueError("components needs at least one component name")
+        self.components = list(dict.fromkeys(names))
+
+
 class SetComponentTransformInput(CompatInput):
     """Input schema for placing a component: origin, rotation and fixed state.
 
@@ -3316,6 +3340,52 @@ async def register_modeling_tools(
             "status": "success",
             "message": f"{input_data.component} is now {' and '.join(words)}",
             "state": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def set_component_visibility(
+        input_data: SetComponentVisibilityInput,
+    ) -> dict[str, Any]:
+        """Hide or show components of the active assembly, as the tree's Hide and Show do.
+
+        Use it to see inside an assembly or picture it with a part left out (a hinged
+        cover off). The components stay where they are and keep their mates; a
+        hidden one is still in the assembly and its checks. For one picture only,
+        give `export_image` `hide_components` instead; for planes and sketches use
+        `set_visibility`. Needs: an open assembly. Changes: the components' visibility
+        in the active display state. Returns: `data` with `visible` and `components`,
+        each with `name`, `before`, `after` (shown or not) and `method` (the call that
+        did it, none when it already was).
+
+        Args:
+            input_data: `components` (names from `list_components`) and
+                `visible` are required.
+
+        Returns:
+            dict[str, Any]: Each component's visibility before and after.
+        """
+        input_data = normalize_input(input_data, SetComponentVisibilityInput)
+        result = await adapter.set_component_visibility(
+            input_data.components, input_data.visible
+        )
+        require_success(result, context="Failed to show or hide the components")
+        data = result.data if isinstance(result.data, dict) else {}
+        changed = [
+            str(entry.get("name"))
+            for entry in data.get("components") or []
+            if isinstance(entry, dict) and entry.get("before") is not input_data.visible
+        ]
+        verb = "Showed" if input_data.visible else "Hid"
+        state = "shown" if input_data.visible else "hidden"
+        unchanged = [n for n in input_data.components if n not in changed]
+        message = f"{verb} {', '.join(changed)}" if changed else "Nothing changed"
+        if unchanged:
+            message += f"; {', '.join(unchanged)} already {state}"
+        return {
+            "status": "success",
+            "message": message,
+            "data": data,
             "execution_time": result.execution_time,
         }
 

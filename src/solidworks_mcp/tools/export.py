@@ -12,6 +12,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks import view_matrix
 from ..utils import export_check, stl_mesh
 from .input_compat import CompatInput
 from .modeling import DisplayType
@@ -220,6 +221,13 @@ class ExportImageInput(CompatInput):
         hide (list[str] | None): Display types hidden for the picture only.
         section (ImageSection | None): A plane to cut the model on, for the
             picture only.
+        view_direction (list[float] | None): Look at the model from this
+            direction (model to viewer), instead of a standard view.
+        up (list[float] | None): The model direction shown upward with
+            ``view_direction``.
+        up_axis (str): ``"y"`` (SolidWorks' views) or ``"z"`` (+Z up).
+        hide_components (list[str] | None): Components hidden for the
+            picture only.
     """
 
     file_path: str | None = Field(
@@ -277,6 +285,43 @@ class ExportImageInput(CompatInput):
             "snap inside its socket; the cut is taken off afterwards"
         ),
     )
+    view_direction: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description=(
+            "Look at the model from this direction instead of a standard view: "
+            "[x, y, z] in model coordinates, pointing from the model toward you "
+            "(the outward normal of the side you want to see). [0, 0, 1] is the "
+            "front view, [1, 1, 1] the isometric, [1, -1, 1] the isometric of a "
+            "Z-up part"
+        ),
+    )
+    up: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description=(
+            "With view_direction: the model direction shown pointing up, [x, y, "
+            "z], at an angle to view_direction. Left out: +Y, or +Z with up_axis z"
+        ),
+    )
+    up_axis: Literal["y", "z"] = Field(
+        default="y",
+        description=(
+            "Which model axis is up. y: SolidWorks' standard views. z: for a part "
+            "modelled Z-up, every standard view is turned so +Z is up (front "
+            "looks from -Y, top from +Z, isometric from [1, -1, 1])"
+        ),
+    )
+    hide_components: list[str] | None = Field(
+        default=None,
+        description=(
+            "Assembly only: hide these components for the picture only, e.g. "
+            '["cover-1"] for a cover-off view, by the names list_components '
+            "gives; they are shown again afterwards, also when the picture fails"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the export image input.
@@ -289,11 +334,20 @@ class ExportImageInput(CompatInput):
         """
         if self.file_path is None:
             self.file_path = self.output_path
+        named_view = (
+            "view_orientation" in self.model_fields_set or self.orientation is not None
+        )
         if (
             self.orientation is not None
             and "view_orientation" not in self.model_fields_set
         ):
             self.view_orientation = self.orientation
+        self._check_view(named_view)
+        if self.hide_components is not None:
+            names = [n.strip() for n in self.hide_components if n and n.strip()]
+            if not names:
+                raise ValueError("hide_components needs at least one component name")
+            self.hide_components = list(dict.fromkeys(names))
         if self.image_format is not None:
             self.format_type = self.image_format.lower()
         if self.resolution and "x" in self.resolution.lower():
@@ -306,6 +360,26 @@ class ExportImageInput(CompatInput):
             first, second = self.zoom_box_mm[:3], self.zoom_box_mm[3:]
             if first == second:
                 raise ValueError("zoom_box_mm needs two different corners")
+
+    def _check_view(self, named_view: bool) -> None:
+        """Refuse a view that can't be set: two views at once, or a bad direction.
+
+        Args:
+            named_view: Whether ``view_orientation`` (or ``orientation``) was given.
+
+        Raises:
+            ValueError: ``view_direction`` with a named view, ``up`` without
+                ``view_direction``, a zero vector or an ``up`` along the
+                direction, or ``up_axis`` "z" without a standard view.
+        """
+        if self.view_direction is not None and named_view:
+            raise ValueError(
+                "give view_orientation or view_direction, not both: "
+                "view_direction sets the view itself"
+            )
+        view_matrix.picture_rows(
+            self.view_orientation.lower(), self.view_direction, self.up, self.up_axis
+        )
 
 
 class BatchExportInput(CompatInput):
@@ -790,28 +864,27 @@ async def register_export_tools(
     async def export_image(input_data: ExportImageInput) -> dict[str, Any]:
         """Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG.
 
-        Use it to show a result, or to check a model's shape after a change. A standard
-        view (front, back, left, right, top, bottom, isometric, dimetric, trimetric)
-        turns the model to it and zooms so the whole model fits. `current` keeps the
-        view exactly as it is, zoom included, so a close-up set up first comes out as
-        that close-up. `zoom_to_fit` overrides the zoom either way; `zoom_box_mm`
-        zooms to a box of the model (model coordinates). `hide` hides planes,
-        sketches and the like, and `section` cuts the model on a plane (a snap inside
-        its socket), both for this picture only. The picture keeps the graphics
-        area's shape, padded out to `width` x `height`. Needs: an open, active
-        document. Changes: writes the image file; a standard view or a zoom also
-        turns or zooms the model on screen. Returns: `data` with `file_path`,
-        `format`, `dimensions` (the size written), `requested_dimensions`, `view`,
-        `zoomed_to_fit`, `zoom_box_mm`, `zoom_box_view_mm`, `hidden`, `section` and
-        `window_state`, and `file_check` (the picture read back); a bad file is an
-        `export_invalid` error.
+        Use it to show a result or check a shape. A standard view (front, back, left,
+        right, top, bottom, isometric, dimetric, trimetric) turns the model and zooms
+        to fit; `up_axis: "z"` turns those views so +Z is up, for a part modelled
+        Z-up. `view_direction` (model toward you, with `up`) looks from any side.
+        `current` keeps the view exactly as it is, zoom included. `zoom_to_fit`
+        overrides the zoom; `zoom_box_mm` zooms to a box of the model. For this
+        picture only:
+        `hide` hides planes and sketches, `hide_components` hides assembly
+        components (cover off), `section` cuts on a plane. Needs: an open, active
+        document. Changes: writes the image file; the view stays turned and zoomed on
+        screen. Returns: `data` with `file_path`, `dimensions`, `view`, `view_axes`
+        (model directions shown right, up and toward you), `zoomed_to_fit`,
+        `zoom_box_view_mm`, `hidden`, `hidden_components`, `section` and
+        `window_state`, and `file_check`; a bad file is an `export_invalid` error.
 
         Args:
             input_data: The image. `file_path` (or `output_path`) is needed; the
                 format follows its extension. `width`/`height` (or `resolution` as
-                "1920x1080") and `view_orientation` (isometric) have defaults;
-                `zoom_to_fit` defaults to yes except for `current`; `section` is
-                off.
+                "1920x1080"), `view_orientation` (isometric) and `up_axis` (y) have
+                defaults; `view_direction` replaces `view_orientation`;
+                `zoom_to_fit` defaults to yes except for `current`.
 
         Returns:
             dict[str, Any]: The image written.
@@ -832,13 +905,27 @@ async def register_export_tools(
                 ),
                 "execution_time": result.execution_time,
             }
+            warnings = []
             section = data.get("section")
             if isinstance(section, dict) and section.get("removed") is False:
-                reply["warning"] = (
+                warnings.append(
                     f"The section on {section.get('plane')} could not be taken off, "
                     "so the model still shows it cut. Take it off in SolidWorks "
                     "(View > Display > Section View)."
                 )
+            still_hidden = [
+                str(entry.get("name"))
+                for entry in data.get("hidden_components") or []
+                if isinstance(entry, dict) and entry.get("restored") is False
+            ]
+            if still_hidden:
+                warnings.append(
+                    f"{', '.join(still_hidden)} could not be shown again after the "
+                    "picture; show them with set_component_visibility (visible: "
+                    "true)."
+                )
+            if warnings:
+                reply["warning"] = " ".join(warnings)
             return reply
 
         if hasattr(adapter, "export_file") and input_data.file_path:

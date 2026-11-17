@@ -44,8 +44,10 @@ _RESPONSE_KEYS = {
     "rotate_to_z",
     "system_value",
     "thin_spots",
+    "top_pairs",
     "usage_instructions",
     "vba_code",
+    "view_axes",
 }
 
 _SKILL_FILES = sorted(

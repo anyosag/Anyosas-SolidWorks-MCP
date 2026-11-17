@@ -1806,6 +1806,25 @@ class SolidWorksAdapter(ABC):
             error="set_component_state is not implemented by this adapter",
         )
 
+    async def set_component_visibility(
+        self, components: list[str], visible: bool
+    ) -> AdapterResult[dict[str, Any]]:
+        """Hide or show components of the active assembly.
+
+        Args:
+            components (list[str]): Component names, as ``list_components``
+                reports them.
+            visible (bool): Show (True) or hide (False).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``visible`` and ``components``, one
+            ``{name, before, after, method}`` each, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_component_visibility is not implemented by this adapter",
+        )
+
     async def set_component_transform(
         self,
         component: str,

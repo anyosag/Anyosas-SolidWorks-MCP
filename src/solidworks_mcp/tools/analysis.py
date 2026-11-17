@@ -563,6 +563,86 @@ def _verdict_message(verdict: str, checks: list[dict[str, Any]], doc: str) -> st
     )
 
 
+#: How many component pairs ``check_interference`` lists, largest overlap first.
+TOP_INTERFERENCE_PAIRS = 10
+
+#: How many of those its message names.
+_PAIRS_IN_MESSAGE = 3
+
+
+def interference_pairs(
+    interferences: list[dict[str, Any]], limit: int = TOP_INTERFERENCE_PAIRS
+) -> dict[str, Any]:
+    """The component pairs that overlap most, from ``check_interference``'s list.
+
+    The Dipper session's check of a few components found 62 interferences, and
+    what reached the agent was the count alone. Each interference is one
+    overlap between two (or more) components; a pair of multibody parts can
+    overlap in many places, so the interferences are grouped by the
+    components involved and ranked by their total volume.
+
+    Args:
+        interferences: ``{components, volume_mm3}`` per interference; a volume
+            that isn't a number counts as 0.
+        limit: How many pairs to give.
+
+    Returns:
+        dict[str, Any]: ``top_pairs`` (``components``, ``count``,
+        ``volume_mm3`` in total and ``largest_mm3``, at most ``limit``),
+        ``pair_count`` (pairs that overlap) and ``total_volume_mm3``.
+    """
+    pairs: dict[tuple[str, ...], dict[str, Any]] = {}
+    total = 0.0
+    for item in interferences:
+        if not isinstance(item, dict):
+            continue
+        names = tuple(sorted(str(n) for n in item.get("components") or []))
+        volume = item.get("volume_mm3")
+        size = float(volume) if isinstance(volume, int | float) else 0.0
+        total += size
+        entry = pairs.setdefault(
+            names,
+            {
+                "components": list(names),
+                "count": 0,
+                "volume_mm3": 0.0,
+                "largest_mm3": 0.0,
+            },
+        )
+        entry["count"] += 1
+        entry["volume_mm3"] += size
+        entry["largest_mm3"] = max(entry["largest_mm3"], size)
+    ranked = sorted(pairs.values(), key=lambda e: (-e["volume_mm3"], e["components"]))
+    for entry in ranked:
+        entry["volume_mm3"] = round(entry["volume_mm3"], 6)
+        entry["largest_mm3"] = round(entry["largest_mm3"], 6)
+    return {
+        "top_pairs": ranked[:limit],
+        "pair_count": len(ranked),
+        "total_volume_mm3": round(total, 6),
+    }
+
+
+def _interference_message(data: dict[str, Any]) -> str:
+    """The count and the pairs that overlap most, in one line."""
+    count = data.get("interference_count")
+    if not isinstance(count, int):
+        return "Interference check completed"
+    if count == 0:
+        return "No interference found"
+    named = [
+        f"{' / '.join(p['components']) or '?'} {p['volume_mm3']:g} mm³"
+        + (f" ({p['count']} places)" if p["count"] > 1 else "")
+        for p in data.get("top_pairs", [])[:_PAIRS_IN_MESSAGE]
+    ]
+    if not named:
+        return f"{count} interference(s); SolidWorks named no components for them"
+    return (
+        f"{count} interference(s) between {data.get('pair_count')} pair(s) of "
+        f"components; most overlap: {'; '.join(named)}"
+    )
+
+
 #: A step on which a point moves farther than this (mm) gets a warning.
 _TRAVEL_WARN_MM = 1.0
 
@@ -813,8 +893,11 @@ async def register_analysis_tools(
         Use it after inserting and mating components. A count of 0 is a real
         measurement. To fail a build on interference, use `verify_model` with
         `no_interference`. Needs: an open, active assembly. Read-only. Returns: `data`
-        with `interference_found`, `interference_count`, `interferences` (component
-        pairs and overlap volume in mm³) and `scope`.
+        with `interference_found`, `interference_count`, `top_pairs` (the 10 pairs
+        of components that overlap most: `components`, `count`, `volume_mm3` and
+        `largest_mm3`), `pair_count`, `total_volume_mm3`, `interferences` (each
+        overlap's components and volume in mm³) and `scope`; the message names the
+        largest.
 
         Args:
             input_data: Nothing is required. `components` limits the report to
@@ -836,10 +919,12 @@ async def register_analysis_tools(
         options["ignore_hidden"] = not input_data.include_hidden
         result = await adapter.check_interference(options)
         require_success(result, "Interference check failed")
+        data = dict(result.data) if isinstance(result.data, dict) else {}
+        data.update(interference_pairs(list(data.get("interferences") or [])))
         return {
             "status": "success",
-            "message": "Interference check completed",
-            "data": result.data,
+            "message": _interference_message(data),
+            "data": data,
             "execution_time": result.execution_time,
         }
 

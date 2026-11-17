@@ -30,6 +30,7 @@ from .base import (
     SolidWorksModel,
     SweepParameters,
 )
+from .solidworks import view_matrix as _view_matrix
 from .solidworks.drawing_standard import gtol_problem
 from .solidworks.feature_editing import missing_ids_message
 from .solidworks.features import _AXIS_PLANE_PAIRS
@@ -318,6 +319,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # report a mate count without real geometry.
         self._mates: list[dict[str, Any]] = []
         self._component_states: dict[str, dict[str, bool]] = {}
+        # Components hidden by set_component_visibility (name -> shown);
+        # a component not listed is shown.
+        self._component_visibility: dict[str, bool] = {}
         # Each component's origin (mm) and rotation rows, as
         # set_component_transform reads them back.
         self._component_transforms: dict[str, dict[str, Any]] = {}
@@ -3567,7 +3571,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         zoom_to_fit = (
             False
             if zoom_box is not None
-            else (orientation != "current" if zoom is None else bool(zoom))
+            else (
+                (orientation != "current" or payload.get("view_direction") is not None)
+                if zoom is None
+                else bool(zoom)
+            )
         )
         hide = list(payload.get("hide") or [])
         unknown = _unknown_display_types(hide)
@@ -3597,6 +3605,36 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "reverse": bool(section.get("reverse", False)),
                 "removed": True,
             }
+        # The view as the real adapter turns it: a direction to look from, or
+        # a standard view turned Z-up (dimetric and trimetric are SolidWorks'
+        # own angles, which the mock doesn't know).
+        up_axis = str(payload.get("up_axis") or "y").lower()
+        try:
+            rows = _view_matrix.picture_rows(
+                orientation, payload.get("view_direction"), payload.get("up"), up_axis
+            )
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        if rows is None and up_axis == "z":
+            standard = _view_matrix.standard_rows(orientation)
+            rows = _view_matrix.z_up(standard) if standard else None
+        # Components hidden for this picture only, shown again at once.
+        hide_components = list(dict.fromkeys(payload.get("hide_components") or []))
+        problem = (
+            self._component_names_problem(hide_components, "hide_components")
+            if hide_components
+            else None
+        )
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        hidden_components = [
+            {
+                "name": name,
+                "before": self._component_visibility.get(name, True),
+                "restored": True,
+            }
+            for name in hide_components
+        ]
 
         await asyncio.sleep(0.3)
         self._operation_count += 1
@@ -3622,10 +3660,13 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "file_path": file_path,
                 "format": "PNG",
                 "dimensions": f"{width}x{height}",
-                "view": orientation,
+                "view": "custom" if payload.get("view_direction") else orientation,
+                "up_axis": up_axis,
+                "view_axes": _view_matrix.axes(rows) if rows else None,
                 "zoomed_to_fit": zoom_to_fit,
                 "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
                 "hidden": sorted(hide),
+                "hidden_components": hidden_components,
                 "section": applied_section,
                 "window_state": self._window_state,
             },
@@ -5983,6 +6024,57 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={"component": component, "before": before, "after": after},
+        )
+
+    def _component_names_problem(self, names: list[str], what: str) -> str | None:
+        """Why ``names`` can't be hidden in the active document, or None."""
+        if getattr(self._current_model, "type", None) != "Assembly":
+            return f"{what} needs an assembly; the active document isn't one."
+        missing = [n for n in names if n not in self._components]
+        if missing:
+            return (
+                f"Component(s) not found: {', '.join(missing)}. The assembly holds: "
+                f"{', '.join(self._components) or 'nothing'} (list_components "
+                "names them)."
+            )
+        return None
+
+    async def set_component_visibility(
+        self, components: list[str], visible: bool
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock hiding and showing components, kept on ``_component_visibility``.
+
+        Args:
+            components (list[str]): Component names.
+            visible (bool): Show (True) or hide (False).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        names = list(dict.fromkeys(components or []))
+        if not names:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="Give the components to show or hide.",
+            )
+        problem = self._component_names_problem(names, "set_component_visibility")
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        done = []
+        for name in names:
+            before = self._component_visibility.get(name, True)
+            self._component_visibility[name] = bool(visible)
+            done.append(
+                {
+                    "name": name,
+                    "before": before,
+                    "after": bool(visible),
+                    "method": None if before is bool(visible) else "Visible",
+                }
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"visible": bool(visible), "components": done},
         )
 
     async def add_mate(

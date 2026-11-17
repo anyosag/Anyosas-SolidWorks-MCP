@@ -131,7 +131,8 @@ async def test_current_is_case_insensitive(
 
 @pytest.mark.parametrize(
     ("orientation", "view_id"),
-    [("front", 1), ("Top", 5), ("isometric", 7), ("trimetric", 9)],
+    # swStandardViews_e (SOLIDWORKS 2026 swconst): trimetric 8, dimetric 9.
+    [("front", 1), ("Top", 5), ("isometric", 7), ("trimetric", 8), ("dimetric", 9)],
 )
 async def test_a_named_view_turns_then_zooms_to_fit(
     adapter: PyWin32Adapter, tmp_path: Path, orientation: str, view_id: int

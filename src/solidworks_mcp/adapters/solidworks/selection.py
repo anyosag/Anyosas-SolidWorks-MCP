@@ -336,6 +336,48 @@ class SolidWorksSelectionMixin:
 
         return self._run_clean("set_visibility", _apply)
 
+    async def set_component_visibility(
+        self, components: list[str], visible: bool
+    ) -> AdapterResult[dict[str, Any]]:
+        """Hide or show components of the active assembly.
+
+        See ``SolidWorksAdapter.set_component_visibility`` for the contract;
+        the COM calls live in ``component_visibility``. Every name is looked
+        up before anything changes.
+        """
+        from . import component_visibility
+
+        names = list(dict.fromkeys(components or []))
+        if not names:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="Give the components to show or hide.",
+            )
+        if not self.currentModel:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        kind = self._attempt(
+            lambda: self._get_attr_or_call(self.currentModel, "GetType")
+        )
+        if kind != 2:  # swDocASSEMBLY
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "set_component_visibility needs an assembly; the active "
+                    "document isn't one. For planes and sketches use set_visibility."
+                ),
+            )
+
+        def _apply() -> dict[str, Any]:
+            model = self.currentModel
+            found = component_visibility.find(self, model, names)
+            done: list[dict[str, Any]] = []
+            component_visibility.apply(self, model, found, bool(visible), done)
+            return {"visible": bool(visible), "components": done}
+
+        return self._run_clean("set_component_visibility", _apply)
+
     def _run_clean(
         self, operation_name: str, operation: Callable[[], Any]
     ) -> AdapterResult[dict[str, Any]]:

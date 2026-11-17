@@ -1568,6 +1568,26 @@ Reported by "The Dipper" build (SOLIDWORKS 2026 SP4.1, a multibody master of abo
 - **A circle's centre** is read with `GetCenterPoint2` on the segment's late-bound
   dispatch, to find contours that cross after a failed extrude.
 
+## 56. Views from any side, Z-up views and hidden components: what the code assumes
+
+From The Dipper build, written without SolidWorks; `tests/scripts/probe_r2_views.py`
+settles each:
+
+- **`IModelView.Orientation3`** takes model to view coordinates as `p . R`, so `R`'s
+  columns are screen right, screen up and toward the viewer (front = identity; the
+  isometric matrix users report fits). `export_image`'s `view_direction` writes it
+  through `CreateTransform`, keeping the translation and scale it read, and reads it
+  back. `up_axis: "z"` reads SolidWorks' own matrix after `ShowNamedView2` and turns
+  it by -90 degrees about X (`view_matrix.z_up`). Open: whether the property keeps a
+  transform it is given; `IModelView.UpAxisFlyout` (swViewOrientationUpAxisFlyout_e)
+  may be a native alternative.
+- **`swStandardViews_e`**: trimetric is 8, dimetric 9 (SOLIDWORKS 2026 swconst);
+  `export_image` had them the other way round.
+- **Hiding a component**: `IComponent2.Visible` (0 hidden, 1 shown), read back; if
+  SolidWorks keeps it, select it and `HideComponent2` / `ShowComponent2`. Open: which
+  one SolidWorks takes, whether it marks the assembly modified, and whether it stays
+  hidden after a save and reopen.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape
