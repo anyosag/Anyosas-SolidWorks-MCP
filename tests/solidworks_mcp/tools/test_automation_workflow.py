@@ -18,9 +18,15 @@ from fastmcp import FastMCP
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
 from solidworks_mcp.adapters.solidworks import limits
-from solidworks_mcp.tools.automation import _warning_parts, register_automation_tools
+from solidworks_mcp.tools.automation import (
+    MAX_WORKFLOW_STEPS,
+    WorkflowInput,
+    _summary,
+    _warning_parts,
+    register_automation_tools,
+)
 from solidworks_mcp.tools.export import register_export_tools
-from solidworks_mcp.tools.modeling import register_modeling_tools
+from solidworks_mcp.tools.modeling import dependents_warning, register_modeling_tools
 from solidworks_mcp.tools.sketching import register_sketching_tools
 from solidworks_mcp.tools.support_levels import SUPPORT_LEVELS
 
@@ -674,3 +680,104 @@ async def test_a_reference_to_nothing_fails_its_step(
     )
     assert "detail 'full'" in result["hint"]
     assert result["data"]["steps"][5]["result"]["error_type"] == "invalid_input"
+
+
+# ---- the Dipper's second round: the cap, checks in a summary, deletes ------------
+
+
+async def test_too_many_steps_says_how_to_split_them(part: Any) -> None:
+    adapter, run = part
+
+    result = await run({"steps": [_BOX[0]] * (MAX_WORKFLOW_STEPS + 1)})
+
+    assert result["error_type"] == "invalid_input"
+    assert result["message"].startswith(
+        f"Invalid input: steps: a workflow runs at most {MAX_WORKFLOW_STEPS} "
+        f"steps, and this one has {MAX_WORKFLOW_STEPS + 1}; nothing ran. Split it "
+        "into 2 calls"
+    )
+    assert "a '$steps.<id>' reference keeps working" in result["message"]
+    assert not adapter._features
+    # The schema doesn't cap it, so an MCP client gets this message too.
+    schema = WorkflowInput.model_json_schema()["properties"]["steps"]
+    assert "maxItems" not in schema
+    assert str(MAX_WORKFLOW_STEPS) in schema["description"]
+
+
+def test_a_summary_keeps_check_blocks_and_the_steps_own_warning() -> None:
+    reply = {
+        "status": "success",
+        "message": "Exported",
+        "warning": "level text",
+        "file_check": {"exists": True, "size_bytes": 84},
+        "export": {
+            "file_path": "a.stl",
+            "mesh_check": {"triangles": 4, "volume_ratio": 1.0},
+            "mesh": {"applied": {"resolution": "fine"}},
+        },
+    }
+
+    summary = _summary({"index": 0}, reply, "The STL holds part of the model.")
+
+    assert summary["file_check"] == {"exists": True, "size_bytes": 84}
+    assert summary["export"] == {
+        "file_path": "a.stl",
+        "mesh_check": {"triangles": 4, "volume_ratio": 1.0},
+    }
+    assert summary["warning"] == "The STL holds part of the model."
+    assert "warning" not in _summary({"index": 0}, reply)
+
+
+async def test_a_steps_own_warning_stays_in_its_summary(part: Any) -> None:
+    adapter, run = part
+    adapter.exit_sketch = AsyncMock(  # type: ignore[method-assign]
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS, metadata={"discarded": "Sketch27"}
+        )
+    )
+
+    result = await run({"steps": [{"tool": "exit_sketch"}]})
+
+    own = result["steps"][0]["warning"]
+    assert own.startswith("SolidWorks deleted the sketch 'Sketch27'")
+    assert result["warnings"] == [{"warning": own, "steps": [0]}]
+
+
+async def test_deletes_with_dependents_are_warned_about_once(part: Any) -> None:
+    adapter, run = part
+
+    async def delete(name: str, _absorbed: bool) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"deleted": name, "removed_features": [name, f"{name}-Sketch"]},
+        )
+
+    adapter.delete_feature = delete  # type: ignore[method-assign]
+    steps = [
+        {"tool": "delete_feature", "arguments": {"name": f"Plane{n}"}}
+        for n in (1, 2, 3)
+    ]
+
+    result = await run({"steps": [_VBA, *steps]})
+
+    assert result["status"] == "success", result
+    assert result["warnings"] == [
+        {"warning": _EXPERIMENTAL, "steps": [0]},
+        {
+            "warning": dependents_warning(
+                [(f"Plane{n}", [f"Plane{n}-Sketch"]) for n in (1, 2, 3)]
+            ),
+            "steps": [1, 2, 3],
+        },
+    ]
+    assert result["warnings"][1]["warning"].startswith(
+        "Deleting Plane1, Plane2, Plane3 also deleted their dependents: "
+        "Plane1-Sketch, Plane2-Sketch, Plane3-Sketch."
+    )
+    assert not any("warning" in step for step in result["steps"])
+
+    single = await run({"steps": steps[:1]})
+    assert single["warnings"][0]["warning"] == (
+        "Deleting Plane1 also deleted Plane1-Sketch. Tell the user; `undo` "
+        "restores them."
+    )

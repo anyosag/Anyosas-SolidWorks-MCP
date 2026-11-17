@@ -75,16 +75,19 @@ Give `create_part` its `material` when you know the exact name; it saves a
 {...}}`, in order, exactly as separate calls would; `arguments` is what you
 would pass that tool (its fields, or `{"input_data": {...}}`). A step's
 `document` runs it on that open document. A sketch and its feature (steps
-2-5) fit in one call; up to 100 steps per call. An argument that is exactly
+2-5) fit in one call; up to 200 steps per call (split a longer list into
+calls run in order: each numbers its steps from 0, and a step can use only
+its own call's replies). An argument that is exactly
 `"$steps.<i>.<path>"` takes the value at that path in step i's reply, e.g.
 `"old_name": "$steps.4.fillet.name"`, so a later step needn't guess a
 feature's name. Give a step an `"id"` (`"plane_x"`) and write
 `"$steps.plane_x.plane.name"` instead of counting steps. It stops at the first failed step and reports that step's
 `error_type` and `hint`; the error's `data.steps` shows what ran. With
 `rollback_on_error` it then deletes the features and sketches the earlier
-steps added. Each step's entry is a summary (status, message, small facts
-such as `measured_change`; `detail: "full"` gives whole replies), and
-`warnings` lists each warning once. Read them, including each feature's
+steps added. Each step's entry is a summary (status, message, its own
+warning, small facts and checks such as `measured_change` and an export's
+file and mesh checks; `detail: "full"` gives whole replies), and `warnings` lists
+each warning once. Read them, including each feature's
 `measured_change`, before the next call.
 
 Worked sequences for parts, assemblies and drawings:

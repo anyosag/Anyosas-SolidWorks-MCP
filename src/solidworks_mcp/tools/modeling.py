@@ -226,6 +226,32 @@ def _flag_a_shallow_cut(
     return reply
 
 
+def dependents_warning(deleted: list[tuple[str, list[str]]]) -> str:
+    """One warning for features deleted with the dependents that went with them.
+
+    ``execute_workflow`` gives several deletes one warning listing every name:
+    deleting 19 planes in one workflow gave 19 near-identical warnings.
+
+    Args:
+        deleted: Each feature deleted and its dependents, in order.
+
+    Returns:
+        str: The warning.
+    """
+    if len(deleted) == 1:
+        name, dependents = deleted[0]
+        return (
+            f"Deleting {name} also deleted {', '.join(dependents)}. "
+            "Tell the user; `undo` restores them."
+        )
+    names = ", ".join(name for name, _dependents in deleted)
+    gone = ", ".join(d for _name, dependents in deleted for d in dependents)
+    return (
+        f"Deleting {names} also deleted their dependents: {gone}. Tell the user; "
+        "`undo` restores them, one step per delete."
+    )
+
+
 def _add_warnings(reply: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     """Append ``warnings`` to the reply's ``warning``, after any it has."""
     texts = [reply["warning"]] if reply.get("warning") else []
@@ -3426,8 +3452,9 @@ async def register_modeling_tools(
         feature and its dependents (`undo` can restore them). Returns: `data` with
         `deleted`, `removed_features` (every feature that went, dependents included),
         `absorbed_sketches_left` (its sketches still in the tree), `features_before`
-        and `features_after`; the message names the dependents, and a `warning` says
-        so whenever more than the named feature went: tell the user.
+        and `features_after`; the message names the dependents, and `dependents` and
+        a `warning` say so whenever more than the named feature went (in
+        `execute_workflow`, one warning for every delete): tell the user.
 
         Args:
             input_data: The feature. `name` (e.g. "Fillet1") is required;
@@ -3464,10 +3491,8 @@ async def register_modeling_tools(
             "execution_time": result.execution_time,
         }
         if dependents:
-            reply["warning"] = (
-                f"Deleting {input_data.name} also deleted {', '.join(dependents)}. "
-                "Tell the user; `undo` restores them."
-            )
+            reply["dependents"] = dependents
+            reply["warning"] = dependents_warning([(input_data.name, dependents)])
         return reply
 
     @mcp.tool()
