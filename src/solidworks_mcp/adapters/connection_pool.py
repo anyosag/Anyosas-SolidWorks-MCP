@@ -1592,12 +1592,21 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Place a component using pool."""
         return await self._execute_with_pool(
             "set_component_transform",
             lambda adapter: adapter.set_component_transform(
-                component, origin_mm, rotation_rows, fixed
+                component,
+                origin_mm,
+                rotation_rows,
+                fixed,
+                turn_axis,
+                turn_pivot_mm,
+                turn_deg,
             ),
         )
 

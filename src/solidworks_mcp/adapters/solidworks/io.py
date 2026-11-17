@@ -3432,12 +3432,17 @@ class SolidWorksIOMixin:
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Place a component of the active assembly: origin, axes and fixed state.
 
         Puts ``IComponent2.Transform2`` through ``placement.place`` and reads
         it back. A component held by mates may not move: the reply then has
         ``placed`` False and ``mates``, its mate count, for the tool's warning.
+        A turn is applied after the origin and axes: the placement is turned
+        about ``turn_axis`` through ``turn_pivot_mm`` (``placement.turned``).
 
         Args:
             component (str): Instance name, as ``list_components`` reports it.
@@ -3445,6 +3450,11 @@ class SolidWorksIOMixin:
             rotation_rows (list[list[float]] | None): Its axes in assembly
                 coordinates (checked by the tool); None keeps them.
             fixed (bool | None): Fix or float it afterwards; None keeps it.
+            turn_axis (list[float] | None): The direction of the axis to turn
+                it about, in assembly coordinates.
+            turn_pivot_mm (list[float] | None): A point on that axis, mm; the
+                origin when None.
+            turn_deg (float): The turn, degrees (right-hand rule); 0 for none.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``component``, ``placed``,
@@ -3464,8 +3474,19 @@ class SolidWorksIOMixin:
             origin_m = (
                 None if origin_mm is None else [float(c) / 1000.0 for c in origin_mm]
             )
+            rows = rotation_rows
+            if turn_axis is not None and turn_deg:
+                origin_m, rows = _placement.turned_placement(
+                    adapter,
+                    target,
+                    origin_m,
+                    rotation_rows,
+                    turn_axis,
+                    [float(c) / 1000.0 for c in (turn_pivot_mm or (0.0, 0.0, 0.0))],
+                    turn_deg,
+                )
             placed = _placement.place(
-                adapter, model, assembly, target, origin_m, rotation_rows, fixed
+                adapter, model, assembly, target, origin_m, rows, fixed
             )
             mates = adapter._attempt(
                 lambda: _sw_type_info.flagged(target, "IComponent2").GetMates(),

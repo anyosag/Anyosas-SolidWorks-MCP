@@ -1326,9 +1326,36 @@ class SetComponentTransformInput(CompatInput):
             "(a fixed component is floated for the move and fixed again)"
         ),
     )
+    turn_deg: float = Field(
+        default=0.0,
+        ge=-360.0,
+        le=360.0,
+        description=(
+            "Then turn it this many degrees (right-hand rule about turn_axis) "
+            "from where it is, about an axis through turn_pivot_mm: a lid "
+            "opened 30 degrees about its hinge. Applied after origin_mm and "
+            "rotation_deg or matrix"
+        ),
+    )
+    turn_axis: str | list[float] | None = Field(
+        default=None,
+        description=(
+            "The direction of the turn's axis in assembly coordinates: 'x', "
+            "'y', 'z', '-x', '-y', '-z' or [x, y, z]; needed with turn_deg"
+        ),
+    )
+    turn_pivot_mm: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description=(
+            "A point on the turn's axis, [x, y, z] mm in assembly coordinates "
+            "(a point on the hinge pin's axis); the origin when omitted"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
-        from ..adapters.solidworks.placement import rotation_problem
+        from ..adapters.solidworks.placement import axis_vector, rotation_problem
 
         if not self.component.strip():
             raise ValueError("component is required")
@@ -1338,6 +1365,18 @@ class SetComponentTransformInput(CompatInput):
             problem = rotation_problem(self.matrix)
             if problem:
                 raise ValueError(problem)
+        if self.turn_deg and self.turn_axis is None:
+            raise ValueError("turn_deg needs turn_axis, the direction to turn about")
+        if self.turn_axis is not None:
+            axis_vector(self.turn_axis)
+
+    def turn_axis_vector(self) -> list[float] | None:
+        """The turn's axis as a unit vector, or None without a turn."""
+        from ..adapters.solidworks.placement import axis_vector
+
+        if self.turn_axis is None or not self.turn_deg:
+            return None
+        return axis_vector(self.turn_axis)
 
     def rotation_rows(self) -> list[list[float]] | None:
         """The rotation as rows (the component's axes), or None to keep it."""
@@ -2529,28 +2568,42 @@ async def register_modeling_tools(
         height, a second rack 137 mm up, a base back on the origin. `origin_mm`
         moves the component's own origin; `rotation_deg` ([rx, ry, rz], about the
         assembly's X, then Y, then Z axis) or `matrix` (its axes as rows) turns it
-        from unturned; what you leave out stays. A fixed component is floated for
-        the move and fixed again unless `fixed` says otherwise. Mates that hold the
-        component can stop the move: then `placed` is false and a warning says so.
-        Needs: an open assembly. Changes: the component's position and fixed state.
-        Returns: `component`, `placed`, `fixed`, `mates` and `transform`
-        (`origin_mm`, `rotation` as rows), all read back from SolidWorks.
+        from unturned; what you leave out stays. `turn_deg` then turns it from
+        there about any axis (`turn_axis`) through a point (`turn_pivot_mm`), e.g.
+        a lid about its hinge. A fixed component is floated for the move and fixed
+        again unless `fixed` says otherwise. Mates that hold the component can stop
+        the move: then `placed` is false and a warning says so. Needs: an open
+        assembly. Changes: the component's position and fixed state. Returns:
+        `component`, `placed`, `fixed`, `mates` and `transform` (`origin_mm`,
+        `rotation` as rows), all read back from SolidWorks.
 
         Args:
             input_data: The component and where it goes. `component` is
-                required; `origin_mm`, `rotation_deg` or `matrix`, and `fixed`
-                are optional.
+                required; `origin_mm`, `rotation_deg` or `matrix`, `turn_deg`
+                with `turn_axis` and `turn_pivot_mm`, and `fixed` are optional.
 
         Returns:
             dict[str, Any]: The placement read back.
         """
         input_data = normalize_input(input_data, SetComponentTransformInput)
-        result = await adapter.set_component_transform(
-            input_data.component,
-            input_data.origin_mm,
-            input_data.rotation_rows(),
-            input_data.fixed,
-        )
+        turn_axis = input_data.turn_axis_vector()
+        if turn_axis is None:
+            result = await adapter.set_component_transform(
+                input_data.component,
+                input_data.origin_mm,
+                input_data.rotation_rows(),
+                input_data.fixed,
+            )
+        else:
+            result = await adapter.set_component_transform(
+                input_data.component,
+                input_data.origin_mm,
+                input_data.rotation_rows(),
+                input_data.fixed,
+                turn_axis,
+                input_data.turn_pivot_mm,
+                input_data.turn_deg,
+            )
         require_success(result, context=f"Failed to place {input_data.component}")
         data = result.data if isinstance(result.data, dict) else {}
         reply: dict[str, Any] = {

@@ -835,7 +835,14 @@ class TestConnectionPoolAdapterExtras:
                 return _ok({"file_path": file_path, "fixed": fixed})
 
             async def set_component_transform(
-                self, component, origin_mm=None, rotation_rows=None, fixed=None
+                self,
+                component,
+                origin_mm=None,
+                rotation_rows=None,
+                fixed=None,
+                turn_axis=None,
+                turn_pivot_mm=None,
+                turn_deg=0.0,
             ):
                 return _ok({"component": component, "origin_mm": origin_mm})
 

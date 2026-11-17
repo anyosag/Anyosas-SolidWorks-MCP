@@ -5151,6 +5151,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock placing a component: its stored origin, rotation and fixed state.
 
@@ -5160,6 +5163,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             rotation_rows (list[list[float]] | None): The new axes; None
                 keeps them.
             fixed (bool | None): Fix or float it; None keeps it.
+            turn_axis (list[float] | None): Then turn it about this direction.
+            turn_pivot_mm (list[float] | None): A point on that axis, mm.
+            turn_deg (float): The turn, degrees.
 
         Returns:
             AdapterResult[dict[str, Any]]: As the live adapter's.
@@ -5186,6 +5192,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             held["origin_mm"] = [float(c) for c in origin_mm]
         if rotation_rows is not None:
             held["rotation"] = [[float(x) for x in row] for row in rotation_rows]
+        if turn_axis is not None and turn_deg:
+            from .solidworks.placement import turned
+
+            data = turned(
+                [x for row in held["rotation"] for x in row]
+                + held["origin_mm"]
+                + [1.0, 0.0, 0.0, 0.0],
+                turn_axis,
+                turn_pivot_mm or [0.0, 0.0, 0.0],
+                turn_deg,
+            )
+            held["rotation"] = [data[0:3], data[3:6], data[6:9]]
+            held["origin_mm"] = [round(v, 9) + 0.0 for v in data[9:12]]
         state = self._component_states.setdefault(
             component, {"fixed": False, "flexible": False}
         )

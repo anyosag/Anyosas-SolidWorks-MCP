@@ -1757,18 +1757,30 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Place a component through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "set_component_transform",
             lambda: self.adapter.set_component_transform(
-                component, origin_mm, rotation_rows, fixed
+                component,
+                origin_mm,
+                rotation_rows,
+                fixed,
+                turn_axis,
+                turn_pivot_mm,
+                turn_deg,
             ),
             input_dict={
                 "component": component,
                 "origin_mm": origin_mm,
                 "rotation_rows": rotation_rows,
                 "fixed": fixed,
+                "turn_axis": turn_axis,
+                "turn_pivot_mm": turn_pivot_mm,
+                "turn_deg": turn_deg,
             },
         )
 

@@ -1716,6 +1716,9 @@ class SolidWorksAdapter(ABC):
         origin_mm: list[float] | None = None,
         rotation_rows: list[list[float]] | None = None,
         fixed: bool | None = None,
+        turn_axis: list[float] | None = None,
+        turn_pivot_mm: list[float] | None = None,
+        turn_deg: float = 0.0,
     ) -> AdapterResult[dict[str, Any]]:
         """Place a component of the active assembly: origin, axes and fixed state.
 
@@ -1727,6 +1730,10 @@ class SolidWorksAdapter(ABC):
                 assembly coordinates; None keeps them.
             fixed (bool | None): Fix (True) or float (False) it afterwards;
                 None keeps its state.
+            turn_axis (list[float] | None): After that, turn it about this
+                direction (assembly coordinates).
+            turn_pivot_mm (list[float] | None): A point on the turn's axis, mm.
+            turn_deg (float): The turn, degrees (right-hand rule).
 
         Returns:
             AdapterResult[dict[str, Any]]: ``placed``, ``moved``, ``fixed``,

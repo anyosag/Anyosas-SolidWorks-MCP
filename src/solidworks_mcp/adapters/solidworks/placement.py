@@ -60,6 +60,113 @@ def rotation_rows_from_deg(rx: float, ry: float, rz: float) -> Rows:
     return [[round(x, 15) + 0.0 for x in row] for row in rows]
 
 
+def unit_vector(vector: Sequence[float]) -> list[float]:
+    """``vector`` scaled to length 1.
+
+    Raises:
+        ValueError: It isn't three numbers, or it is the zero vector.
+    """
+    values = [float(v) for v in vector]
+    if len(values) != 3:
+        raise ValueError("an axis is three numbers [x, y, z]")
+    length = math.sqrt(sum(v * v for v in values))
+    if length < 1e-12:
+        raise ValueError("an axis must not be the zero vector")
+    return [v / length for v in values]
+
+
+_NAMED_AXES = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
+
+
+def axis_vector(value: str | Sequence[float]) -> list[float]:
+    """The unit direction for ``"x"``, ``"-z"`` and the like, or for a vector.
+
+    Raises:
+        ValueError: An unknown name, a vector that isn't three numbers, or
+            the zero vector.
+    """
+    if isinstance(value, str):
+        name = value.strip().lower()
+        axis = _NAMED_AXES.get(name.lstrip("+-"))
+        if axis is None:
+            raise ValueError(
+                f"an axis is x, y, z, -x, -y, -z or [x, y, z], not {value!r}"
+            )
+        sign = -1.0 if name.startswith("-") else 1.0
+        return [sign * v + 0.0 for v in axis]
+    return unit_vector(value)
+
+
+def axis_rotation_rows(axis: Sequence[float], degrees: float) -> Rows:
+    """The rotation rows for a turn of ``degrees`` about ``axis`` (right-hand rule).
+
+    In the ``p . R`` convention (rows are images of the axes), this is
+    Rodrigues' rotation transposed: ``c I + (1 - c) k k^T - s [k]x``. A
+    quarter turn about [0, 1, 0] gives :func:`rotation_rows_from_deg`'s
+    ``(0, 90, 0)``.
+    """
+    k = unit_vector(axis)
+    c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    cross = [[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]]
+    return [
+        [
+            round(
+                (c if i == j else 0.0) + (1.0 - c) * k[i] * k[j] - s * cross[i][j], 15
+            )
+            + 0.0
+            for j in range(3)
+        ]
+        for i in range(3)
+    ]
+
+
+def _times(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> Rows:
+    return [
+        [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)
+    ]
+
+
+def _row_times(point: Sequence[float], rows: Sequence[Sequence[float]]) -> list[float]:
+    return [sum(float(point[k]) * rows[k][j] for k in range(3)) for j in range(3)]
+
+
+def turned(
+    data: Sequence[float],
+    axis: Sequence[float],
+    pivot_m: Sequence[float],
+    degrees: float,
+) -> list[float]:
+    """A placement's 16 values turned ``degrees`` about the axis through ``pivot_m``.
+
+    A point ``p`` placed at ``p . R + t`` goes on to ``(p . R + t - P) . Q + P``
+    (``Q`` the turn, ``P`` the pivot), so the new rows are ``R . Q`` and the new
+    translation ``(t - P) . Q + P``. The scale and the rest are kept.
+
+    Raises:
+        ValueError: ``data`` isn't 16 values, or the axis is the zero vector.
+    """
+    values = [float(v) for v in data]
+    if len(values) != 16:
+        raise ValueError(f"A transform has 16 values, not {len(values)}.")
+    turn = axis_rotation_rows(axis, degrees)
+    rows = [values[0:3], values[3:6], values[6:9]]
+    pivot = [float(c) for c in pivot_m]
+    shifted = [values[9 + k] - pivot[k] for k in range(3)]
+    origin = [v + pivot[k] for k, v in enumerate(_row_times(shifted, turn))]
+    return [x for row in _times(rows, turn) for x in row] + origin + values[12:16]
+
+
+def turn_data(
+    axis: Sequence[float], pivot_m: Sequence[float], degrees: float
+) -> list[float]:
+    """The 16 values of a turn about the axis through ``pivot_m``, alone.
+
+    The transform for ``IBody2.ApplyTransform`` or a point: ``x . Q + (P - P . Q)``.
+    """
+    identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    return turned(identity + [1.0, 0.0, 0.0, 0.0], axis, pivot_m, degrees)
+
+
 def rotation_problem(rows: Sequence[Sequence[float]]) -> str | None:
     """What is wrong with a rotation given as three rows, or None.
 
@@ -202,6 +309,33 @@ def place(
         "fixed": _is_fixed(adapter, component),
         **describe(after),
     }
+
+
+def turned_placement(
+    adapter: Any,
+    component: Any,
+    origin_m: Sequence[float] | None,
+    rotation_rows: Sequence[Sequence[float]] | None,
+    axis: Sequence[float],
+    pivot_m: Sequence[float],
+    degrees: float,
+) -> tuple[list[float], Rows]:
+    """The origin and rows that put ``component`` where asked, then turned.
+
+    The origin and rows asked (or the component's own, where None) are turned
+    ``degrees`` about the axis through ``pivot_m`` (:func:`turned`).
+
+    Raises:
+        RuntimeError: The component's transform can't be read.
+    """
+    data = _transform_data(adapter, component)
+    if data is None:
+        raise RuntimeError("The component's placement could not be read (Transform2).")
+    start = transformed(
+        data, origin_m if origin_m is not None else data[9:12], rotation_rows
+    )
+    values = turned(start, axis, pivot_m, degrees)
+    return values[9:12], [values[0:3], values[3:6], values[6:9]]
 
 
 def place_origin(
