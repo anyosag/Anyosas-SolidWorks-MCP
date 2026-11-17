@@ -44,10 +44,12 @@ A solid feature always comes from a closed sketch:
    `create_axis`.
 4. `exit_sketch`.
 5. The feature: `create_extrusion` (add material), `create_cut_extrude`
-   (remove it), `create_revolve`, `create_sweep`, `create_loft`.
-   Each takes `sketch_name`; without it, the sketch you closed last is
-   used. `create_revolve` turns about the sketch's centreline, or about
-   the reference axis `axis_entity` names.
+   (remove it), `create_revolve`, `create_cut_revolve`, `create_sweep`,
+   `create_loft`. Each takes `sketch_name`; without it, the sketch you
+   closed last is used. `create_revolve` turns about the sketch's
+   centreline, or about the reference axis `axis_entity` names. To start
+   an extrude or cut at a depth, give `start_offset_mm` rather than making
+   a plane for it.
 6. Then edge treatments: `select_face_edges` or `select_edges`, then
    `add_fillet` or `add_chamfer` with empty `edge_names`.
 7. Finish with `verify_model` (see "Check the result").
@@ -56,7 +58,9 @@ A solid feature always comes from a closed sketch:
 Repeat 2-5 for each feature. For holes in a ring or a row, draw every
 circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
 and cut once, or repeat the cut with `pattern_circular` (`step_angle` for
-the degrees between instances) or `mirror_feature`.
+the degrees between instances), `pattern_linear` (rows and grids) or
+`mirror_feature`. Labels: `emboss_text` raises or engraves text in one
+call; `add_sketch_text` writes it into a sketch of its own.
 
 To change a model that exists, edit in place (`edit_feature`,
 `edit_sketch`, `set_rollback`) rather than deleting and re-creating, which

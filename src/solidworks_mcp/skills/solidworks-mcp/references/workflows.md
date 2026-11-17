@@ -127,6 +127,56 @@ spread them evenly (360 by default), or `step_angle` for the degrees between
 holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
 `reverse_direction` goes the other way round.
 
+## A row or grid of slots or holes
+
+Cut (or extrude) the first one, then `pattern_linear` with its name in
+`features`, `direction`, `count` (the original included) and `spacing` (mm):
+8 slots 12 mm apart along x is `direction: "x"`, `count: 8`, `spacing: 12`.
+`"-x"` goes the other way; a reference axis or plane name, or "x,y,z" mm on a
+straight edge, works as a direction too. `direction2` with `count2` and
+`spacing2` makes a grid. Check `measured_change`: the volume should change by
+about (instances - 1) times the first feature's. A pattern that changes
+nothing fails, and the empty pattern is deleted; try `reverse_direction`.
+`bodies: true` repeats solid bodies (names from `list_bodies`).
+
+## Starting a feature at a depth, and drafted or mid-plane cuts
+
+- `start_offset_mm` on `create_extrusion` or `create_cut_extrude` starts it
+  that far from the sketch plane: positive along the sketch normal (the side
+  `create_extrusion` grows into), negative against it. Under a block that grew
+  up from the Top Plane, a Top Plane sketch with `start_offset_mm: 2` starts
+  2 mm inside the block, with no `create_reference_plane`. Check the bounding
+  box and volume in `measured_change`.
+- `end_condition: "MidPlane"` on `create_cut_extrude` cuts `depth` mm in
+  total, half each side of the sketch plane (a slot through the middle of a
+  wall).
+- A `draft_angle` tapers inward (narrower at the far end, a cut narrower as
+  it goes deeper); `draft_outward: true` flares it. A lead-in, wider at its
+  mouth, is a drafted cut sketched at the mouth with the default inward
+  draft.
+
+## A conical groove or seat
+
+1. `create_sketch` on a plane through the axis (e.g. "Front" for an axis
+   along y), draw the cross-section of the material to remove as a closed
+   outline (`add_outlines`), and the axis with `add_centerline` (or make one
+   with `create_axis`).
+2. `exit_sketch`, then `create_cut_revolve` (`angle` 360 by default; give
+   `axis_entity` for a reference axis). Check the volume dropped.
+
+## Labels: raised or engraved text
+
+`emboss_text` does it in one call: `text`, `depth` (mm), `plane` (or
+`face_point` on a flat face, with `x`, `y` counted from that point), `height`
+(mm) and `mode` (`"emboss"` or `"engrave"`). Check `measured_change`: an
+emboss adds volume, an engrave removes it. The reply's `sketch.axes` says
+which way sketch x and y point, to place the next label.
+
+Step by step: `create_sketch`, `add_sketch_text` (`x`, `y`, `height`,
+`font`, `angle`; a sketch of its own: a profile and text in one sketch won't
+extrude), `exit_sketch`, then `create_extrusion` or `create_cut_extrude` with
+that `sketch_name`.
+
 ## Changing an existing model
 
 1. `open_model`, then `list_features` and `list_model_dimensions`. On a long
