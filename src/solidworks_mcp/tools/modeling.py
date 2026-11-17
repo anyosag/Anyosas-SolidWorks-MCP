@@ -20,7 +20,7 @@ from ..adapters.base import (
 )
 from ..adapters.solidworks.cut_check import shortfall_warning
 from ..adapters.solidworks.edge_feature_check import warnings as edge_feature_warnings
-from ..adapters.solidworks.rebuild_diagnostics import issues_warning
+from ..adapters.solidworks.rebuild_diagnostics import body_count_warning, issues_warning
 from .input_compat import CompatInput
 from .sketching import AddSketchTextInput, text_warnings
 from .tool_boundary import (
@@ -224,6 +224,32 @@ def _flag_a_shallow_cut(
         own = reply.get("warning")
         reply["warning"] = f"{own} {warning}" if own else warning
     return reply
+
+
+def dependents_warning(deleted: list[tuple[str, list[str]]]) -> str:
+    """One warning for features deleted with the dependents that went with them.
+
+    ``execute_workflow`` gives several deletes one warning listing every name:
+    deleting 19 planes in one workflow gave 19 near-identical warnings.
+
+    Args:
+        deleted: Each feature deleted and its dependents, in order.
+
+    Returns:
+        str: The warning.
+    """
+    if len(deleted) == 1:
+        name, dependents = deleted[0]
+        return (
+            f"Deleting {name} also deleted {', '.join(dependents)}. "
+            "Tell the user; `undo` restores them."
+        )
+    names = ", ".join(name for name, _dependents in deleted)
+    gone = ", ".join(d for _name, dependents in deleted for d in dependents)
+    return (
+        f"Deleting {names} also deleted their dependents: {gone}. Tell the user; "
+        "`undo` restores them, one step per delete."
+    )
 
 
 def _add_warnings(reply: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
@@ -2832,9 +2858,9 @@ async def register_modeling_tools(
         `draft_angle` narrows it with depth unless `draft_outward`. A text sketch
         (`add_sketch_text`) cuts too. Needs: an open part with a solid body.
         Changes: adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`,
-        `sketch_name`, `direction_flipped`, and the options set) and
-        `measured_change` (volume, bounding box and solid-body count before and
-        after; left out when the model can't be read).
+        `sketch_name`, `direction_flipped`, `cut_toward`, the model direction cut,
+        e.g. "-Y", and the options set) and `measured_change` (volume, box and
+        solid-body count before and after, when the model reads).
 
         Args:
             input_data: The cut. `depth` (mm) is required; `sketch_name`,
@@ -2878,9 +2904,15 @@ async def register_modeling_tools(
             isinstance(feature_params, dict) and feature_params.get("direction_flipped")
         )
         name = _result_value(feature, "feature_name", "name", default="Cut-Extrude")
+        toward = (
+            feature_params.get("cut_toward")
+            if isinstance(feature_params, dict)
+            else None
+        )
         reply = {
             "status": "success",
             "message": f"Created cut-extrude: {name}"
+            + (f", cut toward {toward}" if toward else "")
             + _cut_direction_note(feature_params),
             "cut_extrude": {
                 "name": name,
@@ -2890,6 +2922,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        if toward:
+            reply["cut_extrude"]["cut_toward"] = toward
         if isinstance(feature_params, dict) and feature_params.get("mid_plane"):
             reply["cut_extrude"]["end_condition"] = "MidPlane"
         reply["cut_extrude"].update(_offset_and_draft(input_data))
@@ -3513,8 +3547,9 @@ async def register_modeling_tools(
         feature and its dependents (`undo` can restore them). Returns: `data` with
         `deleted`, `removed_features` (every feature that went, dependents included),
         `absorbed_sketches_left` (its sketches still in the tree), `features_before`
-        and `features_after`; the message names the dependents, and a `warning` says
-        so whenever more than the named feature went: tell the user.
+        and `features_after`; the message names the dependents, and `dependents` and
+        a `warning` say so whenever more than the named feature went (in
+        `execute_workflow`, one warning for every delete): tell the user.
 
         Args:
             input_data: The feature. `name` (e.g. "Fillet1") is required;
@@ -3551,10 +3586,8 @@ async def register_modeling_tools(
             "execution_time": result.execution_time,
         }
         if dependents:
-            reply["warning"] = (
-                f"Deleting {input_data.name} also deleted {', '.join(dependents)}. "
-                "Tell the user; `undo` restores them."
-            )
+            reply["dependents"] = dependents
+            reply["warning"] = dependents_warning([(input_data.name, dependents)])
         return reply
 
     @mcp.tool()
@@ -3933,11 +3966,15 @@ async def register_modeling_tools(
 
         Use it after `set_dimension` or other edits to confirm the model is sound.
         Failing features make the call an error whose `data.errors` names each one, its
-        SolidWorks error, what it depends on and a `hint`. Warnings alone (a fillet that
-        lost some edges: swFeatureErrorFilletNoEdge) still succeed, with a `warning`
-        naming each. Needs: an open part or assembly. Changes: rebuilds the model.
-        Returns: `data` with `rebuilt`, `errors`, `error_count`, `warning_count` and
-        `summary`.
+        SolidWorks error, what it depends on and a `hint`; a cut that meets nothing
+        (swFeatureErrorCutNotIntersectModel) also gives `scope`: the bodies it acts on
+        and the part's. Warnings alone (a fillet that lost some edges:
+        swFeatureErrorFilletNoEdge) still succeed, with a `warning` naming each. A
+        part's solid bodies are counted before and after, and a `warning` says when a
+        body split off. Needs: an open part or assembly. Changes: rebuilds the model.
+        Returns: `data` with `rebuilt`, `errors`, `error_count`, `warning_count`,
+        `summary`, and for a part `solid_body_count_before` and
+        `solid_body_count_after`.
 
         Args:
             input_data: Nothing is required: `top_level_only` is off (a full
@@ -3958,9 +3995,12 @@ async def register_modeling_tools(
         }
         if data is not None:
             response["data"] = data
-            warning = issues_warning(data.get("errors") or [])
-            if warning:
-                response["warning"] = warning
+            warnings = [
+                issues_warning(data.get("errors") or []),
+                body_count_warning(data),
+            ]
+            if any(warnings):
+                response["warning"] = " ".join(w for w in warnings if w)
         return response
 
     @mcp.tool()

@@ -184,6 +184,34 @@ class ParentInfo:
     segment_count: int | None = None
 
 
+#: ``swFeatureErrorCutNotIntersectModel``: the cut meets none of its bodies.
+CUT_NOT_INTERSECT = 71
+
+
+@dataclass(frozen=True)
+class BodyScope:
+    """Which bodies a feature acts on, and which the part has.
+
+    Read for a cut that meets nothing (:data:`CUT_NOT_INTERSECT`): the
+    Dipper's base sketch edit left an outline 2.5 mm short of the strip, the
+    rebuild made it a second body, and a through-all cut scoped to the first
+    body then failed, with nothing saying why.
+
+    Attributes:
+        feature_scope: True when the feature acts only on its listed bodies
+            (``FeatureScope``), False for every body; None when unread.
+        auto_select: Whether it picks those bodies itself (``AutoSelect``).
+        bodies: The bodies it is scoped to (``FeatureScopeBodies``), by
+            name; None when unread.
+        part_bodies: The part's solid bodies now, by name; None when unread.
+    """
+
+    feature_scope: bool | None = None
+    auto_select: bool | None = None
+    bodies: list[str] | None = None
+    part_bodies: list[str] | None = None
+
+
 @dataclass(frozen=True)
 class RawRebuildIssue:
     """One raw ``GetWhatsWrong`` entry as collected from COM."""
@@ -193,11 +221,111 @@ class RawRebuildIssue:
     code: int
     is_warning: bool
     parents: list[ParentInfo] = field(default_factory=list)
+    #: For a cut that meets nothing: its bodies and the part's.
+    scope: BodyScope | None = None
 
 
 def code_name(code: int) -> str:
     """Return the ``swFeatureError_e`` member name, or ``"code <n>"``."""
     return SW_FEATURE_ERRORS.get(code, f"code {code}")
+
+
+def _names(names: list[str]) -> str:
+    shown = [n or "(unnamed)" for n in names]
+    return ", ".join(shown) if shown else "none"
+
+
+def scope_hint(scope: BodyScope) -> str:
+    """What a cut that meets nothing is scoped to, and the bodies the part has.
+
+    Args:
+        scope: The cut's scope, as read.
+
+    Returns:
+        str: Sentences for the hint; ``""`` when nothing was read.
+    """
+    parts: list[str] = []
+    if scope.feature_scope and scope.bodies:
+        parts.append(f"The cut acts only on {_names(scope.bodies)}.")
+    elif scope.feature_scope:
+        parts.append(
+            "The cut acts only on the bodies it selected"
+            + (" itself" if scope.auto_select else "")
+            + ", which can't be read."
+        )
+    elif scope.feature_scope is False:
+        parts.append("The cut acts on every body.")
+    part = scope.part_bodies
+    if part is not None:
+        noun = "body" if len(part) == 1 else "bodies"
+        parts.append(
+            f"The part has {len(part)} solid {noun}: {_names(part)} (list_bodies)."
+        )
+    if part is not None and len(part) > 1:
+        parts.append(
+            "If an earlier edit split a body off (a sketch edit can leave a "
+            "profile short of the body it should join), the body the cut acts "
+            "on may no longer be where its sketch is: fix that edit so the "
+            "bodies join again, or change the cut's bodies."
+        )
+    return " ".join(parts)
+
+
+def _scope_entry(scope: BodyScope) -> dict[str, Any]:
+    return {
+        "feature_scope": scope.feature_scope,
+        "auto_select": scope.auto_select,
+        "bodies": scope.bodies,
+        "part_bodies": scope.part_bodies,
+    }
+
+
+def body_counts(before: list[str] | None, after: list[str] | None) -> dict[str, Any]:
+    """The solid-body counts a rebuild reports, from the names before and after.
+
+    Args:
+        before: The part's solid bodies before (None when unread).
+        after: Its solid bodies after (None when unread).
+
+    Returns:
+        dict[str, Any]: ``solid_body_count_before`` and
+        ``solid_body_count_after``, and ``solid_bodies_after`` (the names)
+        when the count rose; empty unless both were read.
+    """
+    if before is None or after is None:
+        return {}
+    counts: dict[str, Any] = {
+        "solid_body_count_before": len(before),
+        "solid_body_count_after": len(after),
+    }
+    if len(after) > len(before):
+        counts["solid_bodies_after"] = list(after)
+    return counts
+
+
+def body_count_warning(counts: dict[str, Any], what: str = "The rebuild") -> str | None:
+    """A warning when a rebuild left the part more solid bodies than before.
+
+    Args:
+        counts: :func:`body_counts`' result (or a reply holding its keys).
+        what: What rebuilt, to start the sentence.
+
+    Returns:
+        str | None: The warning, or None when the count didn't rise.
+    """
+    before = counts.get("solid_body_count_before")
+    after = counts.get("solid_body_count_after")
+    if not isinstance(before, int) or not isinstance(after, int) or after <= before:
+        return None
+    names = counts.get("solid_bodies_after")
+    listed = f" ({_names(names)})" if isinstance(names, list) and names else ""
+    return (
+        f"{what} left the part {after} solid bodies where it had {before}"
+        f"{listed}: a feature no longer meets the body it should join, often "
+        "a sketch edit that left a profile short of it. A later feature "
+        "scoped to one body, such as a cut, can then miss it. Check "
+        "list_bodies, and fix the edit if the bodies should be one."
+    )
 
 
 def explain(issue: RawRebuildIssue) -> dict[str, Any]:
@@ -208,7 +336,9 @@ def explain(issue: RawRebuildIssue) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: ``feature``, ``type``, ``code``, ``code_name``,
-        ``severity``, ``description``, ``parents`` and ``hint``.
+        ``severity``, ``description``, ``parents`` and ``hint``; and
+        ``scope`` (the bodies the cut acts on and the part's), its sentences
+        ahead of the hint, for a cut that meets nothing.
     """
     description, hint = _CODE_HINTS.get(issue.code, ("", ""))
     empty_parent = next(
@@ -230,7 +360,7 @@ def explain(issue: RawRebuildIssue) -> dict[str, Any]:
             f"'{issue.feature}' {outcome} "
             f"({code_name(issue.code)})."
         )
-    return {
+    entry: dict[str, Any] = {
         "feature": issue.feature,
         "type": issue.type,
         "code": issue.code,
@@ -248,6 +378,12 @@ def explain(issue: RawRebuildIssue) -> dict[str, Any]:
         ],
         "hint": hint,
     }
+    if issue.scope is not None:
+        entry["scope"] = _scope_entry(issue.scope)
+        said = scope_hint(issue.scope)
+        if said:
+            entry["hint"] = f"{said} {hint}"
+    return entry
 
 
 def summarize(entries: list[dict[str, Any]]) -> tuple[int, int, str]:

@@ -147,9 +147,78 @@ def test_a_block_printed_flat_is_fine() -> None:
     assert result["ok"] is True
     assert result["down_facing"]["needs_support_mm2"] == 0.0
     assert all(b["area_mm2"] == 0.0 for b in result["down_facing"]["bands"])
-    for kind in ("islands", "bridges", "suction_cups"):
+    for kind in ("islands", "suction_cups"):
         assert result[kind] == {"count": 0, "items": []}
+    assert result["bridges"]["count"] == 0
+    assert all(b["count"] == 0 for b in result["bridges"]["by_span"])
+    assert result["down_facing"]["at_support_angle"] == {
+        "from_deg": 44.0,
+        "to_deg": 46.0,
+        "area_mm2": 0.0,
+    }
     assert result["triangles"] == 12
+
+
+def _v_prism(angle_deg: float, height: float = 10.0, length: float = 20.0) -> list:
+    """A prism standing on its edge: two sides sloping down to it at ``angle_deg``."""
+    half = height / np.tan(np.radians(angle_deg))
+    a, b, c = (-half, height), (half, height), (0.0, 0.0)
+
+    def p(xz: tuple[float, float], y: float) -> list[float]:
+        return [xz[0], y, xz[1]]
+
+    triangles = []
+    for u, v in ((c, a), (b, c), (a, b)):  # the two sides, then the top
+        triangles += [
+            [*p(u, 0), *p(v, 0), *p(v, length)],
+            [*p(u, 0), *p(v, length), *p(u, length)],
+        ]
+    triangles += [
+        [*p(a, 0), *p(c, 0), *p(b, 0)],
+        [*p(a, length), *p(b, length), *p(c, length)],
+    ]
+    return triangles
+
+
+@pytest.mark.parametrize(
+    ("angle", "needs", "at_angle"),
+    [
+        (45.0, False, True),
+        (44.2, False, True),
+        (45.9, False, True),
+        (43.5, True, False),
+    ],
+)
+def test_faces_at_the_support_angle_need_no_supports(
+    angle: float, needs: bool, at_angle: bool
+) -> None:
+    """The Dipper's 45 degree window tops came back as 8 islands and 240 mm2."""
+    result = pr.analyse(_v_prism(angle), "z")
+    sides = 2 * 20.0 * 10.0 / np.sin(np.radians(angle))
+
+    down = result["down_facing"]
+    assert (down["needs_support_mm2"] > 0) is needs
+    assert down["at_support_angle"]["area_mm2"] == pytest.approx(
+        sides if at_angle else 0.0,
+        rel=1e-4,  # the weld rounds to 1 um
+    )
+    assert result["islands"]["count"] == 0
+    assert result["ok"] is not needs
+
+
+def test_bridges_of_every_span_are_counted_by_bin() -> None:
+    histogram = pr.span_histogram([(1.0, 2.0), (4.9, 3.0), (5.0, 10.0), (75.0, 1.5)])
+
+    assert [(b["from_mm"], b["to_mm"]) for b in histogram] == [
+        (0.0, 2.0),
+        (2.0, 5.0),
+        (5.0, 10.0),
+        (10.0, 20.0),
+        (20.0, 50.0),
+        (50.0, None),
+    ]
+    assert [b["count"] for b in histogram] == [1, 1, 1, 0, 0, 1]
+    assert [b["area_mm2"] for b in histogram] == [2.0, 3.0, 10.0, 0.0, 0.0, 1.5]
 
 
 @pytest.mark.parametrize("direction", ["-y", "x"])

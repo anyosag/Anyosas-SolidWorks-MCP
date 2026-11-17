@@ -30,6 +30,14 @@ Before an assembly save writes its modified parts, they are sorted:
   ``move_document`` made carries the records to the new path
   (:func:`follow_move`). A file system without file ids, or a file copied
   to another drive, gives no match, and the save asks;
+* a file this server wrote before it restarted (a context compaction can
+  restart it mid-conversation), found in the ledger (``file_ledger``) and
+  unchanged on disk since, in the same SolidWorks process (its id and start
+  time): one the server created is its own; one it only saved counts only
+  when the document's ``GetUpdateStamp`` is still the one read just after
+  that save - the model hasn't changed since, so its unsaved state is a flag
+  such as a needed rebuild (:func:`ledger_owns`). ``NeedsRebuild2`` can't
+  tell that alone: an edit of the user's needs a rebuild too;
 * any other modified file - the user's own work - is not overwritten unless
   the caller passed ``overwrite_modified_references``. The save returns
   :class:`NeedsConfirmation` instead, and the tool reports
@@ -43,7 +51,7 @@ The option values come from the SW 2026 constants type library
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..base import AdapterResult, AdapterResultStatus
@@ -188,6 +196,9 @@ def follow_move(adapter: Any, source: str, destination: str) -> None:
         saves[new] = recorded if recorded == _modified_time(destination) else None
     if owned or saves.get(new) is not None:
         _record_identity(adapter, destination)
+    ledger = _ledger(adapter)
+    if ledger is not None:
+        ledger.follow_move(source, destination)
 
 
 def _modified_time(path: str) -> float | None:
@@ -207,10 +218,81 @@ def session_saves(adapter: Any) -> dict[str, float | None]:
     return saves
 
 
-def record_save(adapter: Any, path: str) -> None:
-    """Record that this session saved ``path`` (and when the file then changed)."""
+def record_save(adapter: Any, path: str, doc: Any = None) -> None:
+    """Record that this session saved ``path`` (and when the file then changed).
+
+    The ledger gets it too, with the SolidWorks process, the document's
+    update stamp (``doc``, when given) and whether the session created it.
+    """
     session_saves(adapter)[normalize(path)] = _modified_time(path)
     _record_identity(adapter, path)
+    ledger = _ledger(adapter)
+    if ledger is not None:
+        ledger.record(
+            path,
+            created=normalize(path) in session_paths(adapter),
+            solidworks=solidworks_process(adapter),
+            update_stamp=update_stamp(adapter, doc),
+        )
+
+
+def _ledger(adapter: Any) -> Any:
+    """The adapter's :class:`file_ledger.FileLedger`, or None without one."""
+    return getattr(adapter, "_file_ledger", None)
+
+
+def solidworks_process(adapter: Any) -> tuple[int, int] | None:
+    """The connected SolidWorks: its process id and start time, or None.
+
+    The start time tells it from a later SolidWorks that got the same id.
+    It is read once per process id.
+    """
+    from .sessions import process_started
+
+    pid = int(getattr(adapter, "_sw_process_id", 0) or 0)
+    if not pid:
+        return None
+    known = getattr(adapter, "_sw_process_started", None)
+    if known and known[0] == pid:
+        return (pid, int(known[1]))
+    started = process_started(pid)
+    if started is None:
+        return None
+    adapter._sw_process_started = (pid, started)
+    return (pid, started)
+
+
+def update_stamp(adapter: Any, doc: Any) -> int | None:
+    """``IModelDoc2.GetUpdateStamp``: a counter of the model's changes, or None."""
+    if doc is None:
+        return None
+    value = adapter._attempt(lambda: adapter._get_attr_or_call(doc, "GetUpdateStamp"))
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return int(value)
+
+
+def ledger_owns(adapter: Any, path: str, doc: Any) -> bool:
+    """Whether the ledger shows ``path`` as this server's own, after a restart.
+
+    All of: an entry whose file is unchanged on disk since the server's
+    save; the same SolidWorks process (id and start time) then and now; and
+    the server created the file, or the document's update stamp is the one
+    read just after that save. Anything unknown is False: the guard asks.
+    """
+    ledger = _ledger(adapter)
+    if ledger is None:
+        return False
+    entry = ledger.unchanged_entry(path)
+    process = solidworks_process(adapter)
+    if entry is None or process is None:
+        return False
+    if [entry.get("solidworks_pid"), entry.get("solidworks_started")] != list(process):
+        return False
+    if entry.get("created"):
+        return True
+    stamp = update_stamp(adapter, doc)
+    return stamp is not None and stamp == entry.get("update_stamp")
 
 
 def saved_by_session(adapter: Any, path: str) -> bool:
@@ -231,6 +313,8 @@ class Reference:
     #: Never saved, virtual, written by this session, or saved by it and
     #: unchanged on disk since: saved without asking.
     new: bool
+    #: Its ``IModelDoc2``, for its update stamp after the save.
+    doc: Any = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -287,9 +371,10 @@ def modified_references(adapter: Any, assembly: Any) -> list[Reference]:
             or normalize(path) in session_paths(adapter)
             or saved_by_session(adapter, path)
             or moved_session_file(adapter, path)
+            or ledger_owns(adapter, path, doc)
         )
         key = normalize(path) if path else f"<unsaved {len(references)}>"
-        references.setdefault(key, Reference(path=path, new=new))
+        references.setdefault(key, Reference(path=path, new=new, doc=doc))
     return list(references.values())
 
 
@@ -397,10 +482,10 @@ def save_document(
 
     if not os.path.exists(target):
         raise Exception(f"File not written after save: {target}")
-    record_save(adapter, target)
+    record_save(adapter, target, model)
     for reference in references:
         if reference.path and os.path.exists(reference.path):
-            record_save(adapter, reference.path)
+            record_save(adapter, reference.path, reference.doc)
     return {
         "file_path": target,
         "saved_references": [r.path for r in references if r.path],

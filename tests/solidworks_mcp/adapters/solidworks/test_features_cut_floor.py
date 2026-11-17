@@ -75,3 +75,48 @@ async def test_the_floor_is_measured_for_the_side_that_was_cut(
     assert result.is_success, result.error
     assert result.data.parameters["direction_flipped"] is True
     assert seen == [("Cut-Extrude1", part.sketch_feature, False)]
+
+
+@pytest.mark.parametrize(
+    ("along", "against", "fields", "toward"),
+    [
+        (9.05, None, {"reverse_direction": True}, "+Y"),
+        (None, 9.05, {"reverse_direction": True}, "-Y"),  # flipped to the material
+        (9.05, 9.05, {"end_condition": "ThroughAllBoth"}, "both ways along Y"),
+    ],
+)
+async def test_the_cut_says_which_way_it_went_in_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    along: float | None,
+    against: float | None,
+    fields: dict[str, Any],
+    toward: str,
+) -> None:
+    """The Dipper had to work out from the sketch normal where each cut went."""
+    part = _PartWithSketch(along=along, against=against)
+    _measured(monkeypatch)
+    read: list[Any] = []
+    monkeypatch.setattr(
+        cut_check, "sketch_normal", lambda _a, f: read.append(f) or [0.0, 1.0, 0.0]
+    )
+
+    _adapter, result = await _cut(part, **fields)
+
+    assert result.is_success, result.error
+    assert result.data.parameters["cut_toward"] == toward
+    assert read and read[-1] is part.sketch_feature
+
+
+async def test_no_direction_is_given_without_the_sketch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .test_features_cut_direction import _Part as _Plain
+
+    _measured(monkeypatch)
+
+    _adapter, result = await _cut(
+        _Plain(along=9.05, against=None), reverse_direction=True
+    )
+
+    assert result.data.parameters["cut_toward"] is None
+    assert result.data.parameters["cut_direction"] is None

@@ -121,3 +121,19 @@ def test_otherwise_nothing_is_said(
     removed: float | None, floor: float | None, depth: float
 ) -> None:
     assert cut_check.shortfall_warning(removed, floor, depth) is None
+
+
+def test_a_cut_direction_in_model_terms() -> None:
+    toward = cut_check.cut_toward
+
+    assert toward([0.0, 1.0, 0.0], True) == ("+Y", [0.0, 1.0, 0.0])
+    assert toward([0.0, 1.0, 0.0], False) == ("-Y", [0.0, -1.0, 0.0])
+    assert toward([0.0, 0.0, -1.0], True) == ("-Z", [0.0, 0.0, -1.0])
+    assert toward([1.0, 0.0, 0.0], False, both=True) == (
+        "both ways along X",
+        [1.0, 0.0, 0.0],
+    )
+    slant = [0.7071068, 0.0, 0.7071068]
+    assert toward(slant, False)[0] == "(-0.7071, 0, -0.7071)"
+    assert toward(slant, True, both=True)[0] == "both ways along (0.7071, 0, 0.7071)"
+    assert toward(None, True) is None

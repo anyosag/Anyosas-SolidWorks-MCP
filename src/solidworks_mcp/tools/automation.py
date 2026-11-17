@@ -20,6 +20,7 @@ from ..adapters.base import SolidWorksAdapter
 from ..adapters.solidworks import limits
 from .error_classifier import INVALID_INPUT, OPERATION_FAILED, Classification
 from .input_compat import CompatInput
+from .modeling import dependents_warning
 from .support_levels import SUPPORT_LEVELS, SupportLevel
 from .tool_boundary import (
     InvalidInputError,
@@ -225,8 +226,26 @@ class DesignTableInput(CompatInput):
             self.auto_create_configurations = True
 
 
-#: The most steps one workflow runs.
-MAX_WORKFLOW_STEPS = 100
+#: The most steps one workflow runs. Nothing else depends on it but the
+#: rollback's guard; progress after each step keeps the client's idle timeout
+#: from running out. It is checked in the tool, not the schema, so a longer
+#: list gets a clear ``invalid_input`` rather than a pydantic error.
+MAX_WORKFLOW_STEPS = 200
+
+
+def too_many_steps(count: int) -> str:
+    """The ``invalid_input`` message for a workflow longer than the cap."""
+    calls = -(-count // MAX_WORKFLOW_STEPS)
+    return (
+        f"steps: a workflow runs at most {MAX_WORKFLOW_STEPS} steps, and this one "
+        f"has {count}; nothing ran. Split it into {calls} calls of at most "
+        f"{MAX_WORKFLOW_STEPS} steps, run one after another. Each call numbers its "
+        "steps from 0 and can use only its own steps' replies: a '$steps.<id>' "
+        "reference keeps working wherever its step lands in the same call, a "
+        "'$steps.<index>' one must be renumbered, and a value from an earlier call "
+        "goes in as a literal, read from that call's reply."
+    )
+
 
 #: Steps that change which names the feature tree holds, or where new
 #: features go. Rollback deletes what wasn't in the tree at the start, so
@@ -303,11 +322,11 @@ class WorkflowInput(CompatInput):
     )
     steps: list[WorkflowStep] = Field(
         min_length=1,
-        max_length=MAX_WORKFLOW_STEPS,
         description=(
             "The steps, run one after another: each a {tool, arguments} pair, "
             "with an optional document, e.g. {'tool': 'add_line', 'arguments': "
-            "{'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}}"
+            "{'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}}. At most "
+            f"{MAX_WORKFLOW_STEPS} steps; split a longer list into several calls"
         ),
     )
     rollback_on_error: bool = Field(
@@ -320,9 +339,10 @@ class WorkflowInput(CompatInput):
     detail: Literal["summary", "full"] = Field(
         default="summary",
         description=(
-            "'summary': each step that worked gives its status, message and "
-            "small facts (the scalar values of its reply and of each object in "
-            "it, such as `extrusion.name`, and `measured_change`); 'full': each "
+            "'summary': each step that worked gives its status, message, own "
+            "warning and small facts (the scalar values of its reply and of each "
+            "object in it, such as `extrusion.name`, and the checks "
+            "`measured_change`, `mesh_check` and `file_check`); 'full': each "
             "step's whole reply, as `result`. A failed step always gives its "
             "whole reply."
         ),
@@ -598,28 +618,58 @@ async def _run_step(
     return reply
 
 
+#: Checks a summary keeps whole wherever they sit in a reply (its top level
+#: or one object down): a step's own proof that it did what it said.
+#: ``export_stl``'s ``export.mesh_check`` was dropped, so the Dipper saw no
+#: triangle count or volume ratio in its batch of STL exports.
+_CHECK_BLOCKS = frozenset({"measured_change", "mesh_check", "file_check"})
+
+
 def _small_facts(mapping: dict[str, Any]) -> dict[str, Any]:
-    """A reply's (or its ``data``'s) scalar values, and its ``measured_change``."""
+    """A reply's (or one of its objects') scalar values and its check blocks."""
     return {
         key: value
         for key, value in mapping.items()
         if isinstance(value, _SCALARS)
-        or (key == "measured_change" and isinstance(value, dict))
+        or (key in _CHECK_BLOCKS and isinstance(value, dict))
     }
 
 
-def _summary(entry: dict[str, Any], reply: dict[str, Any]) -> dict[str, Any]:
-    """A successful step's entry with its reply's small facts, but no warning.
+#: The key under which every ``delete_feature`` step's dependents are listed,
+#: as one warning (``dependents_warning``), in the workflow's ``warnings``.
+_DELETIONS = "\0delete_feature dependents"
+
+
+def _deleted_with_dependents(
+    tool: str, reply: dict[str, Any]
+) -> tuple[str, list[str]] | None:
+    """A ``delete_feature`` step's feature and the dependents that went with it."""
+    dependents = reply.get("dependents")
+    if tool != "delete_feature" or not isinstance(dependents, list) or not dependents:
+        return None
+    name = (reply.get("data") or {}).get("deleted")
+    return str(name), [str(d) for d in dependents]
+
+
+def _summary(
+    entry: dict[str, Any], reply: dict[str, Any], warning: str | None = None
+) -> dict[str, Any]:
+    """A successful step's entry with its reply's small facts and its own warning.
 
     The scalars of each object in the reply are kept too (``data``, or a
     tool's own key such as ``extrusion``), so the name of what a step made
-    is still there: ``extrusion.name``, ``fillet.name``.
+    is still there: ``extrusion.name``, ``fillet.name``; so are the check
+    blocks (:data:`_CHECK_BLOCKS`). The reply's warning is replaced by
+    ``warning``, the step's own (None: left out), since its tool's
+    support-level warning is listed once in the workflow's ``warnings``.
     """
     facts = {
         key: value
         for key, value in _small_facts(reply).items()
         if key not in entry and key != "warning"
     }
+    if warning:
+        facts["warning"] = warning
     objects = {
         key: small
         for key, value in reply.items()
@@ -966,19 +1016,19 @@ End Sub
         `steps`, each a `tool` and the `arguments` you would pass it (its fields, or
         `{"input_data": {...}}`), and `document` to run it on another open document.
         An argument `"$steps.<i>.<path>"` takes that value from step i's reply (i is
-        its index or `id`), e.g. `"old_name": "$steps.3.fillet.name"`. Steps run one
-        at a time, with progress after each. With `rollback_on_error`, a failing
-        step makes it delete the
-        features and sketches the earlier steps added (other changes, such as
-        dimensions or saved files, stay). Needs: whatever the steps need. Changes:
-        whatever the steps change. Returns: `steps` (each one's `status`, `message`
-        and small facts such as `measured_change`; with `detail: "full"`, its whole
-        `result`), `completed` and `warnings` (each once, with its steps); on a
-        failure, an error whose `data` has those (the failed step in full),
+        its index or `id`), e.g. `"old_name": "$steps.3.fillet.name"`. At most 200
+        steps: split a longer list into calls run in order (each numbers its steps
+        from 0). With `rollback_on_error`, a failing step makes it delete the
+        features and sketches the earlier steps added (dimensions or saved files
+        stay). Needs: whatever the steps need. Changes: whatever the steps change.
+        Returns: `steps` (each one's `status`, `message`, own `warning` and small
+        facts such as `measured_change` and `mesh_check`; with `detail: "full"`, its
+        whole `result`), `completed` and `warnings` (each once, with its steps); on
+        a failure, an error whose `data` has those (the failed step in full),
         `failed_step` and `rolled_back`.
 
         Args:
-            input_data: The workflow. `steps` (1 to 100) is required;
+            input_data: The workflow. `steps` (1 to 200) is required;
                 `workflow_name`, `rollback_on_error` (off) and `detail`
                 ("summary") have defaults.
 
@@ -986,6 +1036,8 @@ End Sub
             dict[str, Any]: Each step's result.
         """
         input_data = normalize_input(input_data, WorkflowInput)
+        if len(input_data.steps) > MAX_WORKFLOW_STEPS:
+            raise InvalidInputError(too_many_steps(len(input_data.steps)))
         registry = {tool.name: tool for tool in await mcp.list_tools()}
         ids = _step_ids(input_data.steps)
         plan: list[_PlannedStep] = []
@@ -1038,10 +1090,16 @@ End Sub
         # Every step's whole reply, for references, whatever `detail` says.
         replies: list[dict[str, Any]] = []
         seen_warnings: dict[str, list[int]] = {}
+        deletions: list[tuple[str, list[str]]] = []
 
         def listed_warnings() -> list[dict[str, Any]]:
             return [
-                {"warning": text, "steps": steps}
+                {
+                    "warning": (
+                        dependents_warning(deletions) if text == _DELETIONS else text
+                    ),
+                    "steps": steps,
+                }
                 for text, steps in seen_warnings.items()
             ]
 
@@ -1069,10 +1127,19 @@ End Sub
                 )
             reply = await _run_step(index, planned, replies)
             replies.append(reply)
-            for part in dict.fromkeys(
-                _warning_parts(planned.tool, reply.get("warning"))
-            ):
+            parts = _warning_parts(planned.tool, reply.get("warning"))
+            gone = _deleted_with_dependents(planned.tool, reply)
+            if gone is not None:
+                # Said once for every delete, under _DELETIONS (the Dipper's
+                # 19 planes gave 19 near-identical warnings).
+                said = dependents_warning([gone])
+                parts = [part for part in parts if part != said]
+                deletions.append(gone)
+                seen_warnings.setdefault(_DELETIONS, []).append(index)
+            for part in dict.fromkeys(parts):
                 seen_warnings.setdefault(part, []).append(index)
+            level = SUPPORT_LEVELS[planned.tool].warning()
+            own = " ".join(part for part in parts if part != level) or None
             entry: dict[str, Any] = {"index": index}
             if planned.id is not None:
                 entry["id"] = planned.id
@@ -1085,7 +1152,7 @@ End Sub
             if failed or input_data.detail == "full":
                 entry["result"] = reply
             else:
-                entry = _summary(entry, reply)
+                entry = _summary(entry, reply, own)
             done.append(entry)
             if failed:
                 data: dict[str, Any] = {

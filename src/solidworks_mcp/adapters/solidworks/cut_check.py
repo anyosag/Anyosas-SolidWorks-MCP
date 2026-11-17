@@ -47,6 +47,33 @@ def sketch_normal(adapter: Any, sketch_feature: Any) -> list[float] | None:
     return None if axes is None else [float(c) for c in axes["normal"]]
 
 
+def cut_toward(
+    normal: list[float] | None, along: bool, both: bool = False
+) -> tuple[str, list[float]] | None:
+    """Which way a cut went in the model, from its sketch normal and side.
+
+    Args:
+        normal: The sketch normal in model coordinates (None when unread).
+        along: The cut went along the normal (False: against it).
+        both: It cut both ways (through all both ways, or mid-plane).
+
+    Returns:
+        tuple[str, list[float]] | None: ``("-Y", [0, -1, 0])``, or for both
+        ways ``("both ways along Y", normal)``; a slanted direction is given
+        as its numbers. None without a normal.
+    """
+    if normal is None:
+        return None
+    vector = [round(c if along or both else -c, 6) + 0.0 for c in normal]
+    for index, letter in enumerate("XYZ"):
+        if abs(abs(vector[index]) - 1.0) < 1e-6:
+            if both:
+                return f"both ways along {letter}", vector
+            return ("+" if vector[index] > 0 else "-") + letter, vector
+    shown = "(" + ", ".join(f"{c:.4g}" for c in vector) + ")"
+    return (f"both ways along {shown}" if both else shown), vector
+
+
 def facing_areas_mm2(
     adapter: Any, feature: Any, normal: list[float]
 ) -> tuple[float, float] | None:

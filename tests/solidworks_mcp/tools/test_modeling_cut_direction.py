@@ -116,3 +116,25 @@ _REQUESTED_FLIPPED = (
 )
 def test_cut_direction_note(applied: Any, note: str) -> None:
     assert _cut_direction_note(applied) == note
+
+
+@pytest.mark.asyncio
+async def test_the_message_names_the_model_direction_cut(
+    mcp_server, mock_adapter
+) -> None:
+    mock_adapter.create_cut_extrude = AsyncMock(
+        return_value=_cut(cut_toward="-Y", direction_flipped=False)
+    )
+    tool = await _tool(mcp_server, mock_adapter)
+
+    result = await tool({"sketch_name": "Sketch3", "depth": 2.0})
+
+    assert result["message"].startswith(
+        "Created cut-extrude: Cut-Extrude1, cut toward -Y"
+    )
+    assert result["cut_extrude"]["cut_toward"] == "-Y"
+
+    mock_adapter.create_cut_extrude = AsyncMock(return_value=_cut())
+    plain = await tool({"sketch_name": "Sketch3", "depth": 2.0})
+    assert plain["message"] == "Created cut-extrude: Cut-Extrude1"
+    assert "cut_toward" not in plain["cut_extrude"]

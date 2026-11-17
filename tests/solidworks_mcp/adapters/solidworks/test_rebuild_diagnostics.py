@@ -132,3 +132,74 @@ def test_the_warning_names_each_flagged_feature() -> None:
     )
     assert rd.issues_warning([failed]) is None
     assert rd.issues_warning([]) is None
+
+
+def test_body_counts_need_both_reads_and_name_the_bodies_when_they_rise() -> None:
+    assert rd.body_counts(None, ["A"]) == {}
+    assert rd.body_counts(["A"], None) == {}
+    assert rd.body_counts(["A", "B"], ["A"]) == {
+        "solid_body_count_before": 2,
+        "solid_body_count_after": 1,
+    }
+    assert rd.body_counts(["A"], ["A", "B"]) == {
+        "solid_body_count_before": 1,
+        "solid_body_count_after": 2,
+        "solid_bodies_after": ["A", "B"],
+    }
+
+
+def test_a_body_count_that_rose_is_a_warning() -> None:
+    risen = rd.body_counts(["Strip"], ["Strip", ""])
+
+    warning = rd.body_count_warning(risen, "The sketch edit")
+
+    assert warning is not None
+    assert warning.startswith(
+        "The sketch edit left the part 2 solid bodies where it had 1 "
+        "(Strip, (unnamed)): a feature no longer meets the body"
+    )
+    assert "list_bodies" in warning
+    assert rd.body_count_warning({**risen, "solid_bodies_after": []}).startswith(
+        "The rebuild left the part 2 solid bodies where it had 1: "
+    )
+    assert rd.body_count_warning(rd.body_counts(["A"], ["A"])) is None
+    assert rd.body_count_warning(rd.body_counts(["A", "B"], ["A"])) is None
+    assert rd.body_count_warning({}) is None
+
+
+def test_a_cut_that_meets_nothing_says_what_it_acts_on() -> None:
+    scope = rd.BodyScope(True, False, ["Strip"], ["Strip", "Boss-Extrude5"])
+
+    entry = rd.explain(rd.RawRebuildIssue("Cut7", "Cut", 71, False, scope=scope))
+
+    assert entry["scope"] == {
+        "feature_scope": True,
+        "auto_select": False,
+        "bodies": ["Strip"],
+        "part_bodies": ["Strip", "Boss-Extrude5"],
+    }
+    assert entry["hint"].startswith("The cut acts only on Strip. The part has 2")
+    assert entry["hint"].endswith(rd._CODE_HINTS[71][1])
+
+
+def test_the_scope_hint_says_only_what_was_read() -> None:
+    hint = rd.scope_hint
+
+    assert hint(rd.BodyScope()) == ""
+    assert hint(rd.BodyScope(feature_scope=False, part_bodies=["A"])) == (
+        "The cut acts on every body. The part has 1 solid body: A (list_bodies)."
+    )
+    assert hint(rd.BodyScope(feature_scope=True, auto_select=True)) == (
+        "The cut acts only on the bodies it selected itself, which can't be read."
+    )
+    assert hint(rd.BodyScope(feature_scope=True)).startswith(
+        "The cut acts only on the bodies it selected, which"
+    )
+    assert hint(rd.BodyScope(part_bodies=[])) == (
+        "The part has 0 solid bodies: none (list_bodies)."
+    )
+    # Nothing read: the issue's own hint stands alone.
+    plain = rd.explain(
+        rd.RawRebuildIssue("Cut7", "Cut", 71, False, scope=rd.BodyScope())
+    )
+    assert plain["hint"] == rd._CODE_HINTS[71][1]

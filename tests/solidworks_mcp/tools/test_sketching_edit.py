@@ -197,3 +197,76 @@ async def test_exit_says_when_the_sketch_was_left_as_it_was(
     assert reply["status"] == "success"
     assert reply.get("sketch_unchanged", False) is unchanged
     assert ("marked the part modified" in reply.get("warning", "")) is warned
+
+
+# ---- an empty sketch, and an edit that splits a body --------------------------
+
+
+def _exits_with(adapter: MockSolidWorksAdapter, metadata: dict[str, Any]) -> None:
+    adapter.exit_sketch = AsyncMock(  # type: ignore[method-assign]
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data=None, metadata=metadata
+        )
+    )
+
+
+async def test_an_empty_sketch_that_solidworks_discarded_says_so(part: Any) -> None:
+    """The Dipper made 19 empty sketches to read axes; edit_sketch found none."""
+    adapter, tools = part
+    await tools["create_sketch"]({"plane": "Top", "sketch_name": "Axes"})
+    _exits_with(adapter, {"discarded": "Sketch27"})
+    adapter.rename_feature = AsyncMock()  # type: ignore[method-assign]
+
+    reply = await tools["exit_sketch"]()
+
+    assert reply["status"] == "success"
+    assert reply["discarded"] is True
+    assert reply["sketch"] == {"name": "Sketch27", "discarded": True}
+    assert reply["message"].endswith("discarded the empty sketch 'Sketch27'")
+    assert "nothing in it" in reply["warning"]
+    assert "create_sketch's reply already gave them" in reply["warning"]
+    adapter.rename_feature.assert_not_called()  # nothing is left to name
+
+    _exits_with(adapter, {})
+    assert "sketch" not in await tools["exit_sketch"]()  # the name went with it
+
+
+async def test_an_edit_that_splits_a_body_off_is_a_warning(part: Any) -> None:
+    adapter, tools = part
+    _exits_with(
+        adapter,
+        {
+            "solid_body_count_before": 1,
+            "solid_body_count_after": 2,
+            "solid_bodies_after": ["Strip", "Boss-Extrude5"],
+        },
+    )
+
+    reply = await tools["exit_sketch"]()
+
+    assert reply["solid_body_count_before"] == 1
+    assert reply["solid_body_count_after"] == 2
+    assert reply["solid_bodies_after"] == ["Strip", "Boss-Extrude5"]
+    assert reply["warning"].startswith(
+        "Rebuilding after the sketch edit left the part 2 solid bodies where it "
+        "had 1 (Strip, Boss-Extrude5)"
+    )
+
+    _exits_with(adapter, {"solid_body_count_before": 2, "solid_body_count_after": 2})
+    same = await tools["exit_sketch"]()
+    assert same["solid_body_count_after"] == 2
+    assert "warning" not in same
+
+
+async def test_a_split_and_a_failed_rename_are_both_warned(part: Any) -> None:
+    adapter, tools = part
+    await tools["create_sketch"]({"plane": "Top", "sketch_name": "Outline"})
+    _exits_with(adapter, {"solid_body_count_before": 1, "solid_body_count_after": 2})
+    adapter.rename_feature = AsyncMock(  # type: ignore[method-assign]
+        return_value=AdapterResult(status=AdapterResultStatus.ERROR, error="taken")
+    )
+
+    reply = await tools["exit_sketch"]()
+
+    assert reply["warning"].startswith("Rebuilding after the sketch edit left")
+    assert reply["warning"].endswith("could not be named 'Outline' (taken).")

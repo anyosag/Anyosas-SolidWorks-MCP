@@ -47,6 +47,26 @@ async def test_a_part_that_prints_as_it_is(tools) -> None:
     assert reply["message"] == "Prints in this orientation without supports"
 
 
+async def test_faces_at_the_support_angle_are_said_to_need_nothing(tools) -> None:
+    adapter, tool = tools
+    _answer(
+        adapter,
+        ok=True,
+        support_angle_deg=45.0,
+        down_facing={
+            "needs_support_mm2": 0.0,
+            "at_support_angle": {"from_deg": 44.0, "to_deg": 46.0, "area_mm2": 240.0},
+        },
+    )
+
+    reply = await tool["check_printability"]({"build_direction": "z"})
+
+    assert reply["message"] == (
+        "Prints in this orientation without supports (240 mm² lies within 1° of "
+        "the 45° support angle and counts as self-supporting)"
+    )
+
+
 async def test_what_needs_attention_is_summed_up(tools) -> None:
     adapter, tool = tools
     _answer(

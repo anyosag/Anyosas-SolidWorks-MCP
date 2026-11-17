@@ -154,14 +154,20 @@ def _no_solidworks_launch() -> Generator[None]:
 def _session_register_dir(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Generator[None]:
-    """Keep the adapters' session files (``sessions.py``) out of LOCALAPPDATA."""
-    previous = os.environ.get("SOLIDWORKS_MCP_SESSION_DIR")
-    os.environ["SOLIDWORKS_MCP_SESSION_DIR"] = str(tmp_path_factory.mktemp("sessions"))
+    """Keep the adapters' session files and file ledger out of LOCALAPPDATA."""
+    ledger = tmp_path_factory.mktemp("ledger") / "written_files.json"
+    places = {
+        "SOLIDWORKS_MCP_SESSION_DIR": str(tmp_path_factory.mktemp("sessions")),
+        "SOLIDWORKS_MCP_FILE_LEDGER": str(ledger),
+    }
+    previous = {name: os.environ.get(name) for name in places}
+    os.environ.update(places)
     yield
-    if previous is None:
-        os.environ.pop("SOLIDWORKS_MCP_SESSION_DIR", None)
-    else:
-        os.environ["SOLIDWORKS_MCP_SESSION_DIR"] = previous
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 @pytest.fixture(autouse=True)

@@ -1121,18 +1121,17 @@ async def register_analysis_tools(
 
         Give `build_direction`, the way the part grows from the build plate. It
         reports the area facing the plate in angle bands and how much needs supports
-        (under `support_angle_deg`), islands (spots that start in mid-air), bridges
-        (flat overhangs held at both ends) and suction cups (cavities open toward
-        the plate, which trap resin). `orientations` tries that many directions and
-        checks in the one needing the least support, with the turn to apply;
-        `min_feature_mm` lists regions thinner than that. It checks the mesh: a
-        screen, not a slicer (exact walls: `check_wall_thickness`). Needs: an open
-        part. Read-only. A temporary STL is written and deleted, and your STL
-        options are put back. Returns: `data` with `down_facing` (`bands`,
-        `needs_support_mm2`), `islands`, `bridges` and `suction_cups` (each
-        `count` and `items`, points in model mm), `ok`, `triangles`, and
-        `orientations` (`best` with `rotate_to_z`, `ranked`) and `thin_features`
-        when asked.
+        (under `support_angle_deg`; within 1° of it counts as self-supporting),
+        islands (spots that start in mid-air), bridges (flat overhangs held at both
+        ends) and suction cups (cavities open toward the plate). `orientations`
+        tries that many directions and checks in the one needing the least support,
+        with the turn to apply; `min_feature_mm` lists regions thinner than that. A
+        mesh screen, not a slicer (exact walls: `check_wall_thickness`). Needs: an
+        open part. Read-only. A temporary STL is written and deleted. Returns: `data` with `down_facing` (`bands`,
+        `needs_support_mm2`, `at_support_angle`), `islands`, `bridges` (with
+        `by_span`, every bridge by span) and `suction_cups` (each `count` and
+        `items`, points in model mm), `ok`, `triangles`, and `orientations` (`best`
+        with `rotate_to_z`, `ranked`) and `thin_features` when asked.
 
         Args:
             input_data: The check. `build_direction` or `orientations` is
@@ -1168,7 +1167,8 @@ async def register_analysis_tools(
             )
             if (data.get(key) or {}).get("count")
         ]
-        support = (data.get("down_facing") or {}).get("needs_support_mm2") or 0
+        down = data.get("down_facing") or {}
+        support = down.get("needs_support_mm2") or 0
         if support:
             found.append(f"{support:g} mm² needing supports")
         message = (
@@ -1176,6 +1176,13 @@ async def register_analysis_tools(
             if data.get("ok")
             else "In this orientation: " + ", ".join(found)
         )
+        at_angle = down.get("at_support_angle") or {}
+        if at_angle.get("area_mm2"):
+            message += (
+                f" ({at_angle['area_mm2']:g} mm² lies within 1° of the "
+                f"{data.get('support_angle_deg', 45):g}° support angle and counts "
+                "as self-supporting)"
+            )
         best = (data.get("orientations") or {}).get("best")
         if best:
             turn = best.get("rotate_to_z") or {}

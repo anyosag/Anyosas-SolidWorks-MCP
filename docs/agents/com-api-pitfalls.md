@@ -1588,6 +1588,34 @@ settles each:
   one SolidWorks takes, whether it marks the assembly modified, and whether it stays
   hidden after a save and reopen.
 
+## 57. The Dipper's second round: what the code now assumes, still to be measured
+
+Reported by "The Dipper" (SOLIDWORKS 2026 SP4.1, about 400 calls on a cradle of four
+truss cages), fixed without SolidWorks on `r2-fixes`. `tests/scripts/probe_r2_fixes.py`
+settles each:
+
+- **An empty sketch** (#45). `exit_sketch` reads the open sketch's `GetSketchSegments`,
+  `GetSketchPoints2` and `GetSketchTextSegments`; when all read and are empty it looks
+  the name up after the exit and reports `discarded` when it is gone. Open: that
+  `FeatureByName` finds a sketch while it is open, and whether a sketch with only a
+  point is kept.
+- **A body split off by a sketch edit.** `edit_sketch` counts `GetBodies2` before
+  `EditSketch` (the part is assumed to show rolled back while a sketch is edited) and
+  `exit_sketch` counts again after `InsertSketch(True)`. `rebuild_model` counts around
+  `ForceRebuild3`. Open: the counts during the edit, and that the rebuild is done by
+  the time `InsertSketch(True)` returns.
+- **A cut that meets nothing** (`swFeatureErrorCutNotIntersectModel`, 71). Its
+  definition's `FeatureScope`, `AutoSelect` and `FeatureScopeBodies` (properties on
+  `IExtrudeFeatureData2` in the gen_py wrapper) are read without `AccessSelections`.
+  Open: whether they read so, and whether a cut made with feature scope and auto-select
+  on keeps its first body after a split or picks again on rebuild.
+- **The save guard after a restart** (`file_ledger.py`). A file the server created, or
+  saved with the document's `IModelDoc2.GetUpdateStamp` unchanged since, counts as the
+  server's own when the file is as the server left it and the same SolidWorks process
+  (id and `GetProcessTimes` start) holds it. `IModelDocExtension.NeedsRebuild2` alone
+  can't tell a needed rebuild from an edit. Open: that the stamp stays put through a
+  save and a rebuild and moves on a model edit and a custom property edit.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape

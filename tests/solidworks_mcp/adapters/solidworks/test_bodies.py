@@ -9,6 +9,36 @@ import pytest
 from solidworks_mcp.adapters.solidworks import bodies as bd
 
 
+class _Attempting:
+    def _attempt(self, fn, default=None):  # noqa: ANN001, ANN202
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001
+            return default
+
+
+def test_solid_body_names_tell_an_unreadable_part_from_an_empty_one() -> None:
+    from types import SimpleNamespace
+
+    def raises(_kind: int, _visible: bool) -> None:
+        raise AttributeError("GetBodies2")  # an assembly has none
+
+    class _Nameless:
+        @property
+        def Name(self) -> str:  # noqa: N802
+            raise RuntimeError("no name")
+
+    names = bd.solid_body_names
+    adapter = _Attempting()
+    assert names(adapter, SimpleNamespace(GetBodies2=raises)) is None
+    assert names(adapter, SimpleNamespace(GetBodies2=lambda _k, _v: None)) == []
+    bodies = (SimpleNamespace(Name="Strip"), _Nameless())
+    assert names(adapter, SimpleNamespace(GetBodies2=lambda _k, _v: bodies)) == [
+        "Strip",
+        "",
+    ]
+
+
 def test_the_copies_are_the_tool_a_ring_at_each_side_and_two_along_the_axis() -> None:
     offsets = bd.shift_offsets(0.15, 32, "y")
 
