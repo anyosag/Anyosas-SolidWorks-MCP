@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..adapters.base import (
     AdapterResult,
+    AdapterResultStatus,
     ExtrusionParameters,
     LoftParameters,
     RevolveParameters,
@@ -18,6 +19,8 @@ from ..adapters.base import (
     SweepParameters,
 )
 from ..adapters.solidworks.cut_check import shortfall_warning
+from ..adapters.solidworks.edge_feature_check import warnings as edge_feature_warnings
+from ..adapters.solidworks.rebuild_diagnostics import issues_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
@@ -168,6 +171,57 @@ def _flag_a_shallow_cut(
         own = reply.get("warning")
         reply["warning"] = f"{own} {warning}" if own else warning
     return reply
+
+
+def _add_warnings(reply: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    """Append ``warnings`` to the reply's ``warning``, after any it has."""
+    texts = [reply["warning"]] if reply.get("warning") else []
+    texts += [w for w in warnings if w]
+    if texts:
+        reply["warning"] = " ".join(texts)
+    return reply
+
+
+def _edge_feature_reply(
+    kind: str, reply: dict[str, Any], feature: Any
+) -> dict[str, Any]:
+    """Add what a new fillet or chamfer took to its reply.
+
+    The adapter read the part before and after (``geometry_before`` /
+    ``geometry_after``), the edges selected and the edges the feature holds,
+    and the features below the rollback bar (``edge_feature_check``).
+
+    Args:
+        kind: ``"fillet"`` or ``"chamfer"``, the reply's key.
+        reply: The success reply.
+        feature: The adapter's feature.
+
+    Returns:
+        dict[str, Any]: ``reply``, with ``edges_selected`` and ``edges_held``
+        in its ``kind`` entry, ``measured_change`` when the part read, and a
+        ``warning`` when fewer edges were kept or the rollback bar is up.
+    """
+    properties = _result_value(feature, "properties", default={})
+    if not isinstance(properties, dict):
+        properties = {}
+    entry = reply[kind]
+    entry["edges_selected"] = properties.get("edges_selected")
+    entry["edges_held"] = properties.get("edges_held")
+    before = properties.get("geometry_before")
+    if isinstance(before, dict):
+        after = properties.get("geometry_after")
+        reply = _attach_measured_change(
+            reply,
+            AdapterResult(status=AdapterResultStatus.SUCCESS, data=before),
+            AdapterResult(status=AdapterResultStatus.SUCCESS, data=after)
+            if isinstance(after, dict)
+            else AdapterResult(
+                status=AdapterResultStatus.ERROR, error="the summary didn't read"
+            ),
+        )
+    return _add_warnings(
+        reply, edge_feature_warnings(kind, str(entry["name"]), properties)
+    )
 
 
 def _cut_direction_note(applied: Any) -> str:
@@ -2222,7 +2276,11 @@ async def register_modeling_tools(
         edge of a face; or leave `edge_names` empty to use the current selection (e.g.
         from `select_face_edges`). A fillet that leaves the volume unchanged is an
         error. Needs: an open part with a solid body. Changes: adds a Fillet feature,
-        then clears the selection. Returns: `fillet` with `name`, `radius` and `edges`.
+        then clears the selection. Returns: `fillet` with `name`, `radius`, `edges`,
+        `edges_selected` and `edges_held` (what SolidWorks kept), and
+        `measured_change` (volume before and after). A `warning` says when it holds
+        fewer edges than were selected, and when the rollback bar is up: check it
+        again after rolling forward.
 
         Args:
             input_data: The fillet. `radius` (mm) is required; `edge_names`
@@ -2235,7 +2293,7 @@ async def register_modeling_tools(
         result = await adapter.add_fillet(input_data.radius, input_data.edge_names)
         require_success(result, context="Failed to add fillet")
         feature = result.data
-        return {
+        reply = {
             "status": "success",
             "message": f"Created fillet: {_result_value(feature, 'feature_name', 'name', default='Fillet')}",
             "fillet": {
@@ -2247,6 +2305,7 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        return _edge_feature_reply("fillet", reply, feature)
 
     @mcp.tool()
     async def add_chamfer(input_data: AddChamferInput) -> dict[str, Any]:
@@ -2257,8 +2316,10 @@ async def register_modeling_tools(
         from `select_face_edges`). At 45 degrees both legs equal `distance`; at another
         angle, `flip` swaps which face `distance` is measured on. Needs: an open part
         with a solid body. Changes: adds a Chamfer feature, then clears the selection.
-        Returns: `chamfer` with
-        `name`, `distance`, `angle`, `flip` and `edges`.
+        Returns: `chamfer` with `name`, `distance`, `angle`, `flip`, `edges`,
+        `edges_selected` and `edges_held` (what SolidWorks kept), and
+        `measured_change` (volume before and after). A `warning` says when it holds
+        fewer edges than were selected, and when the rollback bar is up.
 
         Args:
             input_data: The chamfer. `distance` (mm) is required; `edge_names`
@@ -2276,7 +2337,7 @@ async def register_modeling_tools(
         )
         require_success(result, context="Failed to add chamfer")
         feature = result.data
-        return {
+        reply = {
             "status": "success",
             "message": f"Created chamfer: {_result_value(feature, 'feature_name', 'name', default='Chamfer')}",
             "chamfer": {
@@ -2290,6 +2351,7 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        return _edge_feature_reply("chamfer", reply, feature)
 
     @mcp.tool()
     async def create_sweep(input_data: CreateSweepInput) -> dict[str, Any]:
@@ -2985,9 +3047,12 @@ async def register_modeling_tools(
 
         Use it to add a feature in the middle of the tree: roll back to just after the
         feature it builds on, add it, then call this with no input to roll forward.
-        Features below the bar are not built while it is up. Needs: an open part or
-        assembly. Changes: the rollback bar's position. Returns: `data` with `position`
-        and `rolled_back` (the features now below the bar).
+        Features below the bar are not built while it is up; rolling forward rebuilds
+        them, and a feature added above them can lose edges then. Needs: an open part
+        or assembly. Changes: the rollback bar's position. Returns: `data` with
+        `position`, `rolled_back` (the features now below the bar) and `rebuild` (the
+        errors and warnings SolidWorks reports after the move, as `rebuild_model`
+        gives them); a `warning` names each.
 
         Args:
             input_data: Where to put the bar: `before` or `after` a feature; neither
@@ -3001,15 +3066,24 @@ async def register_modeling_tools(
         require_success(result, context="Failed to move the rollback bar")
         data = result.data if isinstance(result.data, dict) else {}
         rolled = data.get("rolled_back") or []
-        return {
+        rebuild = data.get("rebuild") if isinstance(data.get("rebuild"), dict) else {}
+        flagged = (rebuild.get("error_count") or 0) + (
+            rebuild.get("warning_count") or 0
+        )
+        reply: dict[str, Any] = {
             "status": "success",
             "message": (
                 f"Rollback bar at {data.get('position', 'the end')}"
                 + (f"; {len(rolled)} feature(s) below it" if rolled else "")
+                + (f"; {rebuild.get('summary')}" if flagged else "")
             ),
             "data": data,
             "execution_time": result.execution_time,
         }
+        warning = issues_warning(rebuild.get("errors") or [], errors_too=True)
+        if warning:
+            reply["warning"] = warning
+        return reply
 
     @mcp.tool()
     async def rebuild_model(
@@ -3019,9 +3093,11 @@ async def register_modeling_tools(
 
         Use it after `set_dimension` or other edits to confirm the model is sound.
         Failing features make the call an error whose `data.errors` names each one, its
-        SolidWorks error, what it depends on and a `hint`; warnings alone still succeed.
-        Needs: an open part or assembly. Changes: rebuilds the model. Returns: `data`
-        with `rebuilt`, `errors`, `error_count`, `warning_count` and `summary`.
+        SolidWorks error, what it depends on and a `hint`. Warnings alone (a fillet that
+        lost some edges: swFeatureErrorFilletNoEdge) still succeed, with a `warning`
+        naming each. Needs: an open part or assembly. Changes: rebuilds the model.
+        Returns: `data` with `rebuilt`, `errors`, `error_count`, `warning_count` and
+        `summary`.
 
         Args:
             input_data: Nothing is required: `top_level_only` is off (a full
@@ -3042,6 +3118,9 @@ async def register_modeling_tools(
         }
         if data is not None:
             response["data"] = data
+            warning = issues_warning(data.get("errors") or [])
+            if warning:
+                response["warning"] = warning
         return response
 
     @mcp.tool()

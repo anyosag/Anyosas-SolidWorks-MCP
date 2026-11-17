@@ -1128,7 +1128,10 @@ class SolidWorksAdapter(ABC):
             edge_names (list[str]): List of edge names to fillet.
 
         Returns:
-            AdapterResult: Feature result or error.
+            AdapterResult: Feature result or error. A feature's ``properties``
+            may hold ``geometry_before`` / ``geometry_after`` (geometry
+            summaries), ``edges_selected``, ``selection_other``,
+            ``edges_held`` and ``features_below_bar``; ``add_chamfer``'s too.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
@@ -1408,7 +1411,9 @@ class SolidWorksAdapter(ABC):
             after (str | None): Put the bar just below this feature.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``position`` and ``rolled_back``.
+            AdapterResult[dict[str, Any]]: ``position``, ``rolled_back`` and
+            ``rebuild`` (the rebuild errors and warnings after the move, shaped
+            like ``rebuild_model``'s, or None when unread).
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

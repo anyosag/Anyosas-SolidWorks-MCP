@@ -523,8 +523,10 @@ def set_rollback(adapter: Any, before: str | None, after: str | None) -> dict[st
         after: Put the bar just below this feature.
 
     Returns:
-        dict[str, Any]: ``position`` in words and ``rolled_back``, the
-        features now below the bar.
+        dict[str, Any]: ``position`` in words, ``rolled_back``, the features
+        now below the bar, and ``rebuild`` (:func:`rebuild_report`): rolling
+        forward rebuilds the features the bar passes, and a fillet made with
+        the bar up can lose edges then and only warn.
 
     Raises:
         LookupError: The named feature isn't in the tree.
@@ -548,7 +550,40 @@ def set_rollback(adapter: Any, before: str | None, after: str | None) -> dict[st
     position = (
         f"before {target}" if before else f"after {target}" if after else "the end"
     )
-    return {"position": position, "rolled_back": rolled_back_features(adapter)}
+    rolled = rolled_back_features(adapter)
+    return {
+        "position": position,
+        "rolled_back": rolled,
+        "rebuild": _attempt(adapter, lambda: rebuild_report(adapter, model, rolled)),
+    }
+
+
+def rebuild_report(adapter: Any, model: Any, rolled_back: list[str]) -> dict[str, Any]:
+    """The rebuild errors and warnings SolidWorks holds now, as ``rebuild_model`` gives them.
+
+    Read without a rebuild (``rebuild_inspector``); the features below the
+    rollback bar, which aren't built, are left out.
+
+    Returns:
+        dict[str, Any]: ``errors`` (each from ``rebuild_diagnostics.explain``,
+        warnings too), ``error_count``, ``warning_count`` and ``summary``.
+    """
+    from .rebuild_diagnostics import explain, summarize
+    from .rebuild_inspector import collect_rebuild_issues
+
+    below = set(rolled_back)
+    entries = [
+        explain(issue)
+        for issue in collect_rebuild_issues(adapter, model)
+        if issue.feature not in below
+    ]
+    error_count, warning_count, summary = summarize(entries)
+    return {
+        "errors": entries,
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "summary": summary,
+    }
 
 
 def _point_mm(adapter: Any, point: Any) -> list[float] | None:

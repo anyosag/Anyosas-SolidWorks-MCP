@@ -43,9 +43,12 @@ _CODE_HINTS: dict[int, tuple[str, str]] = {
     ),
     13: (
         "An edge the fillet referenced no longer exists (often after an "
-        "earlier dimension or feature change).",
-        "Re-select the edges with select_face_edges (prefer whole-face "
-        "selection) and recreate the fillet.",
+        "earlier dimension or feature change); as a warning, the fillet "
+        "rounds only the edges it still finds.",
+        "Select every edge it should round, the ones it still holds too "
+        "(select_edges or select_face_edges), and call edit_feature with "
+        "edges: 'selection': that replaces its edges in place. "
+        "get_feature_definition gives its edge count.",
     ),
     15: (
         "The fillet radius is too small for the geometry.",
@@ -221,9 +224,10 @@ def explain(issue: RawRebuildIssue) -> dict[str, Any]:
     elif not hint:
         hint = _TYPE_HINTS.get(issue.type, GENERIC_HINT)
     if not description:
+        outcome = "rebuilt with a warning" if issue.is_warning else "failed to rebuild"
         description = (
             f"{_TYPE_LABELS.get(issue.type, issue.type or 'Feature')} "
-            f"'{issue.feature}' failed to rebuild "
+            f"'{issue.feature}' {outcome} "
             f"({code_name(issue.code)})."
         )
     return {
@@ -267,3 +271,31 @@ def summarize(entries: list[dict[str, Any]]) -> tuple[int, int, str]:
     else:
         message = "Rebuilt cleanly; no rebuild errors."
     return len(errors), len(warnings), message
+
+
+def issues_warning(
+    entries: list[dict[str, Any]], *, errors_too: bool = False
+) -> str | None:
+    """A reply's ``warning`` naming each feature SolidWorks flagged, and why.
+
+    A fillet that lost some of its edges still rebuilds: SolidWorks reports
+    it as a warning (``swFeatureErrorFilletNoEdge``), so it is said here
+    rather than left in ``data.errors`` under a success.
+
+    Args:
+        entries: Output of :func:`explain`.
+        errors_too: Name the errors as well (a call that succeeds with them,
+            like moving the rollback bar), not only the warnings.
+
+    Returns:
+        str | None: The warning, or None when there is nothing to say.
+    """
+    shown = [e for e in entries if errors_too or e.get("severity") == "warning"]
+    if not shown:
+        return None
+    parts = [
+        f"{e['feature']} {'warns' if e['severity'] == 'warning' else 'fails'} "
+        f"{e['code_name']}: {e['description']} {e['hint']}"
+        for e in shown
+    ]
+    return "SolidWorks reports: " + " ".join(parts)
