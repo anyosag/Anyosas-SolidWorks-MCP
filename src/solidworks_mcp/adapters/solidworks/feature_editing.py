@@ -304,7 +304,8 @@ def matched_edges(adapter: Any, name: str, rules: dict[str, Any]) -> list[Any]:
         LookupError: A rule's feature, face or plane isn't there.
     """
     expanded = expand_query(edge_query(rules))
-    kept, counts = match_rules(expanded, EdgeRuleSelector(adapter).candidates)
+    selector = EdgeRuleSelector(adapter)
+    kept, counts = match_rules(expanded, selector.candidates, selector.convexity)
     if not kept:
         raise ValueError(no_edges_message(name, rules_reason(expanded, counts)))
     return [edge for edge, _info in kept]

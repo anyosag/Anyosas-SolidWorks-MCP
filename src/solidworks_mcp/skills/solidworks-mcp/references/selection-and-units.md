@@ -58,11 +58,19 @@ In order of reliability:
    edges. Then fillet or chamfer with empty `edge_names`.
 3. **`select_edges`.** Edges by rule. Take them from a `feature` (the
    edges of the faces it made), one face (`face_point` in mm, `side` or
-   `plane`) or the whole part, then keep those that pass every filter given:
-   `edge_type`, `parallel_to` ("x", "y", "z" or a direction; straight edges
-   only), `inside_box` (two corners in model mm) and `min_length` /
-   `max_length` (mm). `data.matched` counts what each rule left. Then fillet
-   or chamfer with empty `edge_names`.
+   `plane`), the edges two faces share (`between_faces`: a point on each),
+   or the whole part; `body` keeps one body's (a feature renames the bodies
+   it changes, so take the name from `list_bodies`). Then keep those that
+   pass every filter given: `edge_type`, `parallel_to` ("x", "y", "z" or a
+   direction; straight edges only), `inside_box` (two corners in model mm),
+   `min_length` / `max_length` (mm) and `convexity` ("convex", "concave" or
+   "tangent"). `data.matched` counts what each rule left. Then fillet or
+   chamfer with empty `edge_names`. On a big part give an `inside_box`: faces
+   outside it are not read, and a second call on the unchanged part reads
+   almost nothing.
+   `with_ids: true` also returns `edge_ids`, which name the same edges after
+   rebuilds; pass them back as `edge_ids` to `select_edges`, `add_fillet` or
+   `add_chamfer`.
 4. **A face spec.** `"face:x,y,z"` (metres) in `edge_names` treats every edge
    of the face containing that point.
 5. **An edge point.** `"x,y,z"` (metres) picks the nearest edge. Avoid it

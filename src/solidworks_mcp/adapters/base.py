@@ -1257,18 +1257,22 @@ class SolidWorksAdapter(ABC):
 
         Args:
             query (dict[str, Any]): At most one source - ``feature`` (the
-                edges of the faces it made), ``face_point`` (mm), ``side`` or
-                ``plane``; none means every edge - and the filters
+                edges of the faces it made), ``face_point`` (mm), ``side``,
+                ``plane``, ``between_faces`` (two points, mm: the edges both
+                faces bound) or ``edge_ids`` (persistent ids); none means every
+                edge - ``body`` (one body's edges), and the filters
                 ``edge_type``, ``parallel_to`` (``"x"``/``"y"``/``"z"`` or a
                 direction), ``parallel_tolerance_deg``, ``inside_box`` (two
-                corners, mm), ``min_length`` and ``max_length`` (mm).
+                corners, mm), ``min_length`` and ``max_length`` (mm) and
+                ``convexity``. ``with_ids`` asks for an id per edge.
             append (bool): Add to the current selection instead of replacing it.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``source``, ``matched`` (the count
             left after each rule), ``edges`` (up to 50 described),
-            ``selected_edges`` and ``selection_count``. ERROR when no edge
-            matches, naming the rule that removed them.
+            ``selected_edges``, ``selection_count``, ``read`` (what was read)
+            and, with ``with_ids``, ``edge_ids``. ERROR when no edge matches,
+            naming the rule that removed them.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

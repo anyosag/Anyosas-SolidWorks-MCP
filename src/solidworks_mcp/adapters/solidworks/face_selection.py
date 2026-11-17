@@ -210,7 +210,9 @@ def edge_matches(kind: str, edge_type: str) -> bool:
 #: Exactly the members read below. Flagging a whole interface costs ~27 ms
 #: per fresh dispatch (see ``_WALK_MEMBERS`` in pywin32_adapter); a face can
 #: hand back dozens of edges/curves/vertices, so flag just what is used.
-_EDGE_MEMBERS = ("GetCurve", "GetStartVertex", "GetEndVertex", "Select4")
+#: ``Select4`` is flagged where an edge is selected (``FaceEdgeSelector.select``),
+#: not on every edge described: one round trip less an edge.
+_EDGE_MEMBERS = ("GetCurve", "GetStartVertex", "GetEndVertex")
 _FACE_MEMBERS = ("GetBox", "GetArea", "GetEdges", "GetClosestPointOn")
 
 
@@ -356,10 +358,18 @@ class FaceEdgeSelector:
         return plane_from_transform(data)
 
     def resolve(
-        self, point: list[float] | None, side: str | None, plane: str | None
+        self,
+        point: list[float] | None,
+        side: str | None,
+        plane: str | None,
+        bodies: list[Any] | None = None,
     ) -> list[FaceInfo]:
-        """Resolve the request to one face (or several for ``plane``)."""
-        faces = self.faces()
+        """Resolve the request to one face (or several for ``plane``).
+
+        ``bodies`` (``IBody2`` handles) limits it to their faces; by default
+        every solid body's.
+        """
+        faces = self.faces() if bodies is None else self._body_faces(bodies)
         if not faces:
             raise LookupError("The active part has no solid body faces.")
         if point is not None:

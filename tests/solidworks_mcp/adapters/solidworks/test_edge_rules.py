@@ -554,10 +554,11 @@ async def test_any_of_selects_edges_in_two_places_in_one_call() -> None:
     data = result.data or {}
     assert data["selected_edges"] == 2
     assert data["source"] == "feature 'Boss-Extrude1'"
+    # Both of the feature's faces reach each box, so none was left out.
     assert data["matched"] == {
         "rules": [
-            {"candidates": 8, "inside_box": 1},
-            {"candidates": 8, "inside_box": 1},
+            {"candidates": 8, "faces_left_out": 0, "inside_box": 1},
+            {"candidates": 8, "faces_left_out": 0, "inside_box": 1},
         ]
     }
 

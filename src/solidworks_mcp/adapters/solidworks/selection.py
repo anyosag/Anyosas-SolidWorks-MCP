@@ -206,8 +206,11 @@ class SolidWorksSelectionMixin:
         """Multi-select the active part's edges that match a rule.
 
         See ``SolidWorksAdapter.select_edges`` for the contract; the rules
-        live in ``edge_rules``.
+        live in ``edge_rules``, the reading in ``edge_index``. The part's
+        index is kept until its next rebuild; when a kept index's edges
+        won't select, it is dropped and the part read again, once.
         """
+        from .edge_index import forget
         from .edge_rules import (
             MAX_DESCRIBED_EDGES,
             EdgeRuleSelector,
@@ -217,6 +220,7 @@ class SolidWorksSelectionMixin:
             no_match_message_rules,
             validate_edge_query,
         )
+        from .persist_ids import MAX_IDS_OUT, persist_ids
 
         problem = validate_edge_query(query)
         if problem:
@@ -238,20 +242,50 @@ class SolidWorksSelectionMixin:
             )
 
         rules = expand_query(query)
+        with_ids = bool(query.get("with_ids"))
 
-        def _select() -> dict[str, Any]:
+        def _match() -> tuple[Any, list[Any], list[dict[str, int]]]:
             selector = EdgeRuleSelector(self)
-            kept, counts = match_rules(rules, selector.candidates)
+            kept, counts = match_rules(rules, selector.candidates, selector.convexity)
             if not kept:
                 raise LookupError(no_match_message_rules(rules, counts))
-            count = selector.select(kept, append)
-            return {
+            if with_ids and len(kept) > MAX_IDS_OUT:
+                raise ValueError(
+                    f"with_ids gives ids for up to {MAX_IDS_OUT} edges, and these "
+                    f"rules match {len(kept)}; narrow them (inside_box, a feature "
+                    "or face source), or leave with_ids out."
+                )
+            return selector, kept, counts
+
+        def _select() -> dict[str, Any]:
+            selector, kept, counts = _match()
+            try:
+                count = selector.select(kept, append)
+            except RuntimeError:
+                if not selector.index.reused:
+                    raise
+                # Edges kept from an earlier call that won't select: read anew.
+                forget(self)
+                selector, kept, counts = _match()
+                count = selector.select(kept, append)
+            index = selector.index
+            data: dict[str, Any] = {
                 "source": describe_sources(rules),
                 "matched": counts[0] if len(rules) == 1 else {"rules": counts},
                 "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
                 "selected_edges": len(kept),
                 "selection_count": count,
+                "read": {
+                    "kept_from_earlier_call": index.reused,
+                    "edges_described": index.counts["edges_described"],
+                    "face_boxes": index.counts["face_boxes"],
+                },
             }
+            if with_ids:
+                data["edge_ids"] = persist_ids(
+                    self, self.currentModel, [edge for edge, _info in kept]
+                )
+            return data
 
         return self._run_clean("select_edges", _select)
 

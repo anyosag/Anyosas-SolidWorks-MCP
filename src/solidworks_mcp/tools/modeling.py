@@ -606,6 +606,23 @@ class CreateCutExtrudeInput(CompatInput):
             raise ValueError("depth must be positive")
 
 
+def _check_edge_ids(edge_names: list[str], edge_ids: list[str]) -> None:
+    """Refuse ``edge_ids`` given with ``edge_names``, or ids that aren't ids.
+
+    Raises:
+        ValueError: With what is wrong.
+    """
+    from ..adapters.solidworks.persist_ids import ids_problem
+
+    if not edge_ids:
+        return
+    if edge_names:
+        raise ValueError("give edge_names or edge_ids, not both")
+    problem = ids_problem(edge_ids)
+    if problem:
+        raise ValueError(problem)
+
+
 class AddFilletInput(CompatInput):
     """Input schema for adding a fillet feature.
 
@@ -634,10 +651,18 @@ class AddFilletInput(CompatInput):
             "nothing at all is selected."
         ),
     )
+    edge_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Edges by the ids select_edges gave with with_ids (they last across "
+            "rebuilds); they are selected first. Not with edge_names"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if self.radius <= 0:
             raise ValueError("radius must be positive")
+        _check_edge_ids(self.edge_names, self.edge_ids)
 
 
 class AddChamferInput(CompatInput):
@@ -686,12 +711,20 @@ class AddChamferInput(CompatInput):
             "nothing at all is selected."
         ),
     )
+    edge_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Edges by the ids select_edges gave with with_ids (they last across "
+            "rebuilds); they are selected first. Not with edge_names"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if self.distance <= 0:
             raise ValueError("distance must be positive")
         if not 0 < self.angle < 90:
             raise ValueError("angle must be between 0 and 90 degrees")
+        _check_edge_ids(self.edge_names, self.edge_ids)
 
 
 class CreateAssemblyInput(CompatInput):
@@ -877,6 +910,11 @@ class SelectEdgesInput(CompatInput):
         inside_box (list[list[float]] | None): Keep edges inside this box, mm.
         min_length (float | None): Keep edges at least this long, mm.
         max_length (float | None): Keep edges at most this long, mm.
+        between_faces (list[list[float]] | None): Take the edges two faces share.
+        edge_ids (list[str] | None): Take the edges with these ids.
+        body (str | None): Keep only this body's edges.
+        convexity (str | None): Keep convex, concave or tangent edges.
+        with_ids (bool): Also return an id for each selected edge.
         append (bool): Add to the current selection instead of replacing it.
     """
 
@@ -885,7 +923,8 @@ class SelectEdgesInput(CompatInput):
         description=(
             "Take the edges of the faces this feature made, e.g. 'Cut-Extrude2' "
             "(the cut's walls and rims). Give at most one of feature, "
-            "face_point, side and plane; none takes every edge of the part"
+            "face_point, side, plane, between_faces and edge_ids; none takes "
+            "every edge of the part"
         ),
     )
     face_point: list[float] | None = Field(
@@ -902,6 +941,29 @@ class SelectEdgesInput(CompatInput):
     plane: str | None = Field(
         default=None,
         description="Take the edges of the face(s) lying on this plane, e.g. 'Top Plane'",
+    )
+    between_faces: list[list[float]] | None = Field(
+        default=None,
+        description=(
+            "Take the edges two faces share: a point on each, [[x, y, z], [x, y, "
+            "z]] mm, e.g. where a wall meets a floor"
+        ),
+    )
+    edge_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Take the edges with these ids, as an earlier call with with_ids "
+            "gave them. They last across rebuilds while the feature that made "
+            "the edge stays"
+        ),
+    )
+    body: str | None = Field(
+        default=None,
+        description=(
+            "Keep only this solid body's edges, by its name now (list_bodies: a "
+            "feature renames the bodies it changes). With feature: that "
+            "feature's edges on this body"
+        ),
     )
     edge_type: str = Field(
         default="all",
@@ -932,6 +994,23 @@ class SelectEdgesInput(CompatInput):
     max_length: float | None = Field(
         default=None, ge=0, description="Keep only edges at most this long, mm"
     )
+    convexity: Literal["convex", "concave", "tangent"] | None = Field(
+        default=None,
+        description=(
+            "Keep only 'convex' edges (outer edges, hole rims), 'concave' ones "
+            "(inside corners, a pocket's floor edges) or 'tangent' ones (where a "
+            "fillet meets a face). Read after every other filter, about ten "
+            "calls an edge; one whose faces don't read is left out"
+        ),
+    )
+    with_ids: bool = Field(
+        default=False,
+        description=(
+            "Also return edge_ids, one per selected edge (up to 100): ids that "
+            "name the same edges after rebuilds, for edge_ids here or in "
+            "add_fillet and add_chamfer"
+        ),
+    )
     any_of: list[dict[str, Any]] | None = Field(
         default=None,
         min_length=1,
@@ -959,8 +1038,11 @@ class SelectEdgesInput(CompatInput):
             raise ValueError(problem)
 
     def query(self) -> dict[str, Any]:
-        """The rules as the adapter's ``select_edges`` takes them."""
-        return self.model_dump(exclude={"append"}, exclude_none=True)
+        """The rules as the adapter's ``select_edges`` takes them (``with_ids`` when on)."""
+        query = self.model_dump(exclude={"append", "with_ids"}, exclude_none=True)
+        if self.with_ids:
+            query["with_ids"] = True
+        return query
 
 
 DisplayType = Literal[
@@ -1695,6 +1777,12 @@ async def register_modeling_tools(
     mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
+    async def _select_edge_ids(edge_ids: list[str]) -> None:
+        """Select the edges ``edge_ids`` name, for a fillet or chamfer of the selection."""
+        if edge_ids:
+            picked = await adapter.select_edges({"edge_ids": list(edge_ids)})
+            require_success(picked, context="Failed to select the edges by id")
+
     @mcp.tool()
     async def open_model(input_data: OpenModelInput) -> dict[str, Any]:
         """Open a part, assembly or drawing from disk and make it the active document.
@@ -2239,10 +2327,11 @@ async def register_modeling_tools(
         """Round edges of the active part with a constant-radius fillet.
 
         Name the edges as "Edge<1>", a point "x,y,z" (metres) or "face:x,y,z" for every
-        edge of a face; or leave `edge_names` empty to use the current selection (e.g.
-        from `select_face_edges`). A fillet that leaves the volume unchanged is an
-        error. Needs: an open part with a solid body. Changes: adds a Fillet feature,
-        then clears the selection. Returns: `fillet` with `name`, `radius` and `edges`.
+        edge of a face; give `edge_ids` from `select_edges`; or leave `edge_names`
+        empty to use the current selection (e.g. from `select_face_edges`). A fillet
+        that leaves the volume unchanged is an error. Needs: an open part with a solid
+        body. Changes: adds a Fillet feature, then clears the selection. Returns:
+        `fillet` with `name`, `radius` and `edges`.
 
         Args:
             input_data: The fillet. `radius` (mm) is required; `edge_names`
@@ -2252,6 +2341,7 @@ async def register_modeling_tools(
             dict[str, Any]: The created fillet.
         """
         input_data = normalize_input(input_data, AddFilletInput)
+        await _select_edge_ids(input_data.edge_ids)
         result = await adapter.add_fillet(input_data.radius, input_data.edge_names)
         require_success(result, context="Failed to add fillet")
         feature = result.data
@@ -2273,11 +2363,11 @@ async def register_modeling_tools(
         """Bevel edges of the active part with a chamfer: `distance` along one face at `angle` (45 by default).
 
         Name the edges as "Edge<1>", a point "x,y,z" (metres) or "face:x,y,z" for every
-        edge of a face; or leave `edge_names` empty to use the current selection (e.g.
-        from `select_face_edges`). At 45 degrees both legs equal `distance`; at another
-        angle, `flip` swaps which face `distance` is measured on. Needs: an open part
-        with a solid body. Changes: adds a Chamfer feature, then clears the selection.
-        Returns: `chamfer` with
+        edge of a face; give `edge_ids` from `select_edges`; or leave `edge_names`
+        empty to use the current selection (e.g. from `select_face_edges`). At 45
+        degrees both legs equal `distance`; at another angle, `flip` swaps which face
+        `distance` is measured on. Needs: an open part with a solid body. Changes:
+        adds a Chamfer feature, then clears the selection. Returns: `chamfer` with
         `name`, `distance`, `angle`, `flip` and `edges`.
 
         Args:
@@ -2288,6 +2378,7 @@ async def register_modeling_tools(
             dict[str, Any]: The created chamfer.
         """
         input_data = normalize_input(input_data, AddChamferInput)
+        await _select_edge_ids(input_data.edge_ids)
         result = await adapter.add_chamfer(
             input_data.distance,
             input_data.edge_names,
@@ -2822,18 +2913,18 @@ async def register_modeling_tools(
     async def select_edges(input_data: SelectEdgesInput) -> dict[str, Any]:
         """Select the edges of the active part that match rules, ready for `add_fillet` or `add_chamfer` with no edge names.
 
-        Take edges from one source: a `feature` (the edges of the faces it made, e.g.
-        a cut's rims), a face (`face_point`, `side` or `plane`), or, with none, the
-        whole part. Then keep those that pass every filter given: `edge_type`,
-        `parallel_to` (straight edges along x, y, z or a direction), `inside_box` (mm)
-        and `min_length`/`max_length` (mm). For edges in several places, give the
-        rules as `any_of` in one call: reading a part's edges is the slow part (about
-        10 s for 130 edges), and each source is read once; a `feature` source reads
-        far fewer edges than the whole part. Needs: an open part. Changes: the
-        selection only, all or nothing. Returns: `data` with `source`, `matched` (how
-        many edges were left after each rule, or with `any_of` `{"rules": [...]}`, one
-        such count per rule; when none match, the error names the rule that removed
-        them), `edges` (up to 50), `selected_edges` and `selection_count`.
+        Take edges from one source: a `feature` (the faces it made, e.g. a cut's rims),
+        a face (`face_point`, `side`, `plane`), the edges two faces share
+        (`between_faces`), `edge_ids` from an earlier call, or the whole part; `body`
+        keeps one body's. Then keep those passing every filter: `edge_type`,
+        `parallel_to` (x, y, z or a direction), `inside_box` (mm),
+        `min_length`/`max_length` (mm), `convexity`. Faces outside an `inside_box` are
+        not read, and what was read is kept until the next rebuild; give several
+        rules as `any_of` in one call. `with_ids` adds `edge_ids` that last across
+        rebuilds. Needs: an open part. Changes: the selection only, all or nothing.
+        Returns: `data` with `source`, `matched` (edges left after each rule, per rule
+        with `any_of`; an error names the rule that removed them), `edges` (up to
+        50), `selected_edges`, `selection_count` and `read`.
 
         Args:
             input_data: The rules. Nothing is required: at most one source, any
