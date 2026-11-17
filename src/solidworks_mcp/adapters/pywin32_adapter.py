@@ -43,6 +43,7 @@ from .solidworks import (
 from .solidworks.com_utils import clear_selection
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
+from .solidworks.file_ledger import FileLedger, ledger_path
 from .solidworks.io import activate_doc
 from .solidworks.loaded_documents import SolidWorksLoadedDocumentsMixin
 from .solidworks.save_bodies import SolidWorksSaveBodiesMixin
@@ -2367,6 +2368,9 @@ class PyWin32Adapter(
         # the same SolidWorks), the document it last recorded there, and the
         # warning for the next reply when another server is on that document.
         self._sessions = SessionRegister(session_directory())
+        # The files this server wrote, kept across restarts for the save
+        # guard (saving.ledger_owns).
+        self._file_ledger = FileLedger(ledger_path())
         self._recorded_document: tuple[str, str] | None = None
         self._document_notice: str | None = None
         self._operation_depth = 0

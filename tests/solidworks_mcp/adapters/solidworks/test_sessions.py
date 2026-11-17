@@ -178,6 +178,41 @@ def test_a_process_that_cannot_be_opened(
     assert process_alive(42, _Kernel32(0), platform="win32") is alive
 
 
+class _Times(_Kernel32):
+    """A kernel32 whose ``GetProcessTimes`` gives a start time."""
+
+    def __init__(self, handle: int, created: int, read: bool = True) -> None:
+        super().__init__(handle, read=read)
+        self.created = created
+
+    def GetProcessTimes(self, handle: int, created: Any, *_times: Any) -> int:  # noqa: N802
+        created._obj.value = self.created
+        return int(self.read)
+
+
+@pytest.mark.parametrize(
+    ("kernel32", "started"),
+    [
+        (_Times(7, 133_000_000), 133_000_000),
+        (_Times(7, 133_000_000, read=False), None),
+        (_Times(7, 0), None),
+    ],
+    ids=["read", "unreadable", "zero"],
+)
+def test_a_process_start_time_tells_one_solidworks_from_the_next(
+    kernel32: _Times, started: int | None
+) -> None:
+    assert sessions.process_started(42, kernel32, platform="win32") == started
+    assert kernel32.closed == [7]
+
+
+def test_no_start_time_without_a_process_or_off_windows() -> None:
+    assert sessions.process_started(42, _Times(0, 5), platform="win32") is None
+    assert sessions.process_started(0) is None
+    assert sessions.process_started(42, platform="linux") is None
+    assert isinstance(sessions.process_started(os.getpid()), int)
+
+
 def test_this_process_is_alive_and_nonsense_is_not() -> None:
     assert process_alive(os.getpid()) is True
     assert process_alive(0) is False

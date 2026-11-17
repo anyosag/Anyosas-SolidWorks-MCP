@@ -74,6 +74,36 @@ def process_alive(pid: int, kernel32: Any = None, platform: str | None = None) -
         dll.CloseHandle(handle)
 
 
+def process_started(
+    pid: int, kernel32: Any = None, platform: str | None = None
+) -> int | None:
+    """When process ``pid`` started (``GetProcessTimes``, 100 ns ticks), or None.
+
+    With the process id it tells one SolidWorks from a later one that got
+    the same id. None off Windows, for a process that can't be opened, or
+    when the times don't read.
+    """
+    if pid <= 0 or (platform or sys.platform) != "win32":
+        return None
+    dll = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = dll.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        created, exited, kernel, user = (ctypes.c_ulonglong(0) for _ in range(4))
+        if not dll.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        return int(created.value) or None
+    finally:
+        dll.CloseHandle(handle)
+
+
 def _delete(file: Path) -> None:
     """Delete ``file``; one another process holds open is left for later."""
     with contextlib.suppress(OSError):
