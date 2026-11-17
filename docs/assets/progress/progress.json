@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 194,
+  "total": 197,
   "by_level": {
    "stable": 107,
    "beta": 0,
-   "experimental": 48,
+   "experimental": 51,
    "planned": 39
   },
   "list": [
@@ -391,7 +391,7 @@
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Add a reference axis along the model's x, y or z direction, through the origin."
+    "summary": "Add a reference axis along the model's x, y or z through the origin, or through any point."
    },
    {
     "name": "create_cut_extrude",
@@ -461,7 +461,7 @@
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Add a reference plane offset from, at an angle to, or on a plane or flat face."
+    "summary": "Add a reference plane offset from, at an angle to, or on a plane or face, or through any point."
    },
    {
     "name": "create_reference_point",
@@ -1066,6 +1066,20 @@
     "summary": "Repeat features or bodies of the active part in a row or a grid: slots, holes, ribs."
    },
    {
+    "name": "plane_axes",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Read where a sketch on a plane points: its x, y, normal and origin in the model."
+   },
+   {
+    "name": "query_geometry",
+    "family": "analysis",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "List the active part's faces and edges within a radius of a point, nearest first, with their geometry."
+   },
+   {
     "name": "rebuild_model",
     "family": "modeling",
     "level": "stable",
@@ -1190,6 +1204,13 @@
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
     "summary": "Place a component of the active assembly: put its origin at a point, turn it, and fix or float it."
+   },
+   {
+    "name": "set_component_visibility",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Hide or show components of the active assembly, as the tree's Hide and Show do."
    },
    {
     "name": "set_custom_property",
@@ -1371,11 +1392,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 278,
+   "covered": 287,
    "total": 2838
   },
   "api": {
-   "covered": 342,
+   "covered": 358,
    "total": 5985
   },
   "interfaces": [
@@ -1470,6 +1491,8 @@
      "GetUserPreferenceStringValue",
      "GetUserPreferenceToggle",
      "GraphicsRedraw2",
+     "HideComponent2",
+     "Insert3DSketch",
      "InsertAxis2",
      "InsertDatumTag2",
      "InsertGtol",
@@ -1487,10 +1510,12 @@
      "SaveAs3",
      "SaveBMP",
      "Select",
+     "SelectByRay",
      "SetSaveFlag",
      "SetUserPreferenceDoubleValue",
      "SetUserPreferenceIntegerValue",
      "SetUserPreferenceToggle",
+     "ShowComponent2",
      "ShowNamedView2",
      "SketchAddConstraints",
      "SketchMirror",
@@ -1528,6 +1553,7 @@
      "SaveAs3",
      "SavePackAndGo",
      "SelectByID2",
+     "SelectByRay",
      "SetUserPreferenceDouble",
      "SetUserPreferenceInteger",
      "SetUserPreferenceToggle"
@@ -1642,6 +1668,7 @@
      "CreatePoint",
      "CreatePolygon",
      "CreateSpline2",
+     "Insert3DSketch",
      "InsertSketch",
      "SketchOffset2"
     ],
@@ -1724,6 +1751,9 @@
     "covered": [
      "AutoDimension",
      "GetLineCount",
+     "GetSketchContours",
+     "GetSketchPoints2",
+     "GetSketchRegions",
      "GetSketchSegments",
      "GetSketchTextSegments"
     ],

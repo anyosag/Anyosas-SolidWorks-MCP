@@ -4,7 +4,7 @@ Extract engineering properties from models: mass, volume, centre of mass, moment
 
 > **Prerequisite:** An active model (part or assembly) with solid geometry.
 
-**Total tools in this category: 10**
+**Total tools in this category: 11**
 
 ---
 
@@ -194,6 +194,32 @@ Measure the active part's volume, and mass, above and below a plane, without cut
 
 ```json
 {}
+```
+
+---
+
+### `query_geometry`
+
+List the active part's faces and edges within a radius of a point, nearest first, with their geometry.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `point_mm` | `List[float]` | ✅ | `` | The point, [x, y, z] in the part's mm (on a face, or in a hole) |
+| `radius_mm` | `float` | — | `2.0` | List what lies within this many mm of the point (default 2) |
+| `kinds` | `Literal['faces', 'edges', 'both']` | — | `both` | 'faces', 'edges' or 'both' (the default) |
+| `limit` | `int` | — | `10` | The most faces, and the most edges, listed, nearest first |
+| `read_all` | `bool` | — | `False` | Read every face box near the point so nothing within radius_mm is missed (complete: true). Costs about two calls a face the first time; kept until the next rebuild, so later queries are fast |
+
+**Sample call:**
+
+```json
+{
+  "point_mm": []
+}
 ```
 
 ---

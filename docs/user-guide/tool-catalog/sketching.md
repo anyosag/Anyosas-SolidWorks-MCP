@@ -4,7 +4,7 @@ Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge
 
 > **Prerequisite:** An active part document with an active sketch edit session.
 
-**Total tools in this category: 24**
+**Total tools in this category: 25**
 
 ---
 
@@ -49,6 +49,9 @@ Draw a straight line between two points in the open sketch, in mm.
 | `start_y` | `float?` | — | `None` | Start point Y alias |
 | `end_x` | `float?` | — | `None` | End point X alias |
 | `end_y` | `float?` | — | `None` | End point Y alias |
+| `z1` | `float?` | — | `None` | Start point Z in model mm; only with coordinates 'model' |
+| `z2` | `float?` | — | `None` | End point Z in model mm; only with coordinates 'model' |
+| `coordinates` | `Coordinates` | — | `sketch` | _COORDINATES |
 | `construction` | `bool` | — | `False` | Construction geometry flag |
 
 **Sample call:**
@@ -71,7 +74,9 @@ Draw a circle in the open sketch from its centre and radius, in mm.
 |-----------|------|----------|---------|-------------|
 | `center_x` | `float` | ✅ | `` | Circle center X coordinate in mm |
 | `center_y` | `float` | ✅ | `` | Circle center Y coordinate in mm |
+| `center_z` | `float?` | — | `None` | Center Z in model mm; only with coordinates 'model' |
 | `radius` | `float` | ✅ | `` | Circle radius in mm |
+| `coordinates` | `Coordinates` | — | `sketch` | _COORDINATES |
 | `construction` | `bool` | — | `False` | Construction geometry flag |
 
 **Sample call:**
@@ -104,6 +109,9 @@ Draw a closed, axis-aligned rectangle in the open sketch from two opposite corne
 | `corner1_y` | `float?` | — | `None` | Corner 1 Y alias |
 | `corner2_x` | `float?` | — | `None` | Corner 2 X alias |
 | `corner2_y` | `float?` | — | `None` | Corner 2 Y alias |
+| `z1` | `float?` | — | `None` | First corner Z in model mm; only with coordinates 'model' |
+| `z2` | `float?` | — | `None` | Opposite corner Z in model mm; only with coordinates 'model' |
+| `coordinates` | `Coordinates` | — | `sketch` | _COORDINATES + '; the sides still run along sketch x and y' |
 | `construction` | `bool` | — | `False` | Construction geometry flag |
 
 **Sample call:**
@@ -164,7 +172,11 @@ Draw a circular arc in the open sketch from its centre, start point and end poin
 | `start_y` | `float` | ✅ | `` | Arc start point Y coordinate in mm |
 | `end_x` | `float` | ✅ | `` | Arc end point X coordinate in mm |
 | `end_y` | `float` | ✅ | `` | Arc end point Y coordinate in mm |
-| `direction` | `Literal['ccw', 'cw']` | — | `ccw` | Which way the arc runs from start to end, looking at the sketch (x right, y up): 'ccw' counter-clockwise (the default) or 'cw' |
+| `center_z` | `float?` | — | `None` | Center Z in model mm; only with coordinates 'model' |
+| `start_z` | `float?` | — | `None` | Start Z in model mm; only with coordinates 'model' |
+| `end_z` | `float?` | — | `None` | End Z in model mm; only with coordinates 'model' |
+| `coordinates` | `Coordinates` | — | `sketch` | _COORDINATES |
+| `direction` | `Literal['ccw', 'cw']` | — | `ccw` | Which way the arc runs from start to end, looking at the sketch (x right, y up; in model coordinates, looking against its normal): 'ccw' counter-clockwise (the default) or 'cw' |
 
 **Sample call:**
 
@@ -192,6 +204,7 @@ Draw whole outlines of lines and arcs in the open sketch in one call, in mm.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `outlines` | `List[Outline]` | ✅ | `` | One or more outlines, each a closed loop by default. Give each either 'points' (a polygon) or 'start' plus 'segments' (lines and arcs) |
+| `coordinates` | `Coordinates` | — | `sketch` | _COORDINATES + "; every point is then [x, y, z], an arc's centre too, and an arc's direction is as seen looking against the normal" |
 
 **Sample call:**
 
@@ -276,6 +289,28 @@ Read a sketch's segments, plane and text without opening it for editing.
 
 ---
 
+### `plane_axes`
+
+Read where a sketch on a plane points: its x, y, normal and origin in the model.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `plane` | `str` | ✅ | `` | The plane: 'Front' ('XY'), 'Top' ('XZ'), 'Right' ('YZ'), or a plane's name, e.g. 'Plane3' |
+
+**Sample call:**
+
+```json
+{
+  "plane": "Front"
+}
+```
+
+---
+
 ### `delete_sketch_entities`
 
 Delete lines, arcs and other entities of the open sketch by id, or all of them.
@@ -350,6 +385,9 @@ Draw a centreline (construction line) in the open sketch, in mm.
 | `start_y` | `float?` | — | `None` | Start point Y alias |
 | `end_x` | `float?` | — | `None` | End point X alias |
 | `end_y` | `float?` | — | `None` | End point Y alias |
+| `z1` | `float?` | — | `None` | Start point Z in model mm; only with coordinates 'model' |
+| `z2` | `float?` | — | `None` | End point Z in model mm; only with coordinates 'model' |
+| `coordinates` | `Coordinates` | — | `sketch` | _COORDINATES |
 | `construction` | `bool` | — | `False` | Construction geometry flag |
 
 **Sample call:**

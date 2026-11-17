@@ -153,6 +153,10 @@ Save a picture of the active model, in a standard view or as it is on screen, as
 | `zoom_box_mm` | `List[float]?` | — | `None` | Zoom to this part of the model: two opposite corners of a box in model coordinates, mm, as [x1, y1, z1, x2, y2, z2] |
 | `hide` | `List[DisplayType]?` | — | `None` | Hide these for the picture only, e.g. ["planes", "sketches"]; they are shown again afterwards as they were |
 | `section` | `ImageSection?` | — | `None` | Cut the model on a plane for this picture only, with the cut faces capped, e.g. {"plane": "Front Plane", "offset_mm": 0}, to show a snap inside its socket; the cut is taken off afterwards |
+| `view_direction` | `List[float]?` | — | `None` | Look at the model from this direction instead of a standard view: [x, y, z] in model coordinates, pointing from the model toward you (the outward normal of the side you want to see). [0, 0, 1] is the front view, [1, 1, 1] the isometric, [1, -1, 1] the isometric of a Z-up part |
+| `up` | `List[float]?` | — | `None` | With view_direction: the model direction shown pointing up, [x, y, z], at an angle to view_direction. Left out: +Y, or +Z with up_axis z |
+| `up_axis` | `Literal['y', 'z']` | — | `y` | Which model axis is up. y: SolidWorks' standard views. z: for a part modelled Z-up, every standard view is turned so +Z is up (front looks from -Y, top from +Z, isometric from [1, -1, 1]) |
+| `hide_components` | `List[str]?` | — | `None` | Assembly only: hide these components for the picture only, e.g. ["cover-1"] for a cover-off view, by the names list_components gives; they are shown again afterwards, also when the picture fails |
 
 **Sample call:**
 

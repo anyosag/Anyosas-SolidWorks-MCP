@@ -4,7 +4,7 @@ Create and manipulate SolidWorks parts, assemblies, and drawings. These are the 
 
 > **Prerequisite:** An active SolidWorks session. Most feature tools require an open Part document.
 
-**Total tools in this category: 41**
+**Total tools in this category: 42**
 
 ---
 
@@ -148,6 +148,7 @@ Extrude the sketch you just closed into a solid boss, added to the active part.
 | `thin_side` | `Literal['one_side', 'other_side', 'mid_plane']` | — | `one_side` | Which side of the sketch line the thin wall grows on: one_side, other_side, or mid_plane (half each side) |
 | `end_condition` | `str` | — | `Blind` | End condition type |
 | `merge_result` | `bool` | — | `True` | Merge with existing geometry |
+| `regions` | `Literal['all']?` | — | `None` | _REGIONS |
 
 **Sample call:**
 
@@ -298,6 +299,7 @@ Cut material from the active part with a closed sketch profile: holes, slots, wi
 | `end_condition` | `str` | — | `Blind` | 'Blind' (cut 'depth' mm), 'MidPlane' ('depth' mm in total, half each side of the sketch plane), 'ThroughAll' (through the body, one way) or 'ThroughAllBoth' (through the body both ways, for a sketch inside the body) |
 | `both_directions` | `bool` | — | `False` | With end_condition 'ThroughAll', cut through the body both ways (same as 'ThroughAllBoth') |
 | `sketch_name` | `str?` | — | `None` | Sketch to cut from, e.g. 'Sketch3'. If omitted, the sketch most recently created/exited in this session is used, but only if it still exists in the model — there is no other fallback. Pass this explicitly whenever more than one unconsumed sketch could exist, or after any operation that might have changed the active sketch. |
+| `regions` | `Literal['all']?` | — | `None` | _REGIONS |
 
 **Sample call:**
 
@@ -521,6 +523,30 @@ Fix or float a component of the active assembly, or make a sub-assembly rigid or
 ```json
 {
   "component": "example"
+}
+```
+
+---
+
+### `set_component_visibility`
+
+Hide or show components of the active assembly, as the tree's Hide and Show do.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `components` | `List[str]` | ✅ | `` | Component names as list_components gives them, e.g. ["cover-1"]; a part inside a sub-assembly as "hinge-1/pin-1" |
+| `visible` | `bool` | ✅ | `` | true shows them, false hides them |
+
+**Sample call:**
+
+```json
+{
+  "components": [],
+  "visible": false
 }
 ```
 
@@ -864,7 +890,7 @@ Undo the last operations in the active model (Edit > Undo).
 
 ### `create_reference_plane`
 
-Add a reference plane offset from, at an angle to, or on a plane or flat face.
+Add a reference plane offset from, at an angle to, or on a plane or face, or through any point.
 
 **Prerequisite:** SolidWorks running
 
@@ -878,6 +904,8 @@ Add a reference plane offset from, at an angle to, or on a plane or flat face.
 | `angle` | `float` | — | `0.0` | Angle in degrees between the new plane and the reference, about axis |
 | `axis` | `str?` | — | `None` | Name of the axis the plane rotates about, e.g. 'Axis1' from create_axis; required with angle |
 | `flip` | `bool` | — | `False` | Reverse the offset side or the angle direction |
+| `point` | `List[float]?` | — | `None` | [x, y, z] in mm the plane passes through, with normal, instead of reference or face_point |
+| `normal` | `List[float]?` | — | `None` | With point: the plane's normal [x, y, z], any length; [0.866, 0, 0.5] is a vertical plane at 30 degrees to the Right Plane |
 
 **Sample call:**
 
@@ -889,7 +917,7 @@ Add a reference plane offset from, at an angle to, or on a plane or flat face.
 
 ### `create_axis`
 
-Add a reference axis along the model's x, y or z direction, through the origin.
+Add a reference axis along the model's x, y or z through the origin, or through any point.
 
 **Prerequisite:** SolidWorks running
 
@@ -897,14 +925,15 @@ Add a reference axis along the model's x, y or z direction, through the origin.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `reference` | `str` | ✅ | `` | Principal axis direction: 'x', 'y' or 'z' (case-insensitive; a leading +/- is stripped) |
+| `reference` | `str` | — | `` | Principal axis direction through the origin: 'x', 'y' or 'z' (case-insensitive; a leading +/- is stripped); leave it out with point |
+| `point` | `List[float]?` | — | `None` | Instead of reference: [x, y, z] in mm the axis passes through, with direction or second_point |
+| `direction` | `List[float]?` | — | `None` | With point: the axis direction [x, y, z], any length; [0, 1, 0] is vertical |
+| `second_point` | `List[float]?` | — | `None` | With point, instead of direction: another point [x, y, z] in mm on the axis |
 
 **Sample call:**
 
 ```json
-{
-  "reference": "example"
-}
+{}
 ```
 
 ---
@@ -976,7 +1005,9 @@ Repeat features of the active part around an axis, e.g. a ring of bosses or ribs
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `features` | `List[str]` | ✅ | `` | Names of the features to pattern. At least one required. |
-| `axis` | `str` | ✅ | `` | Name of the axis to rotate about, e.g. 'Axis1' as created by create_axis |
+| `axis` | `str` | — | `` | Name of the axis to rotate about, e.g. 'Axis1' as created by create_axis; leave it out with axis_point |
+| `axis_point` | `List[float]?` | — | `None` | Instead of axis: [x, y, z] in mm the axis passes through, with axis_direction; the axis is made first (as create_axis with point) |
+| `axis_direction` | `List[float]?` | — | `None` | With axis_point: the axis direction [x, y, z], any length |
 | `count` | `int` | ✅ | `` | Total number of instances including the original. Must be at least 2 - a pattern of one is just the original feature |
 | `angle` | `float?` | — | `None` | Total angle in degrees the instances are spread over evenly; a full 360 when neither angle nor step_angle is given |
 | `step_angle` | `float?` | — | `None` | Instead of angle: degrees between neighbouring instances, e.g. 60 for instances every 60 degrees |
@@ -987,7 +1018,6 @@ Repeat features of the active part around an axis, e.g. a ring of bosses or ribs
 ```json
 {
   "features": [],
-  "axis": "example",
   "count": 10.0
 }
 ```
@@ -1040,6 +1070,8 @@ Measure the smallest gap between two components of the active assembly, in mm.
 |-----------|------|----------|---------|-------------|
 | `component_a` | `str` | ✅ | `` | One component's instance name, as list_components reports it |
 | `component_b` | `str` | ✅ | `` | The other component's instance name, e.g. 'latch-1' |
+| `coarse` | `bool` | — | `False` | Measure only the 12 nearest face pairs by box, for a fast answer in a sweep: clearance_mm is then at most the gap's true value and at_least_mm what it is at least; complete says when they agree |
+| `timeout_s` | `float?` | — | `None` | Stop measuring face pairs after this many seconds and return the best found so far, with at_least_mm and complete: false |
 
 **Sample call:**
 

@@ -2985,9 +2985,9 @@ async def register_modeling_tools(
         `draft_angle` narrows it with depth unless `draft_outward`. For contours that
         cross, `regions: "all"` cuts their union. Needs: an open part with a solid body.
         Changes: adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`,
-        `sketch_name`, `direction_flipped`, `cut_toward`, the model direction cut,
-        e.g. "-Y", and the options set) and `measured_change` (volume, box and
-        solid-body count before and after, when the model reads).
+        `sketch_name`, `direction_flipped`, `cut_toward` (e.g. "-Y") and the
+        options set) and `measured_change` (volume, box and body count before and
+        after).
 
         Args:
             input_data: The cut. `depth` (mm) is required; `sketch_name`,
