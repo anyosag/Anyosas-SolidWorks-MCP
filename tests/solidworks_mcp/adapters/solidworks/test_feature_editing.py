@@ -221,8 +221,13 @@ def test_end_conditions_by_any_spelling() -> None:
     ("kind", "changes", "fragment"),
     [
         ("Cut", {}, "Give at least one change"),
-        ("Shell", {"depth": 1}, "changes extrudes, cuts, revolves, fillets and"),
+        (
+            "Shell",
+            {"depth": 1},
+            "changes extrudes, cuts, revolves, fillets, chamfers and offset planes",
+        ),
         ("Fillet", {"depth": 1}, "it takes edge_rules, edges, radius, not depth"),
+        ("RefPlane", {"depth": 1}, "it takes flip, offset, not depth"),
         ("Cut", {"end_condition": "sideways"}, "end_condition must be one of"),
     ],
 )

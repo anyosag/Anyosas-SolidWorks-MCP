@@ -1320,6 +1320,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
+        if name in self._reference_planes:
+            return self._mock_edit_plane(name, changes)
         feature = next((f for f in self._features.values() if f.name == name), None)
         if feature is None:
             return AdapterResult(
@@ -1357,6 +1359,39 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=data,
+            execution_time=self._delays["feature_operation"],
+        )
+
+    def _mock_edit_plane(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving an offset plane, with the live adapter's rules and messages.
+
+        A plane made at an angle (or on a face) is not an offset plane.
+        """
+        from .solidworks.feature_editing import check_changes
+        from .solidworks.ref_plane_edit import REF_PLANE, not_offset_message
+
+        problem = check_changes(REF_PLANE, changes, name)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        definitions = self.__dict__.setdefault("_plane_definitions", {})
+        plane = definitions.setdefault(name, {"offset": None, "flip": False})
+        if plane["offset"] is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=not_offset_message(name)
+            )
+        before = dict(plane)
+        plane.update(changes)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": name,
+                "type": REF_PLANE,
+                "before": before,
+                "after": dict(plane),
+            },
             execution_time=self._delays["feature_operation"],
         )
 
@@ -5375,6 +5410,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         after = self._feature_tree_count
 
         self._reference_planes.append(f"Plane{len(self._reference_planes) + 1}")
+        # What edit_feature reads back from an IRefPlaneFeatureData.
+        self.__dict__.setdefault("_plane_definitions", {})[
+            self._reference_planes[-1]
+        ] = {"offset": abs(offset) if offset and not angle else None, "flip": flip}
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,

@@ -1018,6 +1018,8 @@ class EditFeatureInput(CompatInput):
         radius (float | None): New radius, mm (fillet).
         edges (str | None): "selection": new edges, those selected now (fillet, chamfer).
         edge_rules (dict | None): New edges by a select_edges query (fillet, chamfer).
+        offset (float | None): New distance from its reference, mm (offset plane).
+        flip (bool | None): Put it on the other side of its reference (offset plane).
     """
 
     name: str = Field(description="The feature to change, e.g. 'Cut-Extrude2'")
@@ -1056,6 +1058,21 @@ class EditFeatureInput(CompatInput):
             "Not with edges"
         ),
     )
+    offset: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Offset plane (create_reference_plane's offset): the new distance "
+            "from its reference, mm. Moves the plane and what is built on it"
+        ),
+    )
+    flip: bool | None = Field(
+        default=None,
+        description=(
+            "Offset plane: true puts it on the other side of its reference, "
+            "false on the first side (as create_reference_plane's flip)"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         from ..adapters.solidworks.feature_editing import (
@@ -1069,7 +1086,8 @@ class EditFeatureInput(CompatInput):
         if not self.changes():
             raise ValueError(
                 "give at least one change: depth, end_condition, "
-                "reverse_direction, angle, radius, edges or edge_rules"
+                "reverse_direction, angle, radius, edges, edge_rules, offset or "
+                "flip"
             )
         if self.edges is not None and self.edge_rules is not None:
             raise ValueError("give edges or edge_rules, not both")
@@ -1090,6 +1108,8 @@ class EditFeatureInput(CompatInput):
                 "radius",
                 "edges",
                 "edge_rules",
+                "offset",
+                "flip",
             },
             exclude_none=True,
         )
@@ -2874,12 +2894,13 @@ async def register_modeling_tools(
 
     @mcp.tool()
     async def edit_feature(input_data: EditFeatureInput) -> dict[str, Any]:
-        """Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges.
+        """Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges, an offset plane's distance.
 
         Use it instead of deleting and re-creating a feature, which takes its
         dependents (fillets, patterns) with it. Give `name` and only the changes:
         `depth` (mm), `end_condition`, `reverse_direction` (extrudes and cuts),
-        `angle` (revolves), `radius` (fillets). To repair a fillet or chamfer whose
+        `angle` (revolves), `radius` (fillets), `offset` (mm) and `flip` (offset
+        planes: what stands on it moves too). To repair a fillet or chamfer whose
         edges an edit removed, give `edges: "selection"` or `edge_rules`: they replace
         all its edges (faces a fillet also uses stay); its name, sizes and place in
         the tree stay. Other sizes change with `set_dimension`. Needs: an open

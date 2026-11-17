@@ -1386,12 +1386,13 @@ class SolidWorksAdapter(ABC):
                 ``reverse_direction``, ``angle`` (degrees) or ``radius`` (mm);
                 for a fillet or chamfer ``edges: "selection"`` or
                 ``edge_rules`` (a ``select_edges`` query), which replace its
-                edges.
+                edges; for an offset plane ``offset`` (mm) and ``flip``.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``feature``, ``type``, ``before`` and
             ``after``; with new edges also ``edges_before``, ``edges_given``
-            and ``edges_after``, and ``measured_change`` when the volume reads.
+            and ``edges_after``, and ``measured_change`` when the volume reads;
+            for a plane ``origin_mm`` in ``before`` and ``after``.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

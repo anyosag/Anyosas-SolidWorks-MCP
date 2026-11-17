@@ -239,6 +239,44 @@ async def test_rollback_refusals(part: Any) -> None:
     assert before["data"]["rolled_back"][0] == boss
 
 
+async def test_an_offset_plane_moves_instead_of_cutting_the_block(part: Any) -> None:
+    """The Dipper build cut 0.2 mm off a block instead of moving its plane."""
+    adapter, tools = part
+    plane = await adapter.create_reference_plane("Top Plane", offset=10)
+
+    moved = await tools["edit_feature"](
+        {"name": plane.data["name"], "offset": 9.8, "flip": True}
+    )
+
+    assert moved["status"] == "success", moved
+    assert moved["data"]["type"] == "RefPlane"
+    assert moved["data"]["before"] == {"offset": 10, "flip": False}
+    assert moved["data"]["after"] == {"offset": 9.8, "flip": True}
+    assert moved["message"] == "Changed Plane1: offset 9.8, flip True"
+
+
+async def test_an_angled_plane_is_not_moved(part: Any) -> None:
+    adapter, tools = part
+    await adapter.create_axis("y")
+    plane = await adapter.create_reference_plane("Top Plane", angle=30, axis="Axis1")
+
+    result = await tools["edit_feature"]({"name": plane.data["name"], "offset": 2})
+
+    assert result["status"] == "error"
+    assert "'Plane1' is not an offset plane" in result["message"]
+
+
+async def test_a_plane_takes_only_offset_and_flip(part: Any) -> None:
+    adapter, tools = part
+    await adapter.create_reference_plane("Top Plane", offset=10)
+
+    result = await tools["edit_feature"]({"name": "Plane1", "depth": 2})
+    rejected = await tools["edit_feature"]({"name": "Plane1", "offset": 0})
+
+    assert "it takes flip, offset, not depth" in result["message"]
+    assert rejected["error_type"] == "invalid_input"
+
+
 async def test_without_a_document() -> None:
     adapter = MockSolidWorksAdapter({})
     await adapter.connect()
