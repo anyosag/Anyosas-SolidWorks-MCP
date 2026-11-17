@@ -681,8 +681,55 @@ def test_the_rollback_bar_moves(
 
     reply = fe.set_rollback(_Adapter(model), before, after)
 
-    assert reply == {"position": position, "rolled_back": rolled}
+    assert (reply["position"], reply["rolled_back"]) == (position, rolled)
+    assert reply["rebuild"]["errors"] == []
+    assert reply["rebuild"]["summary"] == "Rebuilt cleanly; no rebuild errors."
     assert model.FeatureManager.calls == [call]
+
+
+class _Warned(_Feature):
+    """A feature that rebuilt with ``code``, a warning when ``warning``."""
+
+    def __init__(self, name: str, code: int, warning: bool) -> None:
+        super().__init__(name, "Fillet", None)
+        self._code, self._warning = code, warning
+
+    def GetErrorCode2(self, is_warning: Any) -> int:  # noqa: N802
+        is_warning.value = self._warning
+        return self._code
+
+
+def test_rolling_forward_reports_a_fillet_that_lost_edges() -> None:
+    # The Dipper: after rolling forward, Fillet3 warned swFeatureErrorFilletNoEdge.
+    tree = [
+        _Feature("Boss1", "Extrusion", None),
+        _Warned("Fillet3", 13, True),
+        _Warned("Cut9", 1, False),
+    ]
+    tree[2].rolled_back = True  # below the bar: not built, not reported
+
+    reply = fe.set_rollback(_Adapter(_Model(tree)), "Cut9", None)
+
+    rebuild = reply["rebuild"]
+    assert reply["rolled_back"] == ["Cut9"]
+    assert (rebuild["error_count"], rebuild["warning_count"]) == (0, 1)
+    assert rebuild["errors"][0]["code_name"] == "swFeatureErrorFilletNoEdge"
+    assert rebuild["errors"][0]["severity"] == "warning"
+    assert rebuild["summary"] == "Rebuilt with 1 warning(s): Fillet3."
+
+
+def test_an_unreadable_rebuild_leaves_the_move_standing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(*_a: Any) -> Any:
+        raise RuntimeError("GetWhatsWrong broke")
+
+    monkeypatch.setattr(fe, "rebuild_report", broken)
+
+    reply = fe.set_rollback(_Adapter(_Model(_tree())), None, None)
+
+    assert reply["position"] == "the end"
+    assert reply["rebuild"] is None
 
 
 def test_a_rollback_to_a_missing_feature_or_refused() -> None:

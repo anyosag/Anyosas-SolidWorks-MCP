@@ -14,18 +14,25 @@
   repointed with ``ISldWorks.ReplaceReferencedDocument(referencing, old,
   new)``, which works only on closed files. A dry run (the default) says all
   of that and changes nothing; a failed repoint puts everything back.
+  When ``MoveDocument`` refuses a file SolidWorks doesn't hold open (it
+  returned 2 for a closed part on a Google Drive for desktop drive), the file
+  is moved as a plain file instead. The plan also says what would stop the
+  move (``file_access``: the source held open by another program, a
+  destination folder that can't be written) and warns about a cloud-sync
+  folder.
 
 Enum values are from SolidWorks 2026's ``swconst`` (``swMoveCopyError_e``).
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 from collections.abc import Callable
 from typing import Any
 
-from . import limits
+from . import file_access, limits, saving
 from .com_utils import as_list
 from .com_utils import flag as _flag
 
@@ -235,8 +242,9 @@ def plan_move(
         dict[str, Any]: ``source``, ``destination``, ``creates_folder``,
         ``search_folders``, ``scanned``, ``scan_truncated``, ``users`` (each
         ``path`` and ``references_as``, the path saved in it), ``not_using``
-        (given documents that don't use it), ``unreadable``, ``not_found``
-        and ``blocked`` (each ``path`` and ``reason``).
+        (given documents that don't use it), ``unreadable``, ``not_found``,
+        ``blocked`` (each ``path`` and ``reason``) and ``warnings`` (a
+        cloud-sync folder).
 
     Raises:
         ValueError: The move or a search folder is invalid.
@@ -278,14 +286,39 @@ def plan_move(
         "not_using": not_using,
         "unreadable": unreadable,
         "not_found": not_found,
-        "blocked": _blockers(src, users, open_documents),
+        "blocked": _blockers(src, dst, users, open_documents),
+        "warnings": sync_warnings(src, dst),
     }
 
 
+def sync_warnings(source: str, destination: str) -> list[str]:
+    """A warning for each cloud-sync folder the move reads from or writes to."""
+    warnings: list[str] = []
+    named: set[str] = set()
+    for path in (source, os.path.dirname(destination)):
+        client = file_access.sync_client(path)
+        if client is None or client in named:
+            continue
+        named.add(client)
+        warnings.append(
+            f"{path} is in a {client} folder. A sync client can hold a file "
+            "while it uploads or downloads it, and SolidWorks' MoveDocument has "
+            "refused a closed part there (Google Drive for desktop); the move "
+            "then falls back to a plain file move. Let the sync finish first, "
+            "and check the documents that use it afterwards."
+        )
+    return warnings
+
+
 def _blockers(
-    source: str, users: list[dict[str, str]], open_documents: dict[str, bool]
+    source: str,
+    destination: str,
+    users: list[dict[str, str]],
+    open_documents: dict[str, bool],
 ) -> list[dict[str, str]]:
-    """What stops the move: the source or a user open, a user read-only."""
+    """What stops the move: the source open or held, a folder that can't be
+    written, a user open or read-only.
+    """
     blocked: list[dict[str, str]] = []
     if normalize(source) in open_documents:
         reason = (
@@ -295,6 +328,14 @@ def _blockers(
             "(close_model)"
         )
         blocked.append({"path": source, "reason": reason})
+    else:
+        held = file_access.move_blocker(source)
+        if held is not None:
+            blocked.append({"path": source, "reason": held})
+    folder = os.path.dirname(destination)
+    unwritable = file_access.unwritable_folder(folder)
+    if unwritable is not None:
+        blocked.append({"path": folder, "reason": unwritable})
     for user in users:
         if normalize(user["path"]) in open_documents:
             blocked.append(
@@ -406,35 +447,80 @@ def _string_array(values: list[str]) -> Any:
     return win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_BSTR, values)
 
 
+def _plain_move(src: str, dst: str, why: str) -> None:
+    """Move the file without SolidWorks; when that fails too, say why.
+
+    A move to another drive copies, then deletes the source. When the delete
+    is what failed, the copy is removed, so the file is only where it was.
+
+    Raises:
+        RuntimeError: The file couldn't be moved (``why`` is what SolidWorks
+            did first).
+    """
+    try:
+        shutil.move(src, dst)
+    except OSError as exc:
+        if os.path.isfile(src) and os.path.isfile(dst):
+            with contextlib.suppress(OSError):
+                os.remove(dst)
+        left = (
+            f"a copy was left at {dst}"
+            if os.path.isfile(src) and os.path.isfile(dst)
+            else "nothing was changed"
+        )
+        raise RuntimeError(
+            f"{src} could not be moved: {why}, and a plain file move failed too: "
+            f"{file_access.os_error_cause(exc)}. {left[:1].upper()}{left[1:]}."
+        ) from exc
+
+
 def _move_file(adapter: Any, src: str, dst: str) -> str:
     """Move one file with ``MoveDocument`` and no children; say how it moved.
 
     A call late binding can't make (its children arguments are the open
     question ``tests/scripts/probe_file_references.py`` settles) falls back
     to a plain file move, which for one file without children is the same.
+    So does a refusal (an ``swMoveCopyError_e``) of a file SolidWorks
+    doesn't hold open: ``MoveDocument`` returned 2 for a closed part on a
+    Google Drive for desktop drive. A file it holds open isn't moved behind
+    its back.
 
     Raises:
-        RuntimeError: SolidWorks refused the move (an ``swMoveCopyError_e``),
-            or the file isn't at the destination afterwards.
+        RuntimeError: SolidWorks refused the move of a file it has open, the
+            plain file move failed too, or the file isn't at the destination
+            afterwards.
     """
     app = adapter.swApp
     _flag(adapter, app, "MoveDocument")
     try:
         code = app.MoveDocument(src, dst, _string_array([]), _string_array([]), 0)
     except Exception as exc:  # noqa: BLE001 - the probe settles the arguments
-        shutil.move(src, dst)
-        method = f"file move (MoveDocument raised {type(exc).__name__})"
+        why = f"MoveDocument raised {type(exc).__name__}"
+        _plain_move(src, dst, why)
+        method = f"file move ({why})"
     else:
         if code:
-            raise RuntimeError(
-                f"SolidWorks did not move {src}: MoveDocument returned {code} "
-                f"({MOVE_ERRORS.get(code, 'unknown')}); nothing was changed."
-            )
-        method = "MoveDocument"
+            refusal = f"returned {code} ({MOVE_ERRORS.get(code, 'unknown')})"
+            why = f"MoveDocument {refusal}"
+            if not os.path.exists(src) and os.path.isfile(dst):
+                method = f"MoveDocument ({refusal}, yet the file moved)"
+            elif normalize(src) in open_documents(adapter):
+                raise RuntimeError(
+                    f"SolidWorks did not move {src}: {why}, and it has the file "
+                    "open, so it wasn't moved another way. Close it "
+                    "(close_model) and try again; nothing was changed."
+                )
+            else:
+                _plain_move(src, dst, why)
+                method = f"file move ({why})"
+        else:
+            method = "MoveDocument"
     if not os.path.isfile(dst):
         raise RuntimeError(
             f"{method} reported success, but {dst} isn't there; check {src}."
         )
+    # A file this session wrote stays its own at the new path (the save guard).
+    saving.follow_move(adapter, src, dst)
     return method
 
 

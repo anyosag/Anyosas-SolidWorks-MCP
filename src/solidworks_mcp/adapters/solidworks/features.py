@@ -17,7 +17,7 @@ from ..base import (
     SolidWorksFeature,
     SweepParameters,
 )
-from . import cut_check, limits
+from . import cut_check, edge_feature_check, limits, sketch_contours
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -29,7 +29,18 @@ class SolidWorksFeaturesMixin:
     async def create_extrusion(
         self, params: ExtrusionParameters
     ) -> AdapterResult[SolidWorksFeature]:
-        return _create_extrusion_impl(self, params)
+        """Extrude a sketch; a failure says when the sketch's contours cross.
+
+        Args:
+            params: The extrusion; see :func:`_create_extrusion_impl`.
+
+        Returns:
+            AdapterResult[SolidWorksFeature]: See :func:`_create_extrusion_impl`,
+            and :func:`_explain_profile_failure` for a failure.
+        """
+        return _explain_profile_failure(
+            self, _create_extrusion_impl(self, params), params
+        )
 
     async def create_revolve(
         self, params: RevolveParameters
@@ -56,9 +67,11 @@ class SolidWorksFeaturesMixin:
 
         Returns:
             AdapterResult[SolidWorksFeature]: See
-            :func:`_create_cut_extrude_choosing_side`.
+            :func:`_create_cut_extrude_choosing_side`, and
+            :func:`_explain_profile_failure` for a failure.
         """
-        return await _create_cut_extrude_choosing_side(self, params)
+        result = await _create_cut_extrude_choosing_side(self, params)
+        return _explain_profile_failure(self, result, params)
 
     async def add_fillet(
         self, radius: float, edge_names: list[str]
@@ -77,6 +90,11 @@ class SolidWorksFeaturesMixin:
         current selection (``select_edges``, ``select_face_edges``, empty
         ``edge_names``) found nothing selected (first live run, 2026-11-11).
 
+        The edges it holds, and the features below the rollback bar, are
+        checked by the fillet's tree name when the feature the closure read
+        (``GetLastFeatureAdded``) turns out to be another one
+        (:func:`_facts_by_name`).
+
         Args:
             radius: Fillet radius in millimetres.
             edge_names: Edge names, ``"x,y,z"`` points or ``"face:x,y,z"``
@@ -84,10 +102,13 @@ class SolidWorksFeaturesMixin:
 
         Returns:
             AdapterResult[SolidWorksFeature]: The fillet, with
-            ``volume_before`` / ``volume_after`` in its properties when they
-            could be read. ``ERROR`` when the volume did not change.
+            ``volume_before`` / ``volume_after`` and ``geometry_before`` /
+            ``geometry_after`` (the summaries) in its properties when they
+            could be read, and the edge facts of :func:`_edge_facts`.
+            ``ERROR`` when the volume did not change.
         """
-        volume_before = await _volume_keeping_selection(self)
+        before = await _summary_keeping_selection(self)
+        volume_before = _summary_volume(before)
         # FeatureFillet3 on SW 2025+ returns a number, not the feature, so the
         # new fillet's name comes from the tree (listing keeps the selection).
         tree_before = await self.list_features(include_suppressed=True)
@@ -95,10 +116,14 @@ class SolidWorksFeaturesMixin:
         result = _add_fillet_impl(self, radius, edge_names)
         if result.is_success and result.data is not None:
             _name_from_tree(result.data, tree_before, await self.list_features(True))
+            _facts_by_name(self, result.data)
         if not result.is_success or result.data is None or volume_before is None:
             return result
 
-        volume_after = await _volume_keeping_selection(self)
+        after = await _summary_keeping_selection(self)
+        result.data.properties["geometry_before"] = before
+        result.data.properties["geometry_after"] = after
+        volume_after = _summary_volume(after)
         if volume_after is None:
             return result
         if abs(volume_after - volume_before) <= 1e-7 * max(volume_before, 1.0):
@@ -122,7 +147,34 @@ class SolidWorksFeaturesMixin:
         angle: float = 45.0,
         flip: bool = False,
     ) -> AdapterResult[SolidWorksFeature]:
-        return _add_chamfer_impl(self, distance, edge_names, angle, flip)
+        """Chamfer edges, and read the part before and after it.
+
+        The summaries are read as ``add_fillet`` reads them, without a
+        rebuild, so a chamfer of the current selection still finds it.
+
+        Args:
+            distance: Chamfer distance in millimetres.
+            edge_names: Edge names, ``"x,y,z"`` points or ``"face:x,y,z"``
+                specs; see :func:`_add_chamfer_impl`.
+            angle: Chamfer angle in degrees.
+            flip: Measure ``distance`` along the other face.
+
+        Returns:
+            AdapterResult[SolidWorksFeature]: The chamfer, with
+            ``geometry_before`` / ``geometry_after`` in its properties when
+            the volume read before it, and the edge facts of
+            :func:`_edge_facts`.
+        """
+        before = await _summary_keeping_selection(self)
+        result = _add_chamfer_impl(self, distance, edge_names, angle, flip)
+        if not result.is_success or result.data is None:
+            return result
+        if _summary_volume(before) is not None:
+            result.data.properties["geometry_before"] = before
+            result.data.properties["geometry_after"] = await _summary_keeping_selection(
+                self
+            )
+        return result
 
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False
@@ -2054,6 +2106,7 @@ def _create_cut_extrude_impl(
 
         # A blind cut's floor area, to tell whether its depth went into the
         # material (cut_check; the tool compares it with the volume removed).
+        # Its floor looks back at the sketch, so the side it cut says which.
         # Not for a mid-plane cut or one started off the plane: a closed
         # pocket's ceiling faces along the normal too, and would count twice.
         floor_mm2 = None
@@ -2066,7 +2119,9 @@ def _create_cut_extrude_impl(
                 lambda: adapter.currentModel.FeatureByName(target_sketch)
             )
             if sketch_feature is not None:
-                floor_mm2 = cut_check.measure_floor(adapter, feature, sketch_feature)
+                floor_mm2 = cut_check.measure_floor(
+                    adapter, feature, sketch_feature, used_reverse == _ALONG_NORMAL
+                )
 
         flipped = used_reverse != wanted
         if through_both:
@@ -2135,16 +2190,121 @@ def _name_from_tree(
         feature.name = new[0]
 
 
+async def _summary_keeping_selection(adapter: Any) -> dict[str, Any] | None:
+    """The part's geometry summary, read without a rebuild so the selection survives.
+
+    Returns:
+        dict[str, Any] | None: ``get_model_geometry_summary``'s data, or None
+        when it can't be read.
+    """
+    summary = await adapter.get_model_geometry_summary()
+    data = summary.data if summary.is_success else None
+    return data if isinstance(data, dict) else None
+
+
+def _summary_volume(summary: dict[str, Any] | None) -> float | None:
+    """A summary's volume in mm³, or None when it holds none."""
+    volume = summary.get("volume_mm3") if isinstance(summary, dict) else None
+    return float(volume) if isinstance(volume, int | float) else None
+
+
 async def _volume_keeping_selection(adapter: Any) -> float | None:
     """The part's volume in mm³ without a rebuild, so the selection survives.
 
     Returns:
         float | None: The volume, or None when it can't be read.
     """
-    summary = await adapter.get_model_geometry_summary()
-    data = summary.data if summary.is_success else None
-    volume = data.get("volume_mm3") if isinstance(data, dict) else None
-    return float(volume) if isinstance(volume, int | float) else None
+    return _summary_volume(await _summary_keeping_selection(adapter))
+
+
+def _edge_facts(
+    adapter: Any, selected: dict[str, int] | None, returned: Any
+) -> dict[str, Any]:
+    """What a new fillet or chamfer took, for its properties (``edge_feature_check``).
+
+    Args:
+        adapter: A connected adapter with a ``currentModel``.
+        selected: :func:`edge_feature_check.selection_counts`, read just
+            before the feature call.
+        returned: What the feature call returned.
+
+    Returns:
+        dict[str, Any]: ``edges_selected``, ``selection_other``,
+        ``checked_feature``, ``edges_held`` and ``features_below_bar``; each
+        None when it can't be read.
+    """
+    feature = edge_feature_check.newest_feature(adapter, returned)
+    return {
+        "edges_selected": selected["edges"] if selected else None,
+        "selection_other": selected["other"] if selected else None,
+        **edge_feature_check.feature_facts(adapter, feature),
+    }
+
+
+def _explain_profile_failure(
+    adapter: Any, result: AdapterResult[SolidWorksFeature], params: Any
+) -> AdapterResult[SolidWorksFeature]:
+    """Say why an extrude or a cut built nothing when its sketch's contours cross.
+
+    The Dipper's overlapping rings gave a bare "Failed to create extrusion
+    feature". The sketch (``params.sketch_name``, else the one closed last)
+    is read only after a failure (``sketch_contours``), and its finding is
+    added to the error, where the classifier gives it its ``error_type``.
+
+    Args:
+        adapter: A connected adapter.
+        result: The extrude's or cut's result.
+        params: Its parameters.
+
+    Returns:
+        AdapterResult[SolidWorksFeature]: ``result``, its error extended when
+        contours cross.
+    """
+    if result.is_success or not getattr(adapter, "currentModel", None):
+        return result
+    name = getattr(params, "sketch_name", None) or getattr(
+        adapter, "_last_sketch_name", None
+    )
+    if not isinstance(name, str) or not name:
+        return result
+    read = adapter._handle_com_operation(
+        "read_sketch_contours", lambda: sketch_contours.crossings_in(adapter, name)
+    )
+    found = read.data if read.is_success and isinstance(read.data, list) else []
+    if found:
+        result.error = f"{result.error}. {sketch_contours.message(name, found)}"
+    return result
+
+
+def _facts_by_name(adapter: Any, feature: SolidWorksFeature) -> None:
+    """Read a new fillet's edge facts again by name when they were another feature's.
+
+    ``GetLastFeatureAdded`` is not proven on SolidWorks 2026; the tree's new
+    name is. Facts read from a feature of another name are dropped when the
+    named one can't be read either, so no warning comes from the wrong one.
+
+    Args:
+        adapter: A connected adapter with a ``currentModel``.
+        feature: The fillet, named from the tree.
+    """
+    properties = feature.properties
+    checked = properties.get("checked_feature")
+    if feature.name == feature.type or checked == feature.name:
+        return
+    result = adapter._handle_com_operation(
+        "read_new_feature",
+        lambda: edge_feature_check.feature_facts(
+            adapter, adapter.currentModel.FeatureByName(feature.name)
+        ),
+    )
+    facts = result.data if result.is_success and isinstance(result.data, dict) else {}
+    if facts.get("checked_feature") != feature.name:
+        facts = {
+            "checked_feature": None,
+            "edges_held": None,
+            "features_below_bar": None,
+        }
+    properties.update(facts)
 
 
 #: Two volumes a cut removed count as the same within this fraction.
@@ -3155,6 +3315,8 @@ def _add_fillet_impl(
             # A selected face makes FeatureFillet3 build nothing, so a face
             # spec selects the edges bounding it instead.
             _select_edge_specs(adapter, edge_names, face_edges=True)
+        # What the fillet is given, to compare with what it holds after.
+        selected = edge_feature_check.selection_counts(adapter)
 
         # SW 2025+ (major >= 33): IModelDoc2.FeatureFillet3 (9 params).
         # Returns a non-zero int on success — NOT an IFeature — so we look up
@@ -3236,7 +3398,10 @@ def _add_fillet_impl(
                 else ""
             ),
             parameters={"radius": radius, "edges": edge_names},
-            properties={"created": datetime.now().isoformat()},
+            properties={
+                "created": datetime.now().isoformat(),
+                **_edge_facts(adapter, selected, feature),
+            },
         )
 
     return cast(
@@ -3317,6 +3482,8 @@ def _add_chamfer_impl(
         if edge_names:
             # A chamfer takes a face as it is: it chamfers the face's edges.
             _select_edge_specs(adapter, edge_names, face_edges=False)
+        # What the chamfer is given, to compare with what it holds after.
+        selected = edge_feature_check.selection_counts(adapter)
 
         fm = adapter.currentModel.FeatureManager
         _flag_feature_methods(fm, "IFeatureManager")
@@ -3360,7 +3527,10 @@ def _add_chamfer_impl(
                 "flip": flip,
                 "edges": edge_names,
             },
-            properties={"created": datetime.now().isoformat()},
+            properties={
+                "created": datetime.now().isoformat(),
+                **_edge_facts(adapter, selected, feature),
+            },
         )
 
     return cast(

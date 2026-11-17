@@ -11,7 +11,7 @@ from loguru import logger
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
-from . import limits
+from . import limits, rectangle_check
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -760,13 +760,29 @@ def _add_rectangle_impl(
             str: Registered entity ID for the new rectangle.
 
         Raises:
-            Exception: If ``CreateCornerRectangle`` returns ``None``.
+            Exception: If ``CreateCornerRectangle`` returns ``None``, or the
+                lines it drew, read back, are not the rectangle asked
+                (``rectangle_check``; they are deleted again).
         """
-        lines = adapter.currentSketchManager.CreateCornerRectangle(
-            x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
-        )
+        with rectangle_check.inference_off(adapter):
+            lines = adapter.currentSketchManager.CreateCornerRectangle(
+                x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
+            )
         if not lines:
             raise Exception("Failed to create rectangle")
+        drawn = rectangle_check.drawn_extent(adapter, lines)
+        asked = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        wrong = rectangle_check.mismatch(asked, drawn) if drawn else None
+        if wrong is not None:
+            removed = (
+                "it was deleted again"
+                if rectangle_check.delete_segments(adapter, lines)
+                else "it is still in the sketch; delete it (delete_sketch_entities)"
+            )
+            raise Exception(
+                f"SolidWorks drew the rectangle from {wrong}; {removed}. "
+                "add_outlines draws the same corners as four lines."
+            )
         entity_id = cast(str, adapter._register_sketch_entity("Rectangle", lines))
         # Like polygons, rectangles register as a SAFEARRAY tuple of segment
         # handles — no single dispatch ``GetCenterPoint`` to recover the

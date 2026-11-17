@@ -499,7 +499,8 @@ def test_133_picks_over_300_edges_read_each_edge_once() -> None:
     assert calls["GetCurve"] == 300  # one box read per edge
     assert calls["GetClosestPointOn"] <= 2 * 133  # was 133 * 300 = 39 900
     assert calls["flag:GetClosestPointOn"] <= calls["GetClosestPointOn"]
-    assert calls["CreateSelectData"] == calls["SelectionManager"] == 1
+    assert calls["CreateSelectData"] == 1
+    assert calls["SelectionManager"] == 2  # the picker's; the count of edges given
     assert calls["Select4"] == calls["flag:Select4"] == 133
     assert sum(calls.values()) < 300 * 20 + 133 * 6
 

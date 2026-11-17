@@ -1404,7 +1404,13 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     async def set_rollback(
         self, before: str | None = None, after: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
-        """Mock moving the rollback bar over the mock feature tree."""
+        """Mock moving the rollback bar over the mock feature tree.
+
+        ``rebuild`` explains the issues in ``injected_rebuild_issues`` of the
+        features above the bar, as the live adapter reads them after a move.
+        """
+        from .solidworks.rebuild_diagnostics import explain, summarize
+
         if not self._current_model:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
@@ -1424,11 +1430,30 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             position = f"after {after}"
         else:
             index, position = len(names), "the end"
-        self.__dict__["_rollback_index"] = index
+        if index < len(names):
+            self.__dict__["_rollback_index"] = index
+        else:
+            self.__dict__.pop("_rollback_index", None)
         self._operation_count += 1
+        rolled = names[index:]
+        entries = [
+            explain(issue)
+            for issue in self.injected_rebuild_issues
+            if issue.feature not in rolled
+        ]
+        error_count, warning_count, summary = summarize(entries)
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"position": position, "rolled_back": names[index:]},
+            data={
+                "position": position,
+                "rolled_back": rolled,
+                "rebuild": {
+                    "errors": entries,
+                    "error_count": error_count,
+                    "warning_count": warning_count,
+                    "summary": summary,
+                },
+            },
             execution_time=self._delays["model_operation"],
         )
 
@@ -1887,7 +1912,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         Mirrors the real contract: an empty ``edge_names`` acts on whatever is
         currently selected (e.g. after ``select_face_edges``), and is an error
-        when nothing is.
+        when nothing is. It holds every edge it was given, and the features
+        below a rollback bar ``set_rollback`` moved up are named, as the live
+        adapter reads them (``edge_feature_check``).
         """
         if not self._current_model:
             return AdapterResult(
@@ -1906,12 +1933,21 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
         await asyncio.sleep(self._delays["feature_operation"] / 4)
         count = sum(1 for f in self._features.values() if f.type == kind) + 1
+        names = [f.name for f in self._features.values()]
+        bar = self.__dict__.get("_rollback_index", len(names))
         feature = SolidWorksFeature(
             name=f"{kind}{count}",
             type=kind,
             id=f"{kind.lower()}_{uuid.uuid4().hex[:8]}",
             parameters={"size": size, "edges": edges},
-            properties={"created": datetime.now().isoformat(), "mock": True},
+            properties={
+                "created": datetime.now().isoformat(),
+                "mock": True,
+                "edges_selected": len(edges),
+                "selection_other": 0,
+                "edges_held": len(edges),
+                "features_below_bar": names[bar:],
+            },
         )
         self._features[feature.id or feature.name] = feature
         self._selection.clear()

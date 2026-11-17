@@ -94,3 +94,41 @@ def test_ice_type_gets_neutral_extrude_hint_and_readable_label() -> None:
     assert entry["description"].startswith("Extrude 'Boss-Extrude2'")
     assert "extrude" in entry["hint"].lower()
     assert "cut" in entry["hint"].lower()
+
+
+def test_a_warning_reads_as_rebuilt_not_failed() -> None:
+    """A feature that only warns did rebuild; its description says so."""
+    warned = rd.explain(rd.RawRebuildIssue("Chamfer2", "Chamfer", 9999, True))
+    failed = rd.explain(rd.RawRebuildIssue("Chamfer2", "Chamfer", 9999, False))
+
+    assert warned["description"] == (
+        "Chamfer 'Chamfer2' rebuilt with a warning (code 9999)."
+    )
+    assert failed["description"].endswith("failed to rebuild (code 9999).")
+
+
+def test_a_fillet_that_lost_edges_is_repaired_in_place() -> None:
+    """The Dipper's Fillet3: swFeatureErrorFilletNoEdge as a warning."""
+    entry = rd.explain(rd.RawRebuildIssue("Fillet3", "Fillet", 13, True))
+
+    assert "rounds only the edges it still finds" in entry["description"]
+    assert "edit_feature with edges: 'selection'" in entry["hint"]
+
+
+def test_the_warning_names_each_flagged_feature() -> None:
+    """Warnings only by default; errors too when asked."""
+    warned = rd.explain(rd.RawRebuildIssue("Fillet3", "Fillet", 13, True))
+    failed = rd.explain(rd.RawRebuildIssue("Cut2", "Cut", 71, False))
+
+    only = rd.issues_warning([warned, failed])
+    both = rd.issues_warning([warned, failed], errors_too=True)
+
+    assert only == (
+        "SolidWorks reports: Fillet3 warns swFeatureErrorFilletNoEdge: "
+        f"{warned['description']} {warned['hint']}"
+    )
+    assert both is not None and both.endswith(
+        f"Cut2 fails {failed['code_name']}: {failed['description']} {failed['hint']}"
+    )
+    assert rd.issues_warning([failed]) is None
+    assert rd.issues_warning([]) is None

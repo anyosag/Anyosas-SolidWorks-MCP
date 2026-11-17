@@ -253,6 +253,18 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
         patterns=(r"no active (model|document)",),
     ),
+    # Before feature_not_built: a cut that built nothing names it too.
+    ErrorRule(
+        error_type="sketch_contours_intersect",
+        hint=(
+            "Nothing was built: closed contours in the sketch cross or touch, so "
+            "SolidWorks can't tell its regions apart. The message names them. "
+            "Move or resize them so the regions are apart (or one wholly inside "
+            "another, for a hole), or draw one outline that is their union "
+            "(add_outlines with arcs), then extrude or cut again."
+        ),
+        patterns=(r"\bsketch contours intersect\b",),
+    ),
     ErrorRule(
         error_type="feature_not_built",
         hint=(
