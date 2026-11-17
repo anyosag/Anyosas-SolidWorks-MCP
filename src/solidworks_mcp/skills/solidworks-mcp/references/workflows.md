@@ -238,6 +238,22 @@ read-only; a file already open for editing isn't). Then:
 - `measure_entities` on two faces: for parallel planes, `distance_m` is the
   gap between them (`normal_distance_m`), not the distance between centres.
 
+### What is near a point (a hole, a latch's faces)
+
+`query_geometry` with `point_mm` and `radius_mm` lists the faces and edges
+within the radius, nearest first, without selecting anything: a hole's
+cylinder with its axis, `center_mm` and radius, a wall's normal, an edge's
+ends and length. Put the point in the hole or on the face you mean, with a
+radius a little over the size you expect.
+
+- The first call on a changed part starts from SolidWorks' picks around the
+  point: fast, but it says `complete: false`, and a face the picks don't
+  reach can be missing. `read_all: true` lists every one; it reads the
+  part's face boxes once, and later calls on the unchanged part are fast
+  and complete.
+- An edge's `id` goes to `select_edges`, `add_fillet` or `add_chamfer` as
+  `edge_ids`.
+
 `list_references` with a `file_path` lists what a part, assembly or drawing
 uses, and whether each file is there, without opening it. To move or rename
 a file and keep the assemblies and drawings that use it working,
@@ -267,7 +283,10 @@ involved must be closed).
    largest first. For a gap that must stay open
    (a latch's 0.25 mm play), `measure_clearance` with the two components
    gives the smallest gap and where it is; `export_image` with `section`
-   (a plane and an offset) shows it cut open.
+   (a plane and an offset) shows it cut open. In a sweep of many calls,
+   `coarse: true` (or a `timeout_s`) answers sooner with two bounds, the gap
+   being at most `clearance_mm` and at least the reply's lower bound;
+   `complete` says when they are the same.
 6. `save_assembly`, or `pack_and_go_assembly` for a self-contained folder.
 
 ## Pictures: a Z-up part, any side, a cover off

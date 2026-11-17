@@ -778,6 +778,22 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "select_edges", lambda adapter: adapter.select_edges(query, append)
         )
 
+    async def query_geometry(
+        self,
+        point_mm: list[float],
+        radius_mm: float = 2.0,
+        kinds: str = "both",
+        limit: int = 10,
+        read_all: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the faces and edges near a point using pool."""
+        return await self._execute_with_pool(
+            "query_geometry",
+            lambda adapter: adapter.query_geometry(
+                point_mm, radius_mm, kinds, limit, read_all
+            ),
+        )
+
     async def set_visibility(
         self,
         names: list[str] | None = None,
@@ -1959,12 +1975,18 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         )
 
     async def measure_clearance(
-        self, component_a: str, component_b: str
+        self,
+        component_a: str,
+        component_b: str,
+        coarse: bool = False,
+        timeout_s: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the clearance between two components using pool."""
         return await self._execute_with_pool(
             "measure_clearance",
-            lambda adapter: adapter.measure_clearance(component_a, component_b),
+            lambda adapter: adapter.measure_clearance(
+                component_a, component_b, coarse, timeout_s
+            ),
         )
 
     async def rotation_clearance(

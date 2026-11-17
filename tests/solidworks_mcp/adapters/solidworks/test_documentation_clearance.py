@@ -53,25 +53,29 @@ class _Harness(SolidWorksDocumentationMixin):
 
 
 async def test_it_measures_in_an_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
-    asked: list[tuple[str, str]] = []
+    asked: list[tuple[str, str, dict[str, Any]]] = []
 
-    def measure(_adapter: Any, a: str, b: str) -> dict[str, Any]:
-        asked.append((a, b))
+    def measure(_adapter: Any, a: str, b: str, **options: Any) -> dict[str, Any]:
+        asked.append((a, b, options))
         return {"clearance_mm": 0.25}
 
     monkeypatch.setattr(clearance, "measure_clearance", measure)
 
     result = await _Harness(_Doc(2)).measure_clearance("tongue-1", "slot-1")
+    await _Harness(_Doc(2)).measure_clearance("tongue-1", "slot-1", True, 4.0)
 
     assert result.is_success, result.error
     assert result.data == {"clearance_mm": 0.25}
-    assert asked == [("tongue-1", "slot-1")]
+    assert asked == [
+        ("tongue-1", "slot-1", {"coarse": False, "timeout_s": None}),
+        ("tongue-1", "slot-1", {"coarse": True, "timeout_s": 4.0}),
+    ]
 
 
 async def test_its_errors_read_without_the_operation_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def refuse(*_args: Any) -> dict[str, Any]:
+    def refuse(*_args: Any, **_options: Any) -> dict[str, Any]:
         raise clearance.InvalidRequest("component_b 'slot-1' is suppressed")
 
     monkeypatch.setattr(clearance, "measure_clearance", refuse)

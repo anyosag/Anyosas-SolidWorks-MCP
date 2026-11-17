@@ -7,7 +7,7 @@ inspection, not for creating geometry. verify_model checks the finished model
 against expected values in one call.
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
@@ -364,6 +364,92 @@ class VolumeByPlaneInput(CompatInput):
         from ..adapters.solidworks.placement import axis_vector
 
         return None if self.normal is None else axis_vector(self.normal)
+
+
+class QueryGeometryInput(CompatInput):
+    """Input schema for the faces and edges near a point.
+
+    Attributes:
+        point_mm (list[float]): The point, part mm.
+        radius_mm (float): How far from it.
+        kinds (str): faces, edges or both.
+        limit (int): The most of each listed.
+        read_all (bool): Read every face box near the point.
+    """
+
+    point_mm: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="The point, [x, y, z] in the part's mm (on a face, or in a hole)",
+    )
+    radius_mm: float = Field(
+        default=2.0,
+        gt=0,
+        le=1000,
+        description="List what lies within this many mm of the point (default 2)",
+    )
+    kinds: Literal["faces", "edges", "both"] = Field(
+        default="both", description="'faces', 'edges' or 'both' (the default)"
+    )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="The most faces, and the most edges, listed, nearest first",
+    )
+    read_all: bool = Field(
+        default=False,
+        description=(
+            "Read every face box near the point so nothing within radius_mm is "
+            "missed (complete: true). Costs about two calls a face the first "
+            "time; kept until the next rebuild, so later queries are fast"
+        ),
+    )
+
+
+def _kinds_of(entries: list[dict[str, Any]]) -> str:
+    """The kinds in a list of faces or edges, each once."""
+    kinds = list(dict.fromkeys(str(e.get("kind")) for e in entries))
+    return f" ({', '.join(kinds)})" if kinds else ""
+
+
+def _query_reply(
+    input_data: QueryGeometryInput, data: dict[str, Any], execution_time: float
+) -> dict[str, Any]:
+    """The query_geometry reply: what was found in words, and warnings."""
+    parts = []
+    warnings = []
+    for key in ("faces", "edges"):
+        if key not in data:
+            continue
+        listed, found = data.get(key) or [], data.get(f"{key}_found", 0)
+        parts.append(f"{found} {key[:-1]}(s){_kinds_of(listed)}")
+        if found > len(listed):
+            warnings.append(
+                f"Listed the nearest {len(listed)} of {found} {key}; raise limit "
+                "or lower radius_mm for the rest."
+            )
+    message = (
+        f"Within {input_data.radius_mm:g} mm of {data.get('point_mm')} mm: "
+        + " and ".join(parts)
+    )
+    if not data.get("complete"):
+        message += ", from SolidWorks' picks around the point"
+        warnings.insert(
+            0,
+            "Found from SolidWorks' picks around the point (complete: false), so "
+            "a face or edge they don't reach can be missing; read_all: true "
+            "lists every one within radius_mm.",
+        )
+    reply: dict[str, Any] = {
+        "status": "success",
+        "message": message,
+        "data": data,
+        "execution_time": execution_time,
+    }
+    if warnings:
+        reply["warning"] = " ".join(warnings)
+    return reply
 
 
 class VerifyModelInput(BaseModel):
@@ -1202,6 +1288,47 @@ async def register_analysis_tools(
         require_success(result, context="Failed to measure the volume by the plane")
         data = result.data if isinstance(result.data, dict) else {}
         return _volume_reply(data, result.execution_time)
+
+    @mcp.tool()
+    async def query_geometry(input_data: QueryGeometryInput) -> dict[str, Any]:
+        """List the active part's faces and edges within a radius of a point, nearest first, with their geometry.
+
+        Use it to find a hole's centre and radius, the faces of a latch, or the
+        edges to fillet near a spot, without selecting anything; for selecting
+        edges by rule, use `select_edges`. A face gives its kind (plane, cylinder,
+        cone, sphere, torus, spline), its normal or axis, centre and radius, area
+        and box; an edge its kind (line, circle, arc, spline), ends, centre,
+        radius and length. Each has its distance, body and an `id` (an edge's
+        works as `edge_ids`). It starts from SolidWorks' picks around the point
+        (fast, `complete: false`) unless the part's face boxes are already read;
+        `read_all` reads them. Needs: an open part. Read-only. The selection is
+        left as it was. Returns: `data` with `faces`, `edges`, `faces_found`,
+        `edges_found`, `complete`, `method` and `read`.
+
+        Args:
+            input_data: The point. `point_mm` is required; `radius_mm` (2),
+                `kinds` (both), `limit` (10) and `read_all` (false) have
+                defaults.
+
+        Returns:
+            dict[str, Any]: What lies near the point.
+        """
+        input_data = normalize_input(input_data, QueryGeometryInput)
+        require_capability(
+            adapter,
+            "query_geometry",
+            "The active adapter does not support query_geometry; nothing was read.",
+        )
+        result = await adapter.query_geometry(
+            [float(c) for c in input_data.point_mm],
+            input_data.radius_mm,
+            input_data.kinds,
+            input_data.limit,
+            input_data.read_all,
+        )
+        require_success(result, context="Failed to query the geometry near the point")
+        data = result.data if isinstance(result.data, dict) else {}
+        return _query_reply(input_data, data, result.execution_time)
 
     @mcp.tool()
     async def get_material_properties() -> dict[str, Any]:

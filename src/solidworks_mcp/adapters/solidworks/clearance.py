@@ -28,6 +28,20 @@ A component lying wholly inside another, with no faces crossing, reads its
 gap to the outer component's faces, not 0: ``check_interference`` finds
 that overlap.
 
+On bigger parts the search took 10-27 s (The Dipper, SOLIDWORKS 2026
+SP4.1), too slow for a sweep of calls. Two ways to stop it sooner, each
+with what the stop still guarantees:
+
+* ``coarse`` measures only the :data:`COARSE_PAIRS` nearest pairs by box
+  (ties by the boxes' centres); ``timeout_s`` stops measuring once that
+  many seconds have passed since the call began (one pair is always
+  measured).
+* Either way the reply gives the best distance found (``clearance_mm``:
+  the gap is at most that) and ``at_least_mm``: the pairs not measured are
+  no nearer than their boxes, which come in order, so the gap is at least
+  the smaller of the best and the next box distance. ``complete`` is true
+  when the search ran to its own stop, and the two are the same.
+
 The pure pieces (transforms, box distances, the search) are separate from
 the COM walk so they can be tested without SolidWorks.
 """
@@ -35,6 +49,7 @@ the COM walk so they can be tested without SolidWorks.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -53,6 +68,8 @@ SUPPRESSED = 0
 LIGHTWEIGHT = frozenset({1, 4})
 #: A distance at or under this (mm) is touching.
 TOUCHING_MM = 1e-6
+#: The face pairs ``coarse`` measures at most, nearest box first.
+COARSE_PAIRS = 12
 
 #: A box ``[x1, y1, z1, x2, y2, z2]``, low corner first.
 Box = list[float]
@@ -123,6 +140,33 @@ def pair_order(
     )
 
 
+def _centre_gap(a: Sequence[float], b: Sequence[float]) -> float:
+    """The distance between two boxes' centres."""
+    return math.dist(
+        [(float(a[k]) + float(a[k + 3])) / 2 for k in range(3)],
+        [(float(b[k]) + float(b[k + 3])) / 2 for k in range(3)],
+    )
+
+
+def coarse_order(
+    boxes_a: Sequence[Sequence[float]], boxes_b: Sequence[Sequence[float]]
+) -> list[tuple[float, int, int]]:
+    """:func:`pair_order`, ties broken by the boxes' centres, nearest first.
+
+    Facing faces of a latch in its slot often all have overlapping boxes
+    (box distance 0); measured in index order, the few a coarse search
+    measures would be arbitrary among them.
+    """
+    return [
+        (bound, i, j)
+        for bound, _gap, i, j in sorted(
+            (box_distance(a, b), _centre_gap(a, b), i, j)
+            for i, a in enumerate(boxes_a)
+            for j, b in enumerate(boxes_b)
+        )
+    ]
+
+
 @dataclass(frozen=True)
 class Nearest:
     """The nearest face pair found.
@@ -133,6 +177,12 @@ class Nearest:
         point_a: The nearest point on face ``i``.
         point_b: The nearest point on face ``j``.
         pairs_checked: How many pairs were measured to find it.
+        complete: The search ran to its own stop, so ``distance`` is the
+            minimum; False when ``max_pairs`` or the time stopped it.
+        lower_bound: What the minimum is at least: ``distance`` when
+            complete, else the smaller of it and the next pair's box
+            distance (None when the search wasn't stopped early).
+        stopped_by: ``"coarse"`` or ``"timeout"`` when not complete.
     """
 
     distance: float
@@ -140,6 +190,14 @@ class Nearest:
     point_a: list[float]
     point_b: list[float]
     pairs_checked: int
+    complete: bool = True
+    lower_bound: float | None = None
+    stopped_by: str | None = None
+
+    @property
+    def at_least(self) -> float:
+        """What the minimum is at least (``distance`` when complete)."""
+        return self.distance if self.lower_bound is None else self.lower_bound
 
 
 #: ``measure(i, j)`` gives ``(distance, point_a, point_b)``, or None when the
@@ -153,12 +211,18 @@ def nearest_pair(
     measure: Measure,
     touching: float = 0.0,
     check: Callable[[], None] = lambda: None,
+    *,
+    max_pairs: int | None = None,
+    out_of_time: Callable[[], bool] | None = None,
+    order: list[tuple[float, int, int]] | None = None,
 ) -> Nearest | None:
     """Measure the face pairs nearest box first, and stop when no pair can be nearer.
 
     The search stops at the first pair whose box distance is above the best
     distance measured, or once a pair is at ``touching`` or under: nothing is
-    nearer than touching.
+    nearer than touching. Once a pair has a distance, it also stops, not
+    complete, after ``max_pairs`` measurements or when ``out_of_time`` says
+    so; the next pair's box distance then bounds what wasn't measured.
 
     Args:
         boxes_a: Each face's box on one side, in one frame.
@@ -166,15 +230,27 @@ def nearest_pair(
         measure: Measures one pair (see :data:`Measure`).
         touching: The distance that counts as touching.
         check: Called before each measurement (``limits.check``).
+        max_pairs: Measure at most this many pairs (``coarse``).
+        out_of_time: True once the time for measuring has run out.
+        order: The pairs in the order to measure them, nearest box first;
+            :func:`pair_order` by default.
 
     Returns:
         Nearest | None: The nearest pair, or None when no pair was measured.
     """
     best: tuple[float, int, int, list[float], list[float]] | None = None
     checked = 0
-    for bound, i, j in pair_order(boxes_a, boxes_b):
-        if best is not None and (bound > best[0] or best[0] <= touching):
-            break
+    stopped: tuple[str, float] | None = None
+    for bound, i, j in order if order is not None else pair_order(boxes_a, boxes_b):
+        if best is not None:
+            if bound > best[0] or best[0] <= touching:
+                break
+            if max_pairs is not None and checked >= max_pairs:
+                stopped = ("coarse", bound)
+                break
+            if out_of_time is not None and out_of_time():
+                stopped = ("timeout", bound)
+                break
         check()
         checked += 1
         got = measure(i, j)
@@ -182,7 +258,18 @@ def nearest_pair(
             best = (got[0], i, j, got[1], got[2])
     if best is None:
         return None
-    return Nearest(best[0], (best[1], best[2]), best[3], best[4], checked)
+    if stopped is None:
+        return Nearest(best[0], (best[1], best[2]), best[3], best[4], checked)
+    return Nearest(
+        best[0],
+        (best[1], best[2]),
+        best[3],
+        best[4],
+        checked,
+        complete=False,
+        lower_bound=min(best[0], stopped[1]),
+        stopped_by=stopped[0],
+    )
 
 
 # ---- COM -------------------------------------------------------------------
@@ -317,7 +404,12 @@ def face_kind(adapter: Any, face: Any) -> str:
 
 
 def measure_clearance(
-    adapter: Any, component_a: str, component_b: str
+    adapter: Any,
+    component_a: str,
+    component_b: str,
+    coarse: bool = False,
+    timeout_s: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """The minimum distance between two top-level components of the active assembly.
 
@@ -325,12 +417,18 @@ def measure_clearance(
         adapter: A connected adapter with an assembly as ``currentModel``.
         component_a: An instance name, as ``list_components`` reports it.
         component_b: Another one.
+        coarse: Measure at most :data:`COARSE_PAIRS` pairs (module docstring).
+        timeout_s: Stop measuring pairs once this many seconds have passed
+            since the call began; None for no limit but the operation's own.
+        clock: The monotonic clock (tests pass a fake).
 
     Returns:
         dict[str, Any]: ``component_a``, ``component_b``, ``clearance_mm``,
         ``touching``, ``point_a_mm`` and ``point_b_mm`` (assembly
         coordinates), ``face_a`` and ``face_b`` (``kind`` and ``box_mm``, in
-        assembly coordinates), ``pairs_checked`` and ``pairs_total``.
+        assembly coordinates), ``pairs_checked``, ``pairs_total``,
+        ``complete`` and ``at_least_mm``; ``stopped_by`` (``coarse`` or
+        ``timeout``) when not complete.
 
     Raises:
         InvalidRequest: The same component twice, or one that is suppressed
@@ -341,6 +439,7 @@ def measure_clearance(
     """
     from .io import _find_components
 
+    started = clock()
     if component_a == component_b:
         raise InvalidRequest(
             f"component_a and component_b are both {component_a!r}; give two "
@@ -355,12 +454,18 @@ def measure_clearance(
     faces_a, faces_b = sides
 
     _flag(adapter, model, "ClosestDistance")
+    boxes_a, boxes_b = [f.box_m for f in faces_a], [f.box_m for f in faces_b]
     nearest = nearest_pair(
-        [f.box_m for f in faces_a],
-        [f.box_m for f in faces_b],
+        boxes_a,
+        boxes_b,
         lambda i, j: _closest(adapter, model, faces_a[i].twin, faces_b[j].twin),
         touching=TOUCHING_MM / 1000.0,
         check=lambda: limits.check("measuring clearance"),
+        max_pairs=COARSE_PAIRS if coarse else None,
+        out_of_time=(
+            None if timeout_s is None else lambda: clock() - started > timeout_s
+        ),
+        order=coarse_order(boxes_a, boxes_b) if coarse else None,
     )
     if nearest is None:
         raise RuntimeError(
@@ -370,7 +475,7 @@ def measure_clearance(
     clearance_mm = nearest.distance * 1000.0
     touching = clearance_mm <= TOUCHING_MM
     i, j = nearest.pair
-    return {
+    reply: dict[str, Any] = {
         "component_a": component_a,
         "component_b": component_b,
         "clearance_mm": 0.0 if touching else round(clearance_mm, 6),
@@ -387,4 +492,9 @@ def measure_clearance(
         },
         "pairs_checked": nearest.pairs_checked,
         "pairs_total": len(faces_a) * len(faces_b),
+        "complete": nearest.complete,
+        "at_least_mm": (0.0 if touching else round(nearest.at_least * 1000.0, 6) + 0.0),
     }
+    if nearest.stopped_by:
+        reply["stopped_by"] = nearest.stopped_by
+    return reply
