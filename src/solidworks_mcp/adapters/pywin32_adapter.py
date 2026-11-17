@@ -43,6 +43,8 @@ from .solidworks.com_utils import clear_selection
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.io import activate_doc
+from .solidworks.loaded_documents import SolidWorksLoadedDocumentsMixin
+from .solidworks.save_bodies import SolidWorksSaveBodiesMixin
 from .solidworks.sessions import (
     SessionRegister,
     session_directory,
@@ -172,14 +174,17 @@ def _headless_requested() -> bool:
 _DOCUMENT_OPERATIONS = frozenset(
     {
         "activate_document",
+        "close_leftover_documents",
         "close_model",
         "create_assembly",
         "create_drawing",
         "create_part",
         "create_technical_drawing",
+        "edit_save_bodies",
         "insert_part",
         "open_model",
         "pack_and_go_assembly",
+        "resplit_bodies",
         "save_body_as_part",
         "standard_drawing_views",
     }
@@ -213,12 +218,14 @@ _READ_ONLY_OPERATIONS = frozenset(
         "get_model_info",
         "get_model_update_stamp",
         "get_sketch",
+        "list_assembly_parts",
         "list_available_materials",
         "list_bodies",
         "list_components",
         "list_configurations",
         "list_drawing_views",
         "list_features",
+        "list_loaded_documents",
         "list_model_dimensions",
         "list_open_documents",
         "list_references",
@@ -299,12 +306,14 @@ _DOCUMENT_CHOOSING_OPERATIONS = frozenset(
     {
         "activate_document",
         "check_active_document",
+        "close_leftover_documents",
         "close_model",
         "create_assembly",
         "create_drawing",
         "create_part",
         "create_technical_drawing",
         "get_application_info",
+        "list_loaded_documents",
         "list_open_documents",
         # Work on files on disk, not on the active document.
         "list_references",
@@ -2250,6 +2259,8 @@ class PyWin32Adapter(
     SolidWorksDocumentationMixin,
     SolidWorksSketchMixin,
     SolidWorksFeaturesMixin,
+    SolidWorksSaveBodiesMixin,
+    SolidWorksLoadedDocumentsMixin,
     SolidWorksIOMixin,
     SolidWorksSelectionMixin,
     SolidWorksAdapter,

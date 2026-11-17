@@ -290,6 +290,13 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # Assembly components inserted via insert_component, keyed by
         # insertion order. See insert_component/list_components/add_mate.
         self._components: list[str] = []
+        # The file each inserted component holds (list_assembly_parts).
+        self._component_files: dict[str, str] = {}
+        # Save Bodies features save_body_as_part added, in order.
+        self._save_bodies: list[dict[str, Any]] = []
+        # Documents loaded without a window (path -> title, modified, used_by);
+        # tests put leftovers of a closed assembly here.
+        self._hidden_documents: dict[str, dict[str, Any]] = {}
         # Mates added via add_mate, in order, so the geometry summary can
         # report a mate count without real geometry.
         self._mates: list[dict[str, Any]] = []
@@ -3783,6 +3790,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         self._components.append(f"component-{len(self._components) + 1}")
         name = self._components[-1]
+        self._component_files[name] = file_path
         first = len(self._components) == 1
         is_fixed = first if fixed is None else bool(fixed)
         self._component_states[name] = {"fixed": is_fixed, "flexible": False}
@@ -4105,7 +4113,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str
+        self, body_name: str, file_path: str, assembly_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
         """Mock extracting a solid body from the active part to a new file.
 
@@ -4118,6 +4126,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         Args:
             body_name (str): Name of a solid body in the active part.
             file_path (str): Absolute path for the new ``.sldprt``.
+            assembly_path (str | None): The assembly asked for; recorded.
 
         Returns:
             AdapterResult[dict[str, Any]]: The body, the written path, and a
@@ -4154,19 +4163,299 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 error=f"Parent directory does not exist: {parent}",
             )
 
+        replaced = _os.path.exists(target)
         with open(target, "w", encoding="utf-8"):
             pass
         self._operation_count += 1
+        feature = f"Save Bodies{len(self._save_bodies) + 1}"
+        self._save_bodies.append(
+            {
+                "feature": feature,
+                "bodies": [{"body": body_name, "file_path": target}],
+                "assembly_path": assembly_path or "",
+                "consume_body": False,
+                "copy_custom_properties": True,
+            }
+        )
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "body": body_name,
                 "file_path": target,
-                "feature": f"Save Bodies{self._operation_count}",
+                "feature": feature,
                 "solid_bodies": [body_name],
+                "replaced": replaced,
+                "assembly_path": assembly_path,
+                "file_check": {
+                    "file_path": target,
+                    "exists": True,
+                    "size_bytes": 0,
+                    "written_now": True,
+                    "volume_mm3": None,
+                    "body_volume_mm3": None,
+                    "holds_body": None,
+                },
+                "closed_documents": [],
             },
             execution_time=self._delays["model_operation"],
+        )
+
+    def _mock_save_bodies(
+        self, feature_name: str | None
+    ) -> list[dict[str, Any]] | AdapterResult[dict[str, Any]]:
+        """The mock part's Save Bodies features (or one), or the error."""
+        model = self._current_model
+        if model is None or getattr(model, "type", None) != "Part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="Save Bodies requires an active part document",
+            )
+        found = [
+            f
+            for f in self._save_bodies
+            if feature_name is None or f["feature"] == feature_name
+        ]
+        if not found:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Feature {feature_name!r} not found; list_save_bodies names them."
+                    if feature_name
+                    else "No Save Bodies feature found in the active part; "
+                    "save_body_as_part makes one."
+                ),
+            )
+        return found
+
+    @staticmethod
+    def _mock_definition(feature: dict[str, Any]) -> dict[str, Any]:
+        import os as _os
+
+        return {
+            **feature,
+            "type": "SaveBodies",
+            "bodies": [
+                {
+                    **b,
+                    "consumed": False,
+                    "exists": _os.path.isfile(b["file_path"]),
+                    "lock_file": None,
+                }
+                for b in feature["bodies"]
+            ],
+            "selections_accessed": False,
+            "settable": [
+                "files",
+                "assembly_path",
+                "consume_body",
+                "copy_custom_properties",
+            ],
+        }
+
+    async def get_save_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock reading the Save Bodies features save_body_as_part added."""
+        found = self._mock_save_bodies(feature_name)
+        if isinstance(found, AdapterResult):
+            return found
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"features": [self._mock_definition(f) for f in found]},
+            execution_time=0.05,
+        )
+
+    async def edit_save_bodies(
+        self, feature_name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock changing a Save Bodies feature's files or options."""
+        import os as _os
+
+        found = self._mock_save_bodies(feature_name)
+        if isinstance(found, AdapterResult):
+            return found
+        (feature,) = found
+        files = dict(changes.get("files") or {})
+        by_body = {b["body"]: b for b in feature["bodies"]}
+        unknown = [name for name in files if name not in by_body]
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Invalid request: {', '.join(unknown)} not in the feature",
+            )
+        for name, path in files.items():
+            target = _os.path.abspath(path)
+            with open(target, "w", encoding="utf-8"):
+                pass
+            by_body[name]["file_path"] = target
+        for key in ("assembly_path", "consume_body", "copy_custom_properties"):
+            if key in changes:
+                feature[key] = changes[key]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": feature["feature"],
+                "changed": sorted(changes),
+                "files_written": {by_body[n]["file_path"]: True for n in files},
+                "definition": self._mock_definition(feature),
+                "closed_documents": [],
+            },
+            execution_time=0.05,
+        )
+
+    async def resplit_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock updating the files the Save Bodies features write."""
+        import os as _os
+
+        found = self._mock_save_bodies(feature_name)
+        if isinstance(found, AdapterResult):
+            return found
+        files = [
+            {
+                "feature": f["feature"],
+                "body": b["body"],
+                "file_path": b["file_path"],
+                "status": "updated" if _os.path.isfile(b["file_path"]) else "missing",
+            }
+            for f in found
+            for b in f["bodies"]
+        ]
+        counts: dict[str, int] = {}
+        for item in files:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"files": files, "counts": counts, "closed_documents": []},
+            execution_time=0.05,
+        )
+
+    async def list_loaded_documents(self) -> AdapterResult[dict[str, Any]]:
+        """Mock listing every loaded document: the open ones and the hidden ones."""
+        if not self._connected:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        active = self._current_model.path if self._current_model else None
+        documents = [
+            {
+                "title": m.name,
+                "path": m.path,
+                "type": m.type,
+                "is_active": m.path == active,
+                "visible": path not in self._hidden_documents,
+                "modified": False,
+                "used_by": [],
+                "leftover": False,
+                "lock_file": None,
+            }
+            for path, m in self._models.items()
+        ]
+        for path, hidden in self._hidden_documents.items():
+            if path in self._models:
+                continue
+            used_by = list(hidden.get("used_by") or [])
+            documents.append(
+                {
+                    "title": hidden["title"],
+                    "path": path,
+                    "type": "Part",
+                    "is_active": False,
+                    "visible": False,
+                    "modified": bool(hidden.get("modified")),
+                    "used_by": used_by,
+                    "leftover": not used_by,
+                    "lock_file": None,
+                }
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "documents": documents,
+                "leftovers": [d["title"] for d in documents if d["leftover"]],
+                "count": len(documents),
+            },
+            execution_time=0.05,
+        )
+
+    async def close_leftover_documents(self) -> AdapterResult[dict[str, Any]]:
+        """Mock closing the hidden documents nothing uses; modified ones stay."""
+        if not self._connected:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
+            )
+        closed, kept = [], []
+        for path, hidden in list(self._hidden_documents.items()):
+            if path in self._models or hidden.get("used_by"):
+                continue
+            entry = {"title": hidden["title"], "path": path}
+            if hidden.get("modified"):
+                kept.append(entry)
+                continue
+            del self._hidden_documents[path]
+            closed.append({**entry, "lock_file": None})
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"closed": closed, "still_loaded": [], "kept_modified": kept},
+            execution_time=0.05,
+        )
+
+    async def list_assembly_parts(self) -> AdapterResult[dict[str, Any]]:
+        """Mock listing the active assembly's parts, once per file.
+
+        Each part is registered as a document the assembly loaded (no window
+        of its own), so ``activate_document`` can reach it by path.
+        """
+        model = self._current_model
+        if model is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if getattr(model, "type", None) != "Assembly":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="list_assembly_parts requires an active assembly document",
+            )
+        parts: dict[str, dict[str, Any]] = {}
+        for name in self._components:
+            path = self._component_files.get(name, "")
+            if not path.lower().endswith(".sldprt"):
+                continue
+            entry = parts.setdefault(
+                path,
+                {
+                    "path": path,
+                    "title": path.replace("\\", "/").rsplit("/", 1)[-1],
+                    "configuration": "Default",
+                    "active_configuration": "Default",
+                    "instances": 0,
+                    "components": [],
+                    "virtual": False,
+                },
+            )
+            entry["instances"] += 1
+            entry["components"].append(name)
+            if path not in self._models:
+                self._models[path] = SolidWorksModel(
+                    path=path,
+                    name=entry["title"],
+                    type="Part",
+                    is_active=False,
+                    configuration="Default",
+                    properties={},
+                )
+                self._hidden_documents.setdefault(
+                    path, {"title": entry["title"], "used_by": [model.name]}
+                )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "assembly": {"title": model.name, "path": model.path},
+                "parts": list(parts.values()),
+            },
+            execution_time=0.05,
         )
 
     # ---- Multibody parts (list_bodies and the body tools) ----------------------

@@ -43,7 +43,8 @@ def _with_open_warning(reply: dict[str, Any], result: Any) -> dict[str, Any]:
     metadata = getattr(result, "metadata", None)
     warning = metadata.get("warning") if isinstance(metadata, dict) else None
     if isinstance(warning, str) and warning:
-        reply["warning"] = warning
+        earlier = reply.get("warning")
+        reply["warning"] = f"{warning} {earlier}" if earlier else warning
     return reply
 
 
@@ -523,12 +524,101 @@ class SaveBodyAsPartInput(CompatInput):
     file_path: str = Field(
         description="Absolute path for the new .sldprt (parent directory must exist)"
     )
+    assembly_path: str | None = Field(
+        default=None,
+        description=(
+            "Also make an assembly of the saved part at this .sldasm path. "
+            "Left out: no assembly (an untitled one SolidWorks makes anyway "
+            "is closed)"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if not self.body_name.strip():
             raise ValueError("body_name is required")
         if not self.file_path.strip():
             raise ValueError("file_path is required")
+        if self.assembly_path is not None and not self.assembly_path.lower().endswith(
+            ".sldasm"
+        ):
+            raise ValueError("assembly_path must end in .sldasm")
+
+
+class ListOpenDocumentsInput(CompatInput):
+    """Input schema for listing open documents.
+
+    Attributes:
+        check_hidden (bool): Also check the documents loaded without a window.
+    """
+
+    check_hidden: bool = Field(
+        default=False,
+        description=(
+            "Also check each document loaded without a window of its own: "
+            "which open documents use it, and whether it is left over from a "
+            "closed assembly (with its ~$ lock file)"
+        ),
+    )
+
+
+class SaveBodiesFeatureInput(CompatInput):
+    """Input schema naming a Save Bodies feature, or all of them.
+
+    Attributes:
+        feature_name (str | None): The feature; None means every one.
+    """
+
+    feature_name: str | None = Field(
+        default=None,
+        description="A Save Bodies feature, e.g. 'Save Bodies1'. Left out: all of them",
+    )
+
+
+class EditSaveBodiesInput(CompatInput):
+    """Input schema for changing a Save Bodies feature.
+
+    Attributes:
+        feature_name (str): The feature.
+        files (dict[str, str] | None): Body name to its new .sldprt path.
+        assembly_path (str | None): The assembly to make, '' for none.
+        consume_body (bool | None): Consume the bodies in the master.
+        copy_custom_properties (bool | None): Copy custom properties.
+    """
+
+    feature_name: str = Field(
+        description="The Save Bodies feature, e.g. 'Save Bodies1'"
+    )
+    files: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Body name to the new .sldprt path its part is saved to; the folder "
+            "must exist and the file must not"
+        ),
+    )
+    assembly_path: str | None = Field(
+        default=None,
+        description="The .sldasm the feature makes of its parts; '' for none",
+    )
+    consume_body: bool | None = Field(
+        default=None, description="Remove the saved bodies from the master part"
+    )
+    copy_custom_properties: bool | None = Field(
+        default=None, description="Copy the master's custom properties to the parts"
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.feature_name.strip():
+            raise ValueError("feature_name is required")
+        if not self.changes():
+            raise ValueError(
+                "give at least one of files, assembly_path, consume_body or "
+                "copy_custom_properties"
+            )
+
+    def changes(self) -> dict[str, Any]:
+        """The changes given, by name."""
+        names = ("files", "assembly_path", "consume_body", "copy_custom_properties")
+        return {n: getattr(self, n) for n in names if getattr(self, n) is not None}
 
 
 async def register_file_management_tools(
@@ -1651,27 +1741,60 @@ async def register_file_management_tools(
         return reply
 
     @mcp.tool()
-    async def list_open_documents() -> dict[str, Any]:
+    async def list_open_documents(
+        input_data: ListOpenDocumentsInput | None = None,
+    ) -> dict[str, Any]:
         """List every document open in SolidWorks and say which one is active.
 
         Use it before `activate_document`, or when tool calls seem to act on the wrong
-        document. Needs: SolidWorks running. Read-only. Returns: `documents` (each with
-        `title`, `path`, `type` and `is_active`) and `count`.
+        document. With `check_hidden` it also finds documents SolidWorks still has
+        loaded with no window, such as parts left by an assembly that was closed (their
+        `~$` lock files stay); `close_model` with `close_leftovers` closes them. Needs:
+        SolidWorks running. Read-only. Returns: `documents` (each with `title`, `path`,
+        `type` and `is_active`; with `check_hidden` also `visible`, `modified`,
+        `used_by`, `leftover` and `lock_file`), `count` and, with `check_hidden`,
+        `leftovers`.
+
+        Args:
+            input_data: Optional. `check_hidden` (default false) adds the checks
+                of documents loaded without a window.
+
+        Returns:
+            dict[str, Any]: The documents.
         """
-        result = await adapter.list_open_documents()
-        require_success(result, context="Failed to list open documents")
-        docs = result.data if isinstance(result.data, list) else []
+        input_data = _coerce_input(ListOpenDocumentsInput, input_data or {})
+        if input_data.check_hidden:
+            require_capability(
+                adapter,
+                "list_loaded_documents",
+                "The active adapter can't check documents loaded without a window.",
+            )
+            loaded = await adapter.list_loaded_documents()
+            require_success(loaded, context="Failed to list loaded documents")
+            data = loaded.data if isinstance(loaded.data, dict) else {}
+            docs = list(data.get("documents") or [])
+            leftovers = list(data.get("leftovers") or [])
+        else:
+            result = await adapter.list_open_documents()
+            require_success(result, context="Failed to list open documents")
+            loaded = result
+            docs = result.data if isinstance(result.data, list) else []
+            leftovers = None
         active = next((d.get("title") for d in docs if d.get("is_active")), None)
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": (
                 f"{len(docs)} document(s) open"
                 + (f"; active: {active}" if active else "")
+                + (f"; {len(leftovers)} left over with no window" if leftovers else "")
             ),
             "documents": docs,
             "count": len(docs),
-            "execution_time": result.execution_time,
+            "execution_time": loaded.execution_time,
         }
+        if leftovers is not None:
+            reply["leftovers"] = leftovers
+        return reply
 
     @mcp.tool()
     async def activate_document(
@@ -1715,14 +1838,19 @@ async def register_file_management_tools(
         """Save one solid body of the active multibody part as a new part file (Insert > Features > Save Bodies).
 
         Use it to split a multibody part into parts, e.g. after `create_extrusion`
-        without merging. Needs: an open, active part with the named body and an existing
-        target folder. Changes: adds a Save Bodies feature to the part and writes the
-        new .sldprt. Returns: `data` with `body`, `file_path`, `feature` and
-        `solid_bodies` (every body name, to correct a wrong one).
+        without merging. To update parts a Save Bodies feature already wrote, use
+        `resplit_bodies`. Needs: an open, active part with the named body and an
+        existing target folder; a file already there is replaced unless SolidWorks has
+        it loaded. Changes: adds a Save Bodies feature to the part and writes the new
+        .sldprt; an untitled assembly SolidWorks opens for it is closed and the part is
+        made active again. The file is read back, so a SolidWorks dialog the server
+        cancelled is only a `warning` when the file holds the body. Returns: `data` with
+        `body`, `file_path`, `feature`, `solid_bodies` (every body name, to correct a
+        wrong one), `file_check` (`holds_body`, `volume_mm3`) and `closed_documents`.
 
         Args:
             input_data: The body. `body_name` and `file_path` (a .sldprt) are
-                required.
+                required; `assembly_path` is optional.
 
         Returns:
             dict[str, Any]: The file written.
@@ -1734,11 +1862,11 @@ async def register_file_management_tools(
         )
         input_data = _coerce_input(SaveBodyAsPartInput, input_data)
         result = await adapter.save_body_as_part(
-            input_data.body_name, input_data.file_path
+            input_data.body_name, input_data.file_path, input_data.assembly_path
         )
         require_success(result, context="Failed to save body as part")
         data = result.data if isinstance(result.data, dict) else {}
-        return {
+        reply = {
             "status": "success",
             "message": (
                 f"Saved body {input_data.body_name} to "
@@ -1747,6 +1875,144 @@ async def register_file_management_tools(
             "data": data,
             "execution_time": result.execution_time,
         }
+        return _with_open_warning(reply, result)
 
-    tool_count = 21  # Total number of registered tools in this module
+    @mcp.tool()
+    async def list_save_bodies(
+        input_data: SaveBodiesFeatureInput | None = None,
+    ) -> dict[str, Any]:
+        """Read the active part's Save Bodies features: each body and the part file it is saved to.
+
+        Use it before `edit_save_bodies` or `resplit_bodies`, to see which files a
+        multibody master writes and what can be changed. Needs: an open, active part.
+        Read-only. Returns: `features`, each with `feature`, `bodies` (`body`,
+        `file_path`, `consumed`, `exists`, `lock_file`), `assembly_path`,
+        `consume_body`, `copy_custom_properties` and `settable` (what
+        `edit_save_bodies` can change).
+
+        Args:
+            input_data: Optional. `feature_name` reads one feature; left out, all.
+
+        Returns:
+            dict[str, Any]: The features.
+        """
+        require_capability(
+            adapter, "get_save_bodies", "The active adapter can't read Save Bodies."
+        )
+        input_data = _coerce_input(SaveBodiesFeatureInput, input_data or {})
+        result = await adapter.get_save_bodies(input_data.feature_name)
+        require_success(result, context="Failed to read Save Bodies")
+        data = result.data if isinstance(result.data, dict) else {}
+        features = list(data.get("features") or [])
+        bodies = sum(len(f.get("bodies") or []) for f in features)
+        return {
+            "status": "success",
+            "message": f"{len(features)} Save Bodies feature(s), {bodies} body file(s)",
+            "features": features,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def edit_save_bodies(input_data: EditSaveBodiesInput) -> dict[str, Any]:
+        """Change a Save Bodies feature: the file a body is saved to, its assembly, or its options.
+
+        Use it to move a derived part to a new file name, or to stop or start the
+        feature making an assembly; `list_save_bodies` shows what it holds. A body's new
+        file must not exist yet. Needs: an open, active part with the feature. Changes:
+        edits the feature and writes each new part file; the old files stay on disk.
+        An untitled assembly SolidWorks opens is closed. Returns: `data` with
+        `changed`, `files_written` (each new path and whether it is on disk),
+        `definition` (the feature read back) and `closed_documents`.
+
+        Args:
+            input_data: The change. `feature_name` and at least one of `files`,
+                `assembly_path`, `consume_body` or `copy_custom_properties` are
+                required.
+
+        Returns:
+            dict[str, Any]: The feature after the change.
+        """
+        require_capability(
+            adapter, "edit_save_bodies", "The active adapter can't edit Save Bodies."
+        )
+        input_data = _coerce_input(EditSaveBodiesInput, input_data)
+        result = await adapter.edit_save_bodies(
+            input_data.feature_name, input_data.changes()
+        )
+        require_success(result, context="Failed to edit Save Bodies")
+        data = result.data if isinstance(result.data, dict) else {}
+        missing = [p for p, ok in (data.get("files_written") or {}).items() if not ok]
+        if missing:
+            raise ToolOperationError(
+                f"SolidWorks changed {input_data.feature_name} but did not write "
+                f"{', '.join(missing)}.",
+                result.execution_time,
+                data,
+            )
+        reply = {
+            "status": "success",
+            "message": f"Changed {input_data.feature_name}: {', '.join(data.get('changed') or [])}",
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+        return _with_open_warning(reply, result)
+
+    @mcp.tool()
+    async def resplit_bodies(
+        input_data: SaveBodiesFeatureInput | None = None,
+    ) -> dict[str, Any]:
+        """Update the part files a multibody master's Save Bodies features already wrote, in place.
+
+        Use it after changing the master, to bring its derived parts up to date without
+        new file names or dialogs; for a new body, use `save_body_as_part`. Each part
+        file is opened silently, rebuilt from the master, saved silently and closed
+        again, so assemblies that use it keep working. A part with unsaved changes is
+        left alone (`kept_modified`). Needs: the master open and active. Changes:
+        overwrites those part files. Returns: `data` with `files` (each `feature`,
+        `body`, `file_path` and `status`: `updated` with `holds_body`, `missing`,
+        `kept_modified` or `failed` with `error`) and `counts`.
+
+        Args:
+            input_data: Optional. `feature_name` updates one feature's files; left
+                out, all of them.
+
+        Returns:
+            dict[str, Any]: Each file's outcome.
+        """
+        require_capability(
+            adapter, "resplit_bodies", "The active adapter can't update Save Bodies."
+        )
+        input_data = _coerce_input(SaveBodiesFeatureInput, input_data or {})
+        result = await adapter.resplit_bodies(input_data.feature_name)
+        require_success(result, context="Failed to update the Save Bodies files")
+        data = result.data if isinstance(result.data, dict) else {}
+        files = list(data.get("files") or [])
+        updated = [f for f in files if f.get("status") == "updated"]
+        if files and not updated:
+            raise ToolOperationError(
+                "No part file was updated; see each file's status in `data`.",
+                result.execution_time,
+                data,
+            )
+        reply = {
+            "status": "success",
+            "message": f"Updated {len(updated)} of {len(files)} part file(s)",
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+        wrong = [f["file_path"] for f in updated if f.get("holds_body") is False]
+        others = [f for f in files if f.get("status") != "updated"]
+        notes = []
+        if wrong:
+            notes.append(
+                f"These files don't hold their body's volume after the update: "
+                f"{', '.join(wrong)}; open one to check."
+            )
+        if others:
+            notes.append(f"{len(others)} file(s) were not updated; see their `status`.")
+        if notes:
+            reply["warning"] = " ".join(notes)
+        return _with_open_warning(reply, result)
+
+    tool_count = 24  # Total number of registered tools in this module
     return tool_count

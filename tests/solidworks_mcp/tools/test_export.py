@@ -36,7 +36,7 @@ class TestExportTools:
     async def test_register_export_tools(self, mcp_server, mock_adapter, mock_config):
         """Test that export tools register correctly."""
         tool_count = await register_export_tools(mcp_server, mock_adapter, mock_config)
-        assert tool_count == 7
+        assert tool_count == 8
 
     @pytest.mark.asyncio
     async def test_export_step_success(self, mcp_server, mock_adapter, mock_config):
