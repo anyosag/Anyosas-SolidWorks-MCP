@@ -123,26 +123,19 @@ async def test_list_save_bodies() -> None:
     assert everything["features"] == features
 
 
-async def test_edit_save_bodies(tmp_path: Path) -> None:
-    new = str(tmp_path / "comb2.sldprt")
+async def test_edit_save_bodies() -> None:
     adapter = SimpleNamespace(
-        edit_save_bodies=AsyncMock(
-            side_effect=[
-                _ok({"changed": ["files"], "files_written": {new: True}}),
-                _ok({"changed": ["files"], "files_written": {new: False}}),
-            ]
-        )
+        edit_save_bodies=AsyncMock(return_value=_ok({"changed": ["consume_body"]}))
     )
     edit = await _tool(adapter, "edit_save_bodies")
-    request = EditSaveBodiesInput(feature_name="Save Bodies1", files={"Comb": new})
+    request = EditSaveBodiesInput(feature_name="Save Bodies1", consume_body=True)
 
     done = await edit(request)
-    unwritten = await edit(request)
 
-    adapter.edit_save_bodies.assert_any_await("Save Bodies1", {"files": {"Comb": new}})
-    assert done["message"] == "Changed Save Bodies1: files"
-    assert unwritten["status"] == "error"
-    assert "did not write" in unwritten["message"]
+    adapter.edit_save_bodies.assert_awaited_once_with(
+        "Save Bodies1", {"consume_body": True}
+    )
+    assert done["message"] == "Changed Save Bodies1: consume_body"
 
 
 async def test_resplit_bodies_reports_each_file() -> None:

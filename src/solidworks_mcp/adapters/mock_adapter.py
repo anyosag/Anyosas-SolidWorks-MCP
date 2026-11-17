@@ -4690,26 +4690,15 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     async def edit_save_bodies(
         self, feature_name: str, changes: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
-        """Mock changing a Save Bodies feature's files or options."""
-        import os as _os
+        """Mock changing a Save Bodies feature's options; files are refused."""
+        from .solidworks.save_bodies import FILES_REFUSED
 
         found = self._mock_save_bodies(feature_name)
         if isinstance(found, AdapterResult):
             return found
         (feature,) = found
-        files = dict(changes.get("files") or {})
-        by_body = {b["body"]: b for b in feature["bodies"]}
-        unknown = [name for name in files if name not in by_body]
-        if unknown:
-            return AdapterResult(
-                status=AdapterResultStatus.ERROR,
-                error=f"Invalid request: {', '.join(unknown)} not in the feature",
-            )
-        for name, path in files.items():
-            target = _os.path.abspath(path)
-            with open(target, "w", encoding="utf-8"):
-                pass
-            by_body[name]["file_path"] = target
+        if "files" in changes:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=FILES_REFUSED)
         for key in ("assembly_path", "consume_body", "copy_custom_properties"):
             if key in changes:
                 feature[key] = changes[key]
@@ -4718,7 +4707,6 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             data={
                 "feature": feature["feature"],
                 "changed": sorted(changes),
-                "files_written": {by_body[n]["file_path"]: True for n in files},
                 "definition": self._mock_definition(feature),
                 "closed_documents": [],
             },

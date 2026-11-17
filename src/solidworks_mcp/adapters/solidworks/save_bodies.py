@@ -15,6 +15,11 @@ The API (SOLIDWORKS 2026 type library, gen_py DISPID 150; Save Bodies has no
   ``ConsumeBody`` and ``CopyCustomProperties`` (get and put). Changing it
   takes ``AccessSelections(model, null)`` (the part rolls back) and then
   ``ModifyDefinition``, or ``ReleaseSelectionAccess`` to leave it unchanged.
+  ``GetSaveBodies`` reads without the access, and names each body as the
+  feature leaves it (``Save Bodies1``, pitfall #51). Inside the access it
+  gave an empty body, and ``RemoveSaveBodies`` / ``AddSaveBodies`` changed
+  nothing, so ``edit_save_bodies`` refuses a new file and checks that each
+  option it sets reads back (pitfall #54).
 
 What The Dipper build (SOLIDWORKS 2026 SP4.1, a 2-part resin dipper split into
 derived parts and a 6-component assembly) met, every call of six:
@@ -29,9 +34,12 @@ derived parts and a 6-component assembly) met, every call of six:
 So :meth:`SolidWorksSaveBodiesMixin.save_body_as_part` checks the file it
 asked for (there, fresh, and holding a solid of the body's volume), closes
 any untitled assembly that appeared during the call, makes the part active
-again, and treats a dialog as a warning when that check passed. What the
-dialog says, and whether another ``AssemName`` or ``CopyCustomProperty``
-avoids it, is for ``tests/scripts/probe_save_bodies.py`` to settle.
+again, and treats a dialog as a warning when that check passed. The probe
+(``tests/scripts/probe_save_bodies.py``, pitfall #54) raised no dialog in
+four runs; ``""`` left the untitled assembly every time, a ``.sldasm``
+path saved one instead, and ``None`` is a type mismatch. SolidWorks also
+opens each written part in a window of its own, which keeps its ``~$``
+lock file; the tool closes it when it opened during the call.
 
 Re-splitting into files that exist updates them in place: each derived part
 is opened silently, rebuilt (it is built from the master's body, which is
@@ -60,17 +68,17 @@ VOLUME_TOLERANCE = 0.001
 #: A file counts as written by the call when its time is no older than this
 #: before the call started (file systems round modification times).
 WRITE_SLACK_SECONDS = 2.0
-#: ``GetTypeName2`` of a Save Bodies feature, lower case. Not measured yet:
-#: the probe prints it; the feature's default name is matched as well.
+#: ``GetTypeName2`` of a Save Bodies feature, lower case: ``CreateAssemFeat``
+#: on SOLIDWORKS 2026 SP4.1; the feature's default name is matched as well.
 SAVE_BODIES_TYPES = frozenset(
-    {"savebodies", "savebody", "savebodyfeature", "saveoutbodies"}
+    {"createassemfeat", "savebodies", "savebody", "savebodyfeature", "saveoutbodies"}
 )
 SAVE_BODIES_NAME = "save bodies"
 #: ``swOpenDocOptions_e``: Silent, and Silent | ReadOnly.
 OPEN_SILENT = 1
 OPEN_SILENT_READ_ONLY = 3
 #: What ``edit_save_bodies`` can change in a Save Bodies feature.
-SETTABLE = ("files", "assembly_path", "consume_body", "copy_custom_properties")
+SETTABLE = ("assembly_path", "consume_body", "copy_custom_properties")
 
 _DATA_METHODS = (
     "GetSaveBodies",
@@ -206,22 +214,37 @@ def document_keys(adapter: Any) -> set[str]:
     return {d.key for d in _loaded.loaded_documents(adapter)}
 
 
-def close_stray_assemblies(adapter: Any, before: set[str]) -> list[str]:
-    """Close the untitled assemblies that appeared since ``before``.
+def close_stray_assemblies(
+    adapter: Any,
+    before: set[str],
+    written: tuple[str, ...] = (),
+    assemblies: bool = True,
+) -> list[str]:
+    """Close the untitled assemblies, and the derived parts, that appeared since ``before``.
 
     An untitled assembly has no file, and this call made it, so closing it
-    loses nothing of the user's. One saved to a path stays.
+    loses nothing of the user's. One saved to a path stays. ``written`` are
+    the part files the call wrote: SolidWorks opens each in a window of its
+    own (SOLIDWORKS 2026 SP4.1), which keeps its ``~$`` lock file until it
+    is closed; one that appeared during the call, unmodified, is closed too.
 
     Returns:
         list[str]: The titles closed.
     """
+    keys = {_loaded.normalize(path) for path in written}
     closed: list[str] = []
     for document in _loaded.loaded_documents(adapter):
-        if (
-            document.key in before
-            or document.type != _loaded.DOC_ASSEMBLY
-            or document.path
-        ):
+        if document.key in before:
+            continue
+        stray = (
+            assemblies and document.type == _loaded.DOC_ASSEMBLY and not document.path
+        )
+        derived = (
+            document.type == _loaded.DOC_PART
+            and document.key in keys
+            and document.modified is False
+        )
+        if not (stray or derived):
             continue
         title = document.title
         adapter._attempt(lambda t=title: adapter.swApp.CloseDoc(t))
@@ -378,43 +401,45 @@ def read_definition(adapter: Any, model: Any, feature: Any) -> dict[str, Any]:
     }
 
 
-def _check_new_path(path: str) -> str:
-    target = os.path.abspath(path)
-    if not target.lower().endswith(".sldprt"):
-        raise InvalidSaveBodiesRequest(f"{path} is not a part file (.sldprt).")
-    if not os.path.isdir(os.path.dirname(target)):
-        raise InvalidSaveBodiesRequest(
-            f"the folder of {target} does not exist; create it first."
-        )
-    if os.path.exists(target):
-        raise InvalidSaveBodiesRequest(
-            f"{target} already exists; give a new file name, or use "
-            "resplit_bodies to update the files the feature already writes."
-        )
-    return target
+#: The definition's field for each option ``edit_save_bodies`` sets.
+_OPTION_FIELDS = {
+    "assembly_path": lambda v: str(v or ""),
+    "consume_body": bool,
+    "copy_custom_properties": bool,
+}
+
+
+def _unapplied(after: dict[str, Any], changes: dict[str, Any]) -> list[str]:
+    """The options the definition read back doesn't show as asked, in words."""
+    return [
+        f"{key} reads {after.get(key)!r}"
+        for key, convert in _OPTION_FIELDS.items()
+        if key in changes and convert(after.get(key)) != convert(changes[key])
+    ]
+
+
+#: Why ``edit_save_bodies`` won't change the file a body is saved to.
+FILES_REFUSED = (
+    "Invalid request: changing the file a body is saved to isn't supported. On "
+    "SOLIDWORKS 2026 SP4.1, RemoveSaveBodies and AddSaveBodies returned True "
+    "and changed nothing: no file was written and the feature kept its file. "
+    "Delete the Save Bodies feature (delete_feature) and call "
+    "save_body_as_part with the new path."
+)
 
 
 def edit_definition(
     adapter: Any, model: Any, feature: Any, changes: dict[str, Any]
 ) -> dict[str, Any]:
-    """Change a Save Bodies feature's files or options, then read it back.
+    """Change a Save Bodies feature's options, then read it back and check them.
 
-    ``changes`` may hold ``files`` (body name -> new ``.sldprt`` path),
-    ``assembly_path`` (``""`` for none), ``consume_body`` and
-    ``copy_custom_properties``. A body's file changes by removing the body
-    and adding it again with the new path; ``AddSaveBodies`` writes it.
+    ``changes`` may hold ``assembly_path`` (``""`` for none), ``consume_body``
+    and ``copy_custom_properties``.
 
     Raises:
-        InvalidSaveBodiesRequest: An unknown body, or a path that can't be used.
-        Exception: SolidWorks refused the change.
+        Exception: SolidWorks refused the change, or the feature doesn't read
+            back as asked.
     """
-    from .feature_editing import dispatch_array
-    from .io import _variant_array, pythoncom
-
-    files = {
-        str(body): _check_new_path(str(path))
-        for body, path in (changes.get("files") or {}).items()
-    }
     data = _definition(adapter, feature)
     null = _null()
     if not data.AccessSelections(model, null):
@@ -422,41 +447,30 @@ def edit_definition(
             "SolidWorks would not open the Save Bodies feature for editing "
             "(AccessSelections returned False)"
         )
-    try:
-        by_name = {name: body for body, name, _p, _c in entries(adapter, data)}
-        unknown = [name for name in files if name not in by_name]
-        if unknown:
-            raise InvalidSaveBodiesRequest(
-                f"{', '.join(unknown)} not in the feature; its bodies are "
-                + (", ".join(by_name) or "none")
-                + "."
-            )
-        for name, path in files.items():
-            body = dispatch_array([by_name[name]])
-            data.RemoveSaveBodies(body)
-            bstr = int(getattr(pythoncom, "VT_BSTR", 8))
-            if not data.AddSaveBodies(body, _variant_array(bstr, [path])):
-                raise Exception(f"SolidWorks would not save {name!r} to {path}")
-        if "assembly_path" in changes:
-            data.AssemblyPath = str(changes["assembly_path"] or "")
-        if "consume_body" in changes:
-            data.ConsumeBody = bool(changes["consume_body"])
-        if "copy_custom_properties" in changes:
-            data.CopyCustomProperties = bool(changes["copy_custom_properties"])
-        modified = feature.ModifyDefinition(data, model, null)
-    except Exception:
-        adapter._attempt(lambda: data.ReleaseSelectionAccess())
-        raise
+    if "assembly_path" in changes:
+        data.AssemblyPath = str(changes["assembly_path"] or "")
+    if "consume_body" in changes:
+        data.ConsumeBody = bool(changes["consume_body"])
+    if "copy_custom_properties" in changes:
+        data.CopyCustomProperties = bool(changes["copy_custom_properties"])
+    modified = adapter._attempt(lambda: feature.ModifyDefinition(data, model, null))
     if not modified:
+        adapter._attempt(lambda: data.ReleaseSelectionAccess())
         raise Exception(
             "SolidWorks refused the change (ModifyDefinition returned False)"
         )
     adapter._attempt(lambda: adapter._get_attr_or_call(model, "EditRebuild3"))
     after = read_definition(adapter, model, feature)
+    unapplied = _unapplied(after, changes)
+    if unapplied:
+        raise Exception(
+            "SolidWorks accepted the change but the feature reads otherwise: "
+            + "; ".join(unapplied)
+            + "."
+        )
     return {
         "feature": after["feature"],
         "changed": sorted(changes),
-        "files_written": {path: os.path.isfile(path) for path in files.values()},
         "definition": after,
     }
 
@@ -595,13 +609,15 @@ class SolidWorksSaveBodiesMixin:
         work: Callable[[Any, Any], dict[str, Any]],
         what: str,
         close_strays: bool = True,
+        written: tuple[str, ...] = (),
     ) -> AdapterResult[dict[str, Any]]:
         """Run ``work(model, holder)`` on the active part as one operation.
 
         Untitled assemblies that appear during it are closed (unless an
-        assembly was asked for: ``close_strays`` False) and the part is made
-        active again, whether it worked or not. A dialog the watchdog
-        cancelled leaves a checked result standing, with a warning.
+        assembly was asked for: ``close_strays`` False), and so are the
+        ``written`` part files SolidWorks opened, and the part is made active
+        again, whether it worked or not. A dialog the watchdog cancelled
+        leaves a checked result standing, with a warning.
         """
         adapter = self._adapter(self)
         holder: dict[str, Any] = {}
@@ -614,8 +630,10 @@ class SolidWorksSaveBodiesMixin:
             try:
                 data = work(model, holder)
             finally:
-                if close_strays:
-                    closed = close_stray_assemblies(adapter, before)
+                if close_strays or written:
+                    closed = close_stray_assemblies(
+                        adapter, before, written, assemblies=close_strays
+                    )
                 reactivate(adapter, model, title)
             data["closed_documents"] = closed
             holder["data"] = data
@@ -737,6 +755,7 @@ class SolidWorksSaveBodiesMixin:
             _save,
             "The file was written and holds the body, so the save worked.",
             close_strays=assembly is None,
+            written=(target,),
         )
 
     async def get_save_bodies(
@@ -766,7 +785,7 @@ class SolidWorksSaveBodiesMixin:
     async def edit_save_bodies(
         self, feature_name: str, changes: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
-        """Change a Save Bodies feature's output files or options.
+        """Change a Save Bodies feature's options (not the files: ``FILES_REFUSED``).
 
         Args:
             feature_name: The feature, e.g. ``Save Bodies1``.
@@ -774,11 +793,13 @@ class SolidWorksSaveBodiesMixin:
 
         Returns:
             AdapterResult[dict[str, Any]]: ``feature``, ``changed``,
-            ``files_written``, ``definition`` and ``closed_documents``.
+            ``definition`` and ``closed_documents``.
         """
         refused = self._part_or_error()
         if refused is not None:
             return refused
+        if "files" in changes:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=FILES_REFUSED)
         unknown = sorted(set(changes) - set(SETTABLE))
         if unknown or not changes:
             return AdapterResult(

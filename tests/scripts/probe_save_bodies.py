@@ -269,20 +269,65 @@ async def step_definition(adapter: PyWin32Adapter) -> dict[str, Any]:
 
 
 async def step_edit(adapter: PyWin32Adapter, master: Path) -> dict[str, Any]:
-    """Settles Remove/AddSaveBodies + ModifyDefinition, and the file AddSaveBodies writes."""
+    """Settles that a new file is refused untouched, and which options stick.
+
+    The first live run moved the body with RemoveSaveBodies + AddSaveBodies:
+    both returned True and nothing changed. ``files`` is refused now; the
+    body volume the feature saves is read before and after. Each option is
+    then set alone through the tool (AccessSelections, ModifyDefinition),
+    and raw without AccessSelections, and read back.
+    """
+
+    def definition() -> tuple[Any, Any]:
+        model = adapter.currentModel
+        (feature,) = sb.find_feature(adapter, model, "Save Bodies1")
+        return feature, sb._definition(adapter, feature)
+
+    def saved_volumes() -> list[Any]:
+        _feature, data = definition()
+        return [
+            sb._mm3(sb.body_volume_m3(adapter, body))
+            for body, _n, _p, _c in sb.entries(adapter, data)
+        ]
+
     listed = await adapter.get_save_bodies("Save Bodies1")
     body = listed.data["features"][0]["bodies"][0]["body"]
     new = master.with_name("ps_tool_comb_v2.SLDPRT")
-    before = set(_documents(adapter))
-    result = await adapter.edit_save_bodies("Save Bodies1", {"files": {body: str(new)}})
-    return {
-        "status": result.status.value,
-        "error": result.error,
-        "data": result.data,
-        "warning": (result.metadata or {}).get("warning"),
-        "new_documents": [v for k, v in _documents(adapter).items() if k not in before],
+    before = saved_volumes()
+    refused = await adapter.edit_save_bodies(
+        "Save Bodies1", {"files": {body: str(new)}}
+    )
+    out: dict[str, Any] = {
+        "files_refused": refused.error,
         "file": _file(new),
+        "volumes_before_after": [before, saved_volumes()],
     }
+    for key, value in (
+        ("copy_custom_properties", True),
+        ("consume_body", True),
+        ("assembly_path", str(master.with_name("ps_edit.SLDASM"))),
+    ):
+        result = await adapter.edit_save_bodies("Save Bodies1", {key: value})
+        out[f"tool {key}"] = {"status": result.status.value, "error": result.error}
+    # Put them back, and the part active, for the steps after.
+    await adapter.edit_save_bodies(
+        "Save Bodies1", {"consume_body": False, "assembly_path": ""}
+    )
+    await adapter.activate_document(master.with_name("ps_tool.SLDPRT").stem)
+
+    def raw() -> dict[str, Any]:
+        model = adapter.currentModel
+        feature, data = definition()
+        data.CopyCustomProperties = True
+        modified = feature.ModifyDefinition(data, model, sb._null())
+        _f, again = definition()
+        return {"modified": modified, "reads": again.CopyCustomProperties}
+
+    out["raw without access"] = adapter._handle_com_operation(
+        "probe_raw_edit", raw
+    ).data
+    out["expected"] = "files refused, no file, the same volumes; each option read back"
+    return out
 
 
 async def step_resplit(adapter: PyWin32Adapter) -> dict[str, Any]:

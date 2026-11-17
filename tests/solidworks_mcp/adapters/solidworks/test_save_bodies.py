@@ -194,14 +194,15 @@ async def test_saves_the_body_and_closes_the_untitled_assembly(tmp_path: Path) -
     data = result.data
     assert data["feature"] == "Save Bodies1"
     assert data["solid_bodies"] == ["Comb", "Stand"]
-    assert data["closed_documents"] == ["Assem3"]
+    # The derived part SolidWorks opened, and the untitled assembly.
+    assert data["closed_documents"] == ["comb.sldprt", "Assem3"]
     assert data["replaced"] is False
     check = data["file_check"]
     assert check["holds_body"] is True
     assert check["volume_mm3"] == check["body_volume_mm3"] == 2000.0
     assert check["written_now"] is True
     assert manager.calls == [("", False, True)]
-    assert app.closed == ["Assem3"]
+    assert app.closed == ["comb.sldprt", "Assem3"]
     assert app.active is master and adapter.currentModel is master
     assert result.metadata is None
 
@@ -285,10 +286,11 @@ async def test_an_existing_file_is_replaced_unless_it_is_loaded(tmp_path: Path) 
     target.write_bytes(b"old")
 
     replaced = await _Adapter(app, master).save_body_as_part("Comb", str(target))
+    app.add("comb.sldprt", str(target))  # the user opens it
     loaded = await _Adapter(app, master).save_body_as_part("Comb", str(target))
 
     assert replaced.is_success and replaced.data["replaced"] is True
-    assert replaced.data["closed_documents"] == []
+    assert replaced.data["closed_documents"] == ["comb.sldprt"]
     assert "is loaded in SolidWorks as 'comb.sldprt'" in (loaded.error or "")
     assert "Invalid request" in (loaded.error or "")
 
@@ -334,7 +336,26 @@ async def test_an_assembly_asked_for_stays_open(tmp_path: Path) -> None:
 
     assert result.data["assembly_path"] == assembly
     assert manager.calls == [(assembly, False, True)]
-    assert app.closed == []
+    assert app.closed == ["comb.sldprt"]  # the assembly stays
+
+
+async def test_a_derived_part_with_changes_or_open_before_stays_open(
+    tmp_path: Path,
+) -> None:
+    app, master, manager = _master(tmp_path)
+    manager.stray_assembly = False
+    target = tmp_path / "comb.sldprt"
+
+    def changed(*args: object, **kwargs: object) -> object:
+        document = FakeApp.add(app, *args, **kwargs)
+        document.modified = True
+        return document
+
+    app.add = changed  # type: ignore[method-assign]
+    result = await _Adapter(app, master).save_body_as_part("Comb", str(target))
+
+    assert result.data["closed_documents"] == []
+    assert sb.close_stray_assemblies(_Adapter(app, master), set(), (str(target),)) == []
 
 
 def test_volume_helpers() -> None:
@@ -495,14 +516,12 @@ def test_definitions_read_back_as_a_tuple_or_not_at_all() -> None:
 # ---- edit_save_bodies ------------------------------------------------------------
 
 
-async def test_edit_moves_a_body_to_a_new_file_and_sets_options(tmp_path: Path) -> None:
+async def test_edit_sets_the_options_and_reads_them_back(tmp_path: Path) -> None:
     app, master, data = _with_features(tmp_path)
-    new = str(tmp_path / "comb_v2.sldprt")
 
     result = await _Adapter(app, master).edit_save_bodies(
         "Save Bodies1",
         {
-            "files": {"Comb": new},
             "assembly_path": "",
             "consume_body": True,
             "copy_custom_properties": False,
@@ -510,18 +529,57 @@ async def test_edit_moves_a_body_to_a_new_file_and_sets_options(tmp_path: Path) 
     )
 
     assert result.is_success, result.error
-    assert result.data["files_written"] == {new: True}
     assert result.data["changed"] == [
         "assembly_path",
         "consume_body",
         "copy_custom_properties",
-        "files",
     ]
-    assert data.calls == ["remove", "add"]
     assert (data.ConsumeBody, data.CopyCustomProperties) == (True, False)
-    paths = [b["file_path"] for b in result.data["definition"]["bodies"]]
-    assert paths == [str(tmp_path / "stand.sldprt"), new]
+    assert result.data["definition"]["consume_body"] is True
+    assert data.calls == []  # no body removed or added
     assert master.rebuilds == 1
+
+
+async def test_a_new_file_for_a_body_is_refused_before_anything_changes(
+    tmp_path: Path,
+) -> None:
+    app, master, data = _with_features(tmp_path)
+
+    result = await _Adapter(app, master).edit_save_bodies(
+        "Save Bodies1", {"files": {"Comb": str(tmp_path / "comb_v2.sldprt")}}
+    )
+
+    assert result.error == sb.FILES_REFUSED
+    assert "delete_feature" in sb.FILES_REFUSED
+    assert data.calls == [] and not data.accessed
+
+
+async def test_an_option_solidworks_ignores_is_an_error(tmp_path: Path) -> None:
+    app, master, data = _with_features(tmp_path)
+
+    class Stubborn(type(data)):  # type: ignore[misc]
+        def __setattr__(self, name: str, value: Any) -> None:
+            if name == "ConsumeBody" and hasattr(self, "ConsumeBody"):
+                return  # SolidWorks keeps its own value
+            super().__setattr__(name, value)
+
+    data.__class__ = Stubborn
+    result = await _Adapter(app, master).edit_save_bodies(
+        "Save Bodies1", {"consume_body": True}
+    )
+
+    assert "the feature reads otherwise: consume_body reads False" in (
+        result.error or ""
+    )
+
+
+def test_unapplied_options_are_named() -> None:
+    after = {"assembly_path": "", "consume_body": False}
+
+    assert sb._unapplied(after, {"consume_body": False}) == []
+    assert sb._unapplied(
+        after, {"consume_body": True, "assembly_path": "C:/r.sldasm"}
+    ) == ["assembly_path reads ''", "consume_body reads False"]
 
 
 @pytest.mark.parametrize(
@@ -529,16 +587,11 @@ async def test_edit_moves_a_body_to_a_new_file_and_sets_options(tmp_path: Path) 
     [
         ({}, "give at least one of"),
         ({"radius": 1}, "not radius"),
-        ({"files": {"Lid": "x.sldprt"}}, "Lid not in the feature"),
-        ({"files": {"Comb": "x.step"}}, "is not a part file"),
-        ({"files": {"Comb": "missing/x.sldprt"}}, "does not exist; create it"),
-        ({"files": {"Comb": "comb.sldprt"}}, "already exists"),
     ],
 )
 async def test_edit_refuses_what_cannot_be_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changes: dict, message: str
+    tmp_path: Path, changes: dict, message: str
 ) -> None:
-    monkeypatch.chdir(tmp_path)
     app, master, data = _with_features(tmp_path)
 
     result = await _Adapter(app, master).edit_save_bodies("Save Bodies1", changes)
@@ -550,20 +603,16 @@ async def test_edit_refuses_what_cannot_be_used(
 async def test_edit_failures_release_the_feature(tmp_path: Path) -> None:
     app, master, data = _with_features(tmp_path)
     adapter = _Adapter(app, master)
-    new = {"files": {"Comb": str(tmp_path / "n.sldprt")}}
 
     data.grant_access = False
-    refused = await adapter.edit_save_bodies("Save Bodies1", new)
-    data.grant_access, data.add_works = True, False
-    not_added = await adapter.edit_save_bodies("Save Bodies1", new)
-    data.add_works = True
+    refused = await adapter.edit_save_bodies("Save Bodies1", {"consume_body": True})
+    data.grant_access = True
     master.features[1].modify_works = False
     not_modified = await adapter.edit_save_bodies(
         "Save Bodies1", {"consume_body": True}
     )
 
     assert "AccessSelections returned False" in (refused.error or "")
-    assert "would not save 'Comb'" in (not_added.error or "")
     assert "ModifyDefinition returned False" in (not_modified.error or "")
     assert data.released == 1
 

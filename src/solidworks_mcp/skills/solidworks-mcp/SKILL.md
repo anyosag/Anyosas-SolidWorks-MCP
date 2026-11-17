@@ -161,7 +161,9 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
 `save_body_as_part` writes one body to its own part file (Save Bodies) and
 reads the file back. After changing the master, `resplit_bodies` updates
 those files in place; `list_save_bodies` shows which file each body goes
-to, and `edit_save_bodies` changes it. `export_assembly_parts_stl` writes
+to, and `edit_save_bodies` changes the feature's assembly and options (to
+move a body to another file, delete the feature and save it again).
+`export_assembly_parts_stl` writes
 one STL per part of an assembly.
 
 ## Long sessions

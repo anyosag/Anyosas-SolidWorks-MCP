@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
+from solidworks_mcp.adapters.solidworks.save_bodies import FILES_REFUSED
 
 
 async def _part() -> MockSolidWorksAdapter:
@@ -22,15 +23,12 @@ async def test_save_bodies_round_trip(tmp_path: Path) -> None:
     saved = await adapter.save_body_as_part("Comb", str(comb), "C:/a.SLDASM")
     listed = await adapter.get_save_bodies()
     named = await adapter.get_save_bodies("Save Bodies1")
-    moved = await adapter.edit_save_bodies(
-        "Save Bodies1",
-        {"files": {"Comb": str(tmp_path / "comb2.sldprt")}, "consume_body": True},
-    )
-    unknown = await adapter.edit_save_bodies(
-        "Save Bodies1", {"files": {"Lid": str(tmp_path / "x.sldprt")}}
+    changed = await adapter.edit_save_bodies("Save Bodies1", {"consume_body": True})
+    files = await adapter.edit_save_bodies(
+        "Save Bodies1", {"files": {"Comb": str(tmp_path / "comb2.sldprt")}}
     )
     resplit = await adapter.resplit_bodies()
-    (tmp_path / "comb2.sldprt").unlink()
+    comb.unlink()
     missing = await adapter.resplit_bodies("Save Bodies1")
 
     assert saved.data["replaced"] is True
@@ -39,9 +37,8 @@ async def test_save_bodies_round_trip(tmp_path: Path) -> None:
     assert feature["assembly_path"] == "C:/a.SLDASM"
     assert feature["bodies"][0]["exists"] is True
     assert named.is_success
-    assert moved.data["files_written"] == {str(tmp_path / "comb2.sldprt"): True}
-    assert moved.data["definition"]["consume_body"] is True
-    assert "Lid not in the feature" in (unknown.error or "")
+    assert changed.data["definition"]["consume_body"] is True
+    assert files.error == FILES_REFUSED
     assert resplit.data["counts"] == {"updated": 1}
     assert missing.data["counts"] == {"missing": 1}
 

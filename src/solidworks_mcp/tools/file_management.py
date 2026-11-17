@@ -591,8 +591,8 @@ class EditSaveBodiesInput(CompatInput):
     files: dict[str, str] | None = Field(
         default=None,
         description=(
-            "Body name to the new .sldprt path its part is saved to; the folder "
-            "must exist and the file must not"
+            "Not supported: SolidWorks ignores a body's new file, so this is "
+            "refused; delete the feature and use save_body_as_part instead"
         ),
     )
     assembly_path: str | None = Field(
@@ -1920,15 +1920,16 @@ async def register_file_management_tools(
 
     @mcp.tool()
     async def edit_save_bodies(input_data: EditSaveBodiesInput) -> dict[str, Any]:
-        """Change a Save Bodies feature: the file a body is saved to, its assembly, or its options.
+        """Change a Save Bodies feature's options: its assembly, consuming bodies, properties.
 
-        Use it to move a derived part to a new file name, or to stop or start the
-        feature making an assembly; `list_save_bodies` shows what it holds. A body's new
-        file must not exist yet. Needs: an open, active part with the feature. Changes:
-        edits the feature and writes each new part file; the old files stay on disk.
-        An untitled assembly SolidWorks opens is closed. Returns: `data` with
-        `changed`, `files_written` (each new path and whether it is on disk),
-        `definition` (the feature read back) and `closed_documents`.
+        Use it to stop or start the feature making an assembly, or to change whether
+        it consumes its bodies or copies custom properties; `list_save_bodies` shows
+        what it holds. `files` (a body's new file) is refused: SolidWorks ignored that
+        change, so delete the feature and call `save_body_as_part` with the new path.
+        Needs: an open, active part with the feature. Changes: edits the feature and
+        checks it reads back as asked. An untitled assembly SolidWorks opens is
+        closed. Returns: `data` with `changed`, `definition` (the feature read back)
+        and `closed_documents`.
 
         Args:
             input_data: The change. `feature_name` and at least one of `files`,
@@ -1947,14 +1948,6 @@ async def register_file_management_tools(
         )
         require_success(result, context="Failed to edit Save Bodies")
         data = result.data if isinstance(result.data, dict) else {}
-        missing = [p for p, ok in (data.get("files_written") or {}).items() if not ok]
-        if missing:
-            raise ToolOperationError(
-                f"SolidWorks changed {input_data.feature_name} but did not write "
-                f"{', '.join(missing)}.",
-                result.execution_time,
-                data,
-            )
         reply = {
             "status": "success",
             "message": f"Changed {input_data.feature_name}: {', '.join(data.get('changed') or [])}",

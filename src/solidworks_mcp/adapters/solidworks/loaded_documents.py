@@ -6,9 +6,8 @@ stayed beside them, and ``list_open_documents`` gave the tools no way to see or
 close them. This module:
 
 * lists every loaded document, from ``ISldWorks.GetDocuments`` and the
-  ``GetFirstDocument`` / ``IModelDoc2.GetNext`` walk together (which of the
-  two lists a part left by a closed assembly is for
-  ``tests/scripts/probe_save_bodies.py`` to settle), with ``Visible``
+  ``GetFirstDocument`` / ``IModelDoc2.GetNext`` walk together (they listed
+  the same eleven documents on SOLIDWORKS 2026 SP4.1), with ``Visible``
   (``False``: no window of its own, pitfall #44), ``GetSaveFlag`` and the
   ``~$`` lock file;
 * says which open documents use each one: an assembly's components at every
