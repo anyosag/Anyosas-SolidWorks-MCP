@@ -37,6 +37,8 @@ from .solidworks import (
     limits,
     saving,
     stl_settings,
+    view_matrix,
+    view_orientation,
     visibility,
     zoom_box,
 )
@@ -3217,7 +3219,7 @@ class PyWin32Adapter(
 
     def _set_view_orientation(
         self, target_doc: Any, orientation: str, view_const: int
-    ) -> None:
+    ) -> bool:
         """Set SolidWorks view orientation with graceful fallback.
 
         ShowNamedView2 can fail for assemblies with lightweight components,
@@ -3229,7 +3231,7 @@ class PyWin32Adapter(
             view_const: SolidWorks view constant (1-9)
 
         Returns:
-            None (operation always succeeds or fails silently)
+            bool: Whether ShowNamedView2 ran; False (logged) keeps the current view.
         """
         try:
             target_doc.ShowNamedView2("", view_const)
@@ -3240,6 +3242,8 @@ class PyWin32Adapter(
                 orientation,
                 exc,
             )
+            return False
+        return True
 
     def _zoom_to_box(self, target_doc: Any, box_mm: list[float]) -> list[float] | None:
         """Zoom the view to a box of the model, two corners in mm (``ViewZoomTo2``).
@@ -3452,7 +3456,15 @@ class PyWin32Adapter(
         that plane for this picture only (``section_view``): the plane is found
         before anything changes, and the section is taken off again in the
         ``finally``, the picture taken or not. The reply's ``section`` is the
-        section as applied, with ``removed``.
+        section as applied, with ``removed``. view_direction (list | None):
+        look from this model direction, with ``up`` (or ``up_axis``) shown
+        upward, through ``IModelView.Orientation3`` (``view_orientation``).
+        up_axis ("y" | "z"): "z" turns a standard view so the model's +Z is
+        up (``view_orientation.turn_z_up``). hide_components (list | None):
+        components of an assembly hidden for this picture only
+        (``component_visibility``), found before anything changes and shown
+        again in the ``finally``; the reply's ``hidden_components`` says
+        whether each was ``restored``.
 
         Args:
             payload (dict): The payload value.
@@ -3477,7 +3489,9 @@ class PyWin32Adapter(
         width = int(payload.get("width", 1280))
         height = int(payload.get("height", 720))
         zoom = payload.get("zoom_to_fit")
-        zoom_to_fit = orientation != "current" if zoom is None else bool(zoom)
+        # A turned view (named or from a direction) zooms to fit by default.
+        turned = orientation != "current" or payload.get("view_direction") is not None
+        zoom_to_fit = turned if zoom is None else bool(zoom)
         hide = list(payload.get("hide") or [])
         zoom_box = payload.get("zoom_box_mm")
         # A section view for this picture only: {plane, offset_mm, reverse}.
@@ -3488,19 +3502,19 @@ class PyWin32Adapter(
                 status=AdapterResultStatus.ERROR,
                 error=f"Unknown display type(s) to hide: {', '.join(unknown)}",
             )
+        # A view from a direction is computed here; a Z-up standard view is
+        # read from SolidWorks once it shows the view. Bad input takes no picture.
+        up_axis = str(payload.get("up_axis") or "y").lower()
+        try:
+            custom_rows = view_matrix.picture_rows(
+                orientation, payload.get("view_direction"), payload.get("up"), up_axis
+            )
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        hide_components = list(dict.fromkeys(payload.get("hide_components") or []))
 
-        # Map orientation names to SolidWorks swStandardViews_e constants
-        _VIEW_CONSTANTS = {
-            "front": 1,  # swFrontView
-            "back": 2,  # swBackView
-            "left": 3,  # swLeftView
-            "right": 4,  # swRightView
-            "top": 5,  # swTopView
-            "bottom": 6,  # swBottomView
-            "isometric": 7,  # swIsometricView
-            "dimetric": 8,  # swDimetricView
-            "trimetric": 9,  # swTriMetricView
-        }
+        # swStandardViews_e for ShowNamedView2, by orientation name.
+        _VIEW_CONSTANTS = view_matrix.STANDARD_VIEW_IDS
 
         def _screenshot_operation() -> dict:
             """Build internal screenshot operation.
@@ -3514,7 +3528,7 @@ class PyWin32Adapter(
 
             import os as _os
 
-            from .solidworks import section_view
+            from .solidworks import component_visibility, section_view
 
             resolved = _os.path.abspath(file_path)
             _os.makedirs(_os.path.dirname(resolved), exist_ok=True)
@@ -3527,6 +3541,20 @@ class PyWin32Adapter(
                 )
                 if section
                 else None
+            )
+            # ... nor does a component that isn't there, or a part.
+            if hide_components and (
+                self._attempt(lambda: self._get_attr_or_call(target_doc, "GetType"))
+                != 2  # swDocASSEMBLY
+            ):
+                raise LookupError(
+                    "hide_components needs an assembly; the document to picture "
+                    "isn't one, so no picture was taken."
+                )
+            to_hide = (
+                component_visibility.find(self, target_doc, hide_components)
+                if hide_components
+                else {}
             )
 
             # Activate target_doc's own MDI window before capturing. Without
@@ -3555,11 +3583,34 @@ class PyWin32Adapter(
             # The section as applied; the finally below takes it off again and
             # records that in this same dict, which the reply carries.
             applied_section: dict[str, Any] | None = None
+            # Components hidden so far, one at a time, for the finally to show.
+            hidden_now: list[dict[str, Any]] = []
+            hidden_components: list[dict[str, Any]] = []
+            view_turned: dict[str, Any] | None = None
             try:
-                # Set view orientation if requested
-                if orientation != "current" and orientation in _VIEW_CONSTANTS:
+                if to_hide:
+                    component_visibility.apply(
+                        self, target_doc, to_hide, False, hidden_now
+                    )
+
+                # Set view orientation if requested: a direction to look from,
+                # or a standard view, then turned Z-up when asked.
+                if custom_rows is not None:
+                    view_turned = view_orientation.turn(self, target_doc, custom_rows)
+                elif orientation != "current" and orientation in _VIEW_CONSTANTS:
                     view_const = _VIEW_CONSTANTS[orientation]
-                    self._set_view_orientation(target_doc, orientation, view_const)
+                    shown = self._set_view_orientation(
+                        target_doc, orientation, view_const
+                    )
+                    if up_axis == "z":
+                        # Turning whatever view is left would picture the
+                        # model from a side nobody asked for.
+                        if not shown:
+                            raise RuntimeError(
+                                f"SolidWorks didn't show the {orientation} view, "
+                                "so it couldn't be turned Z-up; no picture was taken."
+                            )
+                        view_turned = view_orientation.turn_z_up(self, target_doc)
 
                 if section_plane is not None:
                     applied_section = section_view.apply(
@@ -3603,11 +3654,15 @@ class PyWin32Adapter(
                     or "PNG",
                     "dimensions": f"{size[0]}x{size[1]}" if size else "unknown",
                     "requested_dimensions": f"{width}x{height}",
-                    "view": orientation,
+                    "view": "custom" if custom_rows is not None else orientation,
+                    "up_axis": up_axis,
+                    "view_axes": view_turned["axes"] if view_turned else None,
                     "zoomed_to_fit": zoomed,
                     "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
                     "zoom_box_view_mm": view_box,
                     "hidden": sorted(hidden),
+                    # Filled by the finally, which runs before the reply leaves.
+                    "hidden_components": hidden_components,
                     "section": applied_section,
                     "window_state": self._window_state(),
                 }
@@ -3619,6 +3674,12 @@ class PyWin32Adapter(
                             "[export_image] The section on {} could not be removed",
                             applied_section["plane"],
                         )
+                if hidden_now:
+                    hidden_components.extend(
+                        component_visibility.restore(
+                            self, target_doc, to_hide, hidden_now
+                        )
+                    )
                 if hidden:
                     visibility.restore_display_types(self, hidden, model=target_doc)
 

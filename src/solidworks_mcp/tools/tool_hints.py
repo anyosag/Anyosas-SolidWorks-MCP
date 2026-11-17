@@ -242,6 +242,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "insert_component": _adds("Insert Component"),
     "add_mate": _adds("Add Mate"),
     "set_component_state": _sets("Set Component State"),
+    "set_component_visibility": _sets("Show Or Hide Components"),
     "set_component_transform": _sets("Set Component Transform"),
     "list_components": _reads("List Components"),
     "delete_feature": _discards("Delete Feature"),

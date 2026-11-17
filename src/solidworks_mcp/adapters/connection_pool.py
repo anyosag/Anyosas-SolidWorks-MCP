@@ -2087,6 +2087,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.set_component_state(component, fixed, flexible),
         )
 
+    async def set_component_visibility(
+        self, components: list[str], visible: bool
+    ) -> AdapterResult[dict[str, Any]]:
+        """Hide or show components using pool."""
+        return await self._execute_with_pool(
+            "set_component_visibility",
+            lambda adapter: adapter.set_component_visibility(components, visible),
+        )
+
     async def add_mate(
         self,
         component_a: str,
