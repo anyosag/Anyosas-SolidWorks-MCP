@@ -2,10 +2,17 @@
 
 From the Cellvis dish rack: a cut sketched on an offset plane removed a
 1.13 mm³ sliver where 9.05 mm³ was meant, and reported success. Most of its
-depth was in air above the part. A blind cut's floor (its planar faces facing
-along the sketch normal) has the profile's area wherever the cut reached
+depth was in air above the part. A blind cut's floor (its planar faces that
+look back at the sketch) has the profile's area wherever the cut reached
 material, so floor area times depth is what it should remove; far less means
 the depth ran outside the part.
+
+Only the floor counts. ``IFace2.Normal`` points out of the material, so a
+planar face looking the way the cut goes is a ceiling: the sketch plane lies
+inside the material. A slab cut through a bar has one as big as its floor.
+Counting both (the Dipper's 0.8 mm slots through round bars: 90.6 mm² where
+the section was 45.3) put every correct cut at half of what it "should"
+remove, and each one was warned about.
 """
 
 from __future__ import annotations
@@ -19,7 +26,10 @@ from .com_utils import flag as _flag
 from .sketch import axes_from_transform
 
 #: A cut that removed less than this share of floor area x depth is reported.
-SHORTFALL = 0.5
+#: Material whose section grows with depth gives less than floor x depth to a
+#: correct cut: from the plane touching it, a cylinder gives 2/3 of it, a dome
+#: about 1/2 and a cone 1/3. The dish rack's sliver gave 1/8.
+SHORTFALL = 0.25
 #: |cos| above which a face faces along the sketch normal (about 2.5 degrees).
 _PARALLEL = 0.999
 
@@ -37,8 +47,10 @@ def sketch_normal(adapter: Any, sketch_feature: Any) -> list[float] | None:
     return None if axes is None else [float(c) for c in axes["normal"]]
 
 
-def floor_area_mm2(adapter: Any, feature: Any, normal: list[float]) -> float | None:
-    """The total area of the cut's faces that face along ``normal``, mm².
+def facing_areas_mm2(
+    adapter: Any, feature: Any, normal: list[float]
+) -> tuple[float, float] | None:
+    """The areas of the cut's planar faces facing along ``normal`` and against it.
 
     Args:
         adapter: The adapter (for ``_attempt``).
@@ -46,11 +58,12 @@ def floor_area_mm2(adapter: Any, feature: Any, normal: list[float]) -> float | N
         normal: The sketch normal (a unit vector).
 
     Returns:
-        float | None: The area, or None when the cut has no such face (it
-        went through) or its faces can't be read.
+        tuple[float, float] | None: ``(along, against)`` in mm², or None when
+        the cut has no planar face parallel to the sketch or its faces can't
+        be read.
     """
     _flag(adapter, feature, "GetFaces")
-    area = 0.0
+    along = against = 0.0
     found = False
     for face in as_list(_attempt(adapter, lambda: feature.GetFaces())):
         _flag(adapter, face, "GetArea")
@@ -59,16 +72,60 @@ def floor_area_mm2(adapter: Any, feature: Any, normal: list[float]) -> float | N
         if len(facing) < 3 or length == 0.0:
             continue  # not planar: IFace2.Normal is [0, 0, 0]
         cos = sum(a * b for a, b in zip(facing[:3], normal, strict=True)) / length
-        if abs(cos) > _PARALLEL:
-            area += float(_attempt(adapter, lambda f=face: f.GetArea()) or 0.0)
-            found = True
-    return area * 1e6 if found else None
+        if abs(cos) <= _PARALLEL:
+            continue
+        area = float(_attempt(adapter, lambda f=face: f.GetArea()) or 0.0) * 1e6
+        if cos > 0:
+            along += area
+        else:
+            against += area
+        found = True
+    return (along, against) if found else None
 
 
-def measure_floor(adapter: Any, feature: Any, sketch_feature: Any) -> float | None:
-    """The cut's floor area in mm², or None when it can't be told."""
+def floor_area_mm2(
+    adapter: Any, feature: Any, normal: list[float], cut_along: bool
+) -> float | None:
+    """The area of the cut's floor, its planar faces that look back at the sketch, mm².
+
+    Args:
+        adapter: The adapter (for ``_attempt``).
+        feature: The cut's ``IFeature``.
+        normal: The sketch normal (a unit vector).
+        cut_along: Whether the cut went along the sketch normal. Its floor
+            then faces against the normal; a face looking along it is a
+            ceiling and doesn't count.
+
+    Returns:
+        float | None: The area, or None when the cut has no floor (it went
+        through) or its faces can't be read.
+    """
+    areas = facing_areas_mm2(adapter, feature, normal)
+    if areas is None:
+        return None
+    along, against = areas
+    floor = against if cut_along else along
+    return floor if floor > 0.0 else None
+
+
+def measure_floor(
+    adapter: Any, feature: Any, sketch_feature: Any, cut_along: bool
+) -> float | None:
+    """The cut's floor area in mm², or None when it can't be told.
+
+    Args:
+        adapter: The adapter (for ``_attempt``).
+        feature: The cut's ``IFeature``.
+        sketch_feature: The sketch it cut from.
+        cut_along: Whether it cut along the sketch normal.
+
+    Returns:
+        float | None: See :func:`floor_area_mm2`.
+    """
     normal = sketch_normal(adapter, sketch_feature)
-    return None if normal is None else floor_area_mm2(adapter, feature, normal)
+    if normal is None:
+        return None
+    return floor_area_mm2(adapter, feature, normal, cut_along)
 
 
 def shortfall_warning(

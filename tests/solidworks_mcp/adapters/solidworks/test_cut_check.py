@@ -36,26 +36,50 @@ def _cut(*faces: Any) -> Any:
     return SimpleNamespace(GetFaces=lambda: list(faces))
 
 
-def test_the_floor_is_the_faces_facing_along_the_sketch_normal() -> None:
+def test_the_floor_is_the_faces_looking_back_at_the_sketch() -> None:
+    # Cut against the +Y normal (down, from a face into the part): its floor
+    # faces up, +Y.
     cut = _cut(
         _face([0, 1, 0], 1e-4),  # floor: 100 mm²
-        _face([0, -1, 0], 2e-5),  # a step facing the other way: 20 mm²
+        _face([0, 1, 0], 2e-5),  # a lower step of the floor: 20 mm²
+        _face([0, -1, 0], 4e-5),  # a ceiling: not the floor
         _face([1, 0, 0], 5e-5),  # wall
         _face([0, 0, 0], 3e-5),  # cylinder wall (not planar)
         _face([0.01, 0.9999, 0], 1e-6),  # within 2.5 degrees
     )
 
-    assert cut_check.measure_floor(_Adapter(), cut, _sketch_feature()) == (
+    assert cut_check.measure_floor(_Adapter(), cut, _sketch_feature(), False) == (
         pytest.approx(121.0)
     )
+    assert cut_check.measure_floor(_Adapter(), cut, _sketch_feature(), True) == (
+        pytest.approx(40.0)
+    )
+
+
+def test_a_slab_through_a_bar_counts_its_floor_once() -> None:
+    # The Dipper's 0.8 mm slot through round bars: the sketch plane lies in the
+    # bar, so the cut has a ceiling as big as its floor. Both were counted
+    # (90.6 mm²), the cut removed exactly 45.3 x 0.8 mm³, and it was warned.
+    slab = _cut(_face([0, -1, 0], 45.3e-6), _face([0, 1, 0], 45.3e-6))
+
+    floor = cut_check.measure_floor(_Adapter(), slab, _sketch_feature(), True)
+
+    assert floor == pytest.approx(45.3)
+    assert cut_check.shortfall_warning(45.3 * 0.8, floor, 0.8) is None
 
 
 def test_a_cut_without_a_floor_has_no_area() -> None:
     cut = _cut(_face([1, 0, 0], 5e-5), _face([0, 0, 0], 3e-5))
+    through = _cut(_face([0, -1, 0], 1e-4))  # cut down: only a ceiling, it went through
 
-    assert cut_check.measure_floor(_Adapter(), cut, _sketch_feature()) is None
+    assert cut_check.measure_floor(_Adapter(), cut, _sketch_feature(), False) is None
     assert (
-        cut_check.measure_floor(_Adapter(), _cut(_face([], 1.0)), _sketch_feature())
+        cut_check.measure_floor(_Adapter(), through, _sketch_feature(), False) is None
+    )
+    assert (
+        cut_check.measure_floor(
+            _Adapter(), _cut(_face([], 1.0)), _sketch_feature(), False
+        )
         is None
     )
 
@@ -70,7 +94,7 @@ def test_a_cut_without_a_floor_has_no_area() -> None:
 def test_an_unreadable_sketch_gives_no_area(feature: Any) -> None:
     cut = _cut(_face([0, 1, 0], 1e-4))
 
-    assert cut_check.measure_floor(_Adapter(), cut, feature) is None
+    assert cut_check.measure_floor(_Adapter(), cut, feature, False) is None
 
 
 def test_a_cut_that_removed_far_less_is_named() -> None:
@@ -86,6 +110,8 @@ def test_a_cut_that_removed_far_less_is_named() -> None:
     [
         (9.05, 4.525, 2.0),  # all of it
         (5.0, 4.525, 2.0),  # over half
+        (4.525, 4.525, 2.0),  # half: a dome cut from the plane touching it
+        (3.0, 4.525, 2.0),  # a third: a cone's tip
         (None, 4.525, 2.0),
         (1.0, None, 2.0),
         (1.0, 4.525, 0.0),

@@ -1923,13 +1923,16 @@ def _create_cut_extrude_impl(
 
         # A blind cut's floor area, to tell whether its depth went into the
         # material (cut_check; the tool compares it with the volume removed).
+        # Its floor looks back at the sketch, so the side it cut says which.
         floor_mm2 = None
         if not (through_one or through_both) and not normalized.draft_angle:
             sketch_feature = adapter._attempt(
                 lambda: adapter.currentModel.FeatureByName(target_sketch)
             )
             if sketch_feature is not None:
-                floor_mm2 = cut_check.measure_floor(adapter, feature, sketch_feature)
+                floor_mm2 = cut_check.measure_floor(
+                    adapter, feature, sketch_feature, used_reverse == _ALONG_NORMAL
+                )
 
         flipped = used_reverse != wanted
         if through_both:
