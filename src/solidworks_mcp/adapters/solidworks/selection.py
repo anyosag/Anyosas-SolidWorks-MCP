@@ -246,7 +246,9 @@ class SolidWorksSelectionMixin:
 
         def _match() -> tuple[Any, list[Any], list[dict[str, int]]]:
             selector = EdgeRuleSelector(self)
-            kept, counts = match_rules(rules, selector.candidates, selector.convexity)
+            kept, counts = match_rules(
+                rules, selector.candidates, selector.convexity, selector.arc_middle
+            )
             if not kept:
                 raise LookupError(no_match_message_rules(rules, counts))
             if with_ids and len(kept) > MAX_IDS_OUT:

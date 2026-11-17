@@ -40,7 +40,7 @@ Steps (``STEPS`` below, in order):
 
 3. ``persist`` - on the convexity block. Settles: what
    ``GetPersistReference3`` returns through pywin32 (type, length), and
-   ``GetObjectFromPersistReference3`` (the object, or a tuple, and the
+   ``GetObjectByPersistReference3`` (the object, or a tuple, and the
    error code); that the ids resolve to the same edges after
    ``ForceRebuild3``, after the pocket's depth changes (``set_dimension``),
    and not after the boss is deleted; that ``add_fillet`` takes ``edge_ids``.
@@ -88,6 +88,9 @@ OUT = Path(__file__).resolve().parents[1] / ".generated" / "probe_dipper_edges"
 VT_UI1 = 17
 
 PITCH, POCKET, MARGIN, DEPTH = 8.0, 4.0, 6.0, 3.0
+
+#: Each part's pocket cut, by part title: its depth is ``D1@<name>``.
+_CUTS: dict[str, str] = {}
 
 
 # ---- building --------------------------------------------------------------------
@@ -193,7 +196,11 @@ async def _pocket_plate(adapter: PyWin32Adapter, grid: tuple[int, int]) -> str:
     await _sketch(
         adapter, plane["name"], [(x, y, x2, y + POCKET) for x, y, x2 in pockets]
     )
-    _ok(await adapter.create_cut_extrude(ExtrusionParameters(depth=DEPTH)), "pockets")
+    cut = _ok(
+        await adapter.create_cut_extrude(ExtrusionParameters(depth=DEPTH)), "pockets"
+    )
+    # A cut that first went into the air and was flipped takes the next name.
+    _CUTS[title] = cut.name
     await _sketch(adapter, "Top", [(width + 50, 0, width + 60, 10)])
     _ok(
         await adapter.create_extrusion(
@@ -325,7 +332,7 @@ async def step_index(adapter: PyWin32Adapter, grid: tuple[int, int]) -> dict[str
         "edge_identity": getattr(held, "edge_identity", None),
         "hashed": getattr(getattr(held, "_edges", None), "hashed", None),
     }
-    dims = await adapter.set_dimension("D1@Cut-Extrude1", 2.5)
+    dims = await adapter.set_dimension(f"D1@{_CUTS[out['title']]}", 2.5)
     stamps["after_set_dimension"] = _stamp(adapter)
     out["set_dimension_ok"] = dims.is_success
     return out
@@ -341,7 +348,8 @@ async def _feature_block(adapter: PyWin32Adapter) -> tuple[str, float]:
     z_sign = _z_sign(adapter)
     plane = _ok(await adapter.create_reference_plane("Top Plane", offset=20), "plane")
     await _sketch(adapter, plane["name"], [(5, 5, 15, 15)])
-    _ok(await adapter.create_cut_extrude(ExtrusionParameters(depth=5)), "pocket")
+    cut = _ok(await adapter.create_cut_extrude(ExtrusionParameters(depth=5)), "pocket")
+    _CUTS[title] = cut.name
     await _sketch(adapter, plane["name"], circles=[(30, 8, 3)])
     _ok(await adapter.create_cut_extrude(ExtrusionParameters(depth=20)), "hole")
     await _sketch(adapter, plane["name"], circles=[(30, 22, 4)])
@@ -524,12 +532,12 @@ def _raw_persist(adapter: PyWin32Adapter, edge: Any) -> dict[str, Any]:
     """Settles what the two persist calls return through pywin32."""
     extension = adapter.currentModel.Extension
     sw_type_info.flag_members(
-        extension, "GetPersistReference3", "GetObjectFromPersistReference3"
+        extension, "GetPersistReference3", "GetObjectByPersistReference3"
     )
     raw = adapter._attempt(lambda: extension.GetPersistReference3(edge))
     code = _byref_int()
     back = adapter._attempt(
-        lambda: extension.GetObjectFromPersistReference3(
+        lambda: extension.GetObjectByPersistReference3(
             _variant_array(VT_UI1, list(bytes(raw))), code
         )
     )
@@ -569,7 +577,7 @@ async def step_persist(
         "same_edges": _keys((again.data or {}).get("edges") or [])
         == _keys(first["edges"]),
     }
-    dims = await adapter.set_dimension("D1@Cut-Extrude1", 4.0)
+    dims = await adapter.set_dimension(f"D1@{_CUTS[title]}", 4.0)
     moved = await adapter.select_edges({"edge_ids": ids})
     out["after_depth_change"] = {
         "set_dimension": dims.is_success,

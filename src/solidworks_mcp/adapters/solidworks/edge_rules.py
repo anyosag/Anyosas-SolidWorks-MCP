@@ -282,6 +282,85 @@ def edge_extent(info: dict[str, Any]) -> tuple[list[float], list[float]] | None:
     return low, high
 
 
+def _is_arc(info: dict[str, Any]) -> bool:
+    """A circular edge with two different ends: part of its circle, not all."""
+    start, end = info.get("start_mm"), info.get("end_mm")
+    if info.get("curve") != "circular" or not start or not end:
+        return False
+    return math.dist(start, end) > 1e-6
+
+
+def arc_extent(
+    info: dict[str, Any], middle_mm: list[float]
+) -> tuple[list[float], list[float]] | None:
+    """The smallest box holding an arc, mm, from its ends and a point half way.
+
+    ``edge_extent`` gives an arc its whole circle's box, which can stick out
+    of a box the arc lies in: the two arcs where a 2 mm fillet meets a
+    block's end faces were left out of an ``inside_box`` around the fillet
+    (SOLIDWORKS 2026 SP4.1). The arc's box holds its ends and each point of
+    its circle furthest along +-x, +-y and +-z that lies on the arc, which
+    runs from the start through ``middle_mm`` to the end.
+    """
+    center, radius, axis = (
+        info.get("center_mm"),
+        info.get("radius_mm"),
+        info.get("axis"),
+    )
+    if not _is_arc(info) or center is None or radius is None or axis is None:
+        return None
+    n = _unit3([float(a) for a in axis])
+    c = [float(v) for v in center]
+    start = [float(v) for v in info["start_mm"]]
+    end = [float(v) for v in info["end_mm"]]
+    u = _unit3([a - b for a, b in zip(start, c, strict=True)])
+    if n is None or u is None:
+        return None
+    v = _cross3(n, u)
+
+    def angle(point: list[float]) -> float:
+        d = [a - b for a, b in zip(point, c, strict=True)]
+        return math.atan2(_dot3(d, v), _dot3(d, u)) % (2 * math.pi)
+
+    sweep, middle = angle(end), angle([float(m) for m in middle_mm])
+    forward = middle <= sweep  # else it runs the other way round
+
+    def on_arc(a: float) -> bool:
+        if forward:
+            return a <= sweep + 1e-9
+        return a >= sweep - 1e-9 or a <= 1e-9
+
+    points = [start, end]
+    for i in range(3):
+        along = _unit3([(1.0 if j == i else 0.0) - n[i] * n[j] for j in range(3)])
+        if along is None:
+            continue
+        for sign in (1.0, -1.0):
+            point = [c[j] + sign * float(radius) * along[j] for j in range(3)]
+            if on_arc(angle(point)):
+                points.append(point)
+    low = [min(p[i] for p in points) for i in range(3)]
+    high = [max(p[i] for p in points) for i in range(3)]
+    return low, high
+
+
+def _dot3(a: list[float], b: list[float]) -> float:
+    return sum(x * y for x, y in zip(a, b, strict=True))
+
+
+def _cross3(a: list[float], b: list[float]) -> list[float]:
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+
+
+def _unit3(v: list[float]) -> list[float] | None:
+    length = math.sqrt(_dot3(v, v))
+    return None if length < 1e-12 else [x / length for x in v]
+
+
 def _is_parallel(
     info: dict[str, Any], axis: tuple[float, float, float], tolerance_deg: float
 ) -> bool:
@@ -292,8 +371,7 @@ def _is_parallel(
     return cosine >= math.cos(math.radians(tolerance_deg))
 
 
-def _is_inside(info: dict[str, Any], box: list[list[float]]) -> bool:
-    extent = edge_extent(info)
+def _holds(extent: Any, box: list[list[float]]) -> bool:
     if extent is None:
         return False
     low, high = extent
@@ -302,6 +380,37 @@ def _is_inside(info: dict[str, Any], box: list[list[float]]) -> bool:
         and high[i] <= box[1][i] + _BOX_TOLERANCE_MM
         for i in range(3)
     )
+
+
+#: ``(edge, description) -> a point half way along an arc (mm) | None``.
+ArcMiddle = Callable[[Any, dict[str, Any]], list[float] | None]
+
+
+def _is_inside(
+    edge: Any,
+    info: dict[str, Any],
+    box: list[list[float]],
+    arc_middle: ArcMiddle | None = None,
+) -> bool:
+    """Whether the edge lies in ``box``; an arc whose circle doesn't is measured.
+
+    The point half way round (``arc_middle``) is read only for an arc whose
+    whole circle sticks out of the box while its ends lie in it, and kept in
+    the description (``arc_middle_mm``).
+    """
+    if _holds(edge_extent(info), box):
+        return True
+    if not _is_arc(info):
+        return False
+    pairs = list(zip(info["start_mm"], info["end_mm"], strict=True))
+    if not _holds(([min(p) for p in pairs], [max(p) for p in pairs]), box):
+        return False
+    middle = info.get("arc_middle_mm")
+    if middle is None and arc_middle is not None:
+        middle = arc_middle(edge, info)
+        if middle is not None:
+            info["arc_middle_mm"] = middle
+    return middle is not None and _holds(arc_extent(info, middle), box)
 
 
 def _length_ok(info: dict[str, Any], low: float | None, high: float | None) -> bool:
@@ -321,6 +430,7 @@ def filter_edges(
     edges: list[tuple[Any, dict[str, Any]]],
     query: dict[str, Any],
     classify: Classify | None = None,
+    arc_middle: ArcMiddle | None = None,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], dict[str, int]]:
     """Keep the edges every rule in ``query`` allows.
 
@@ -331,6 +441,9 @@ def filter_edges(
         classify: Reads an edge's convexity, for ``convexity``; only the
             edges every other rule kept are read. Without it, the
             description's ``convexity`` is used.
+        arc_middle: Reads a point half way along an arc, for ``inside_box``
+            (:func:`_is_inside`); without it an arc needs its whole circle
+            inside the box.
 
     Returns:
         tuple: The kept pairs, and how many were left after each rule that
@@ -351,7 +464,8 @@ def filter_edges(
         kept = [e for e in kept if _is_parallel(e[1], axis, tolerance)]
         counts["parallel_to"] = len(kept)
     if query.get("inside_box") is not None:
-        kept = [e for e in kept if _is_inside(e[1], query["inside_box"])]
+        box = query["inside_box"]
+        kept = [e for e in kept if _is_inside(e[0], e[1], box, arc_middle)]
         counts["inside_box"] = len(kept)
     low, high = query.get("min_length"), query.get("max_length")
     if low is not None or high is not None:
@@ -455,6 +569,7 @@ def match_rules(
     rules: list[dict[str, Any]],
     candidates: Any,
     classify: Classify | None = None,
+    arc_middle: ArcMiddle | None = None,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], list[dict[str, int]]]:
     """The edges any rule keeps, each once, reading each source once.
 
@@ -467,6 +582,7 @@ def match_rules(
         rules: From :func:`expand_query`.
         candidates: ``(rule) -> [(handle, description)]``, the source's edges.
         classify: Reads an edge's convexity (:func:`filter_edges`).
+        arc_middle: Reads a point half way along an arc (:func:`filter_edges`).
 
     Returns:
         tuple: The kept pairs in rule order, and each rule's counts
@@ -480,7 +596,7 @@ def match_rules(
         source = _source_key(rule)
         if source not in read:
             read[source] = candidates(rule)
-        kept, counts = filter_edges(read[source], rule, classify)
+        kept, counts = filter_edges(read[source], rule, classify, arc_middle)
         every_count.append(counts)
         for edge, info in kept:
             key = edge_key(info)
@@ -592,6 +708,13 @@ class EdgeRuleSelector:
     def convexity(self, edge: Any, info: dict[str, Any]) -> str | None:
         """An edge's convexity (``edge_convexity``), read once and kept in ``info``."""
         return self._convexity.read(edge, info)
+
+    def arc_middle(self, edge: Any, info: dict[str, Any]) -> list[float] | None:
+        """A point half way along an arc, mm (``ConvexityReader.point_and_direction``)."""
+        located = self._convexity.point_and_direction(edge, info)
+        if located is None:
+            return None
+        return [round(c * 1000.0, 9) for c in located[0]]
 
     def _whole(self, bodies: list[IndexedBody] | None, box: Box | None) -> EdgeList:
         """Every edge of the part (or ``bodies``), or those a box can hold."""

@@ -301,6 +301,101 @@ def test_parallel_tolerance_and_circles_outside_a_box() -> None:
     )
 
 
+def _fillet_arc() -> dict[str, Any]:
+    """The arc where a 2 mm fillet round a block's corner edge meets its top face.
+
+    Centre (38, 20, -2), axis along y, from (40, 20, -2) to (38, 20, 0): its
+    circle reaches x 36 and z -4, the arc only x 38..40 and z -2..0.
+    """
+    return {
+        "curve": "circular",
+        "center_mm": [38.0, 20.0, -2.0],
+        "axis": [0.0, 1.0, 0.0],
+        "radius_mm": 2.0,
+        "start_mm": [40.0, 20.0, -2.0],
+        "end_mm": [38.0, 20.0, 0.0],
+    }
+
+
+_HALF_WAY = [38.0 + math.sqrt(2), 20.0, -2.0 + math.sqrt(2)]
+_FILLET_BOX = {"inside_box": [[37, -1, -3], [41, 21, 1]]}
+
+
+def test_an_arc_is_inside_a_box_its_circle_sticks_out_of() -> None:
+    arc = (object(), _fillet_arc())
+    asked: list[Any] = []
+
+    def middle(edge: Any, info: dict[str, Any]) -> list[float]:
+        asked.append(edge)
+        return _HALF_WAY
+
+    assert er.filter_edges([arc], _FILLET_BOX)[0] == []  # the circle alone
+    assert er.filter_edges([arc], _FILLET_BOX, arc_middle=middle)[0] == [arc]
+    assert arc[1]["arc_middle_mm"] == _HALF_WAY
+    er.filter_edges([arc], _FILLET_BOX, arc_middle=middle)
+    assert asked == [arc[0]]  # read once, then kept
+
+
+def test_an_arc_the_long_way_round_reaches_its_circles_far_side() -> None:
+    info = _fillet_arc()
+    far = [38.0 - math.sqrt(2), 20.0, -2.0 - math.sqrt(2)]
+
+    assert er.arc_extent(info, far) == (
+        pytest.approx([36.0, 20.0, -4.0]),
+        pytest.approx([40.0, 20.0, 0.0]),
+    )
+    assert er.arc_extent(info, _HALF_WAY) == (
+        pytest.approx([38.0, 20.0, -2.0]),
+        pytest.approx([40.0, 20.0, 0.0]),
+    )
+    assert (
+        er.filter_edges([(None, info)], _FILLET_BOX, arc_middle=lambda *_: far)[0] == []
+    )
+
+
+def test_what_an_arc_box_cannot_read() -> None:
+    no_middle = (None, _fillet_arc())
+    ends_out = (None, {**_fillet_arc(), "end_mm": [30.0, 20.0, 0.0]})
+
+    assert (
+        er.filter_edges([no_middle], _FILLET_BOX, arc_middle=lambda *_: None)[0] == []
+    )
+    assert (
+        er.filter_edges([ends_out], _FILLET_BOX, arc_middle=lambda *_: [0] * 3)[0] == []
+    )
+    assert er.arc_extent({**_fillet_arc(), "axis": None}, _HALF_WAY) is None
+    assert er.arc_extent({**_fillet_arc(), "axis": [0, 0, 0]}, _HALF_WAY) is None
+    assert er.arc_extent(_rim_info(0), _HALF_WAY) is None  # a whole circle
+    # An arc on a circle about x: its x extreme is the axis itself, skipped.
+    about_x = {
+        "curve": "circular",
+        "center_mm": [0.0, 0.0, 0.0],
+        "axis": [1.0, 0.0, 0.0],
+        "radius_mm": 1.0,
+        "start_mm": [0.0, 1.0, 0.0],
+        "end_mm": [0.0, 0.0, 1.0],
+    }
+    half = [0.0, math.sqrt(0.5), math.sqrt(0.5)]
+    assert er.arc_extent(about_x, half) == (
+        pytest.approx([0.0, 0.0, 0.0]),
+        pytest.approx([0.0, 1.0, 1.0]),
+    )
+
+
+def test_the_selector_reads_an_arcs_middle_from_its_convexity_reader() -> None:
+    def located(point: Any) -> SimpleNamespace:
+        reader = SimpleNamespace(point_and_direction=lambda *_: point)
+        return SimpleNamespace(_convexity=reader)
+
+    found = er.EdgeRuleSelector.arc_middle(
+        located(((0.0394, 0.02, -0.0006), (0, 1, 0))),  # type: ignore[arg-type]
+        None,
+        {},
+    )
+    assert found == pytest.approx([39.4, 20.0, -0.6])
+    assert er.EdgeRuleSelector.arc_middle(located(None), None, {}) is None  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("query", "source"),
     [

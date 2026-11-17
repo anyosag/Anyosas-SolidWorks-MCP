@@ -3,8 +3,11 @@
 The fakes answer ``GetClosestPointOn`` geometrically: flat rectangles,
 cylinders (a hole's wall, a boss's wall, a fillet's quarter round) and a
 sphere cap, each with its outward normal (``Normal`` when flat; a surface
-and ``FaceInSurfaceSense`` when curved). Millimetres in, metres to the COM
-fakes, as SolidWorks takes them.
+and ``FaceInSurfaceSense`` when curved). A curved face's surface answers
+``EvaluateAtPoint`` as SOLIDWORKS 2026 SP4.1 did: the surface normal first,
+then two directions and two curvatures, with the face's outward normal the
+surface normal reversed where ``FaceInSurfaceSense`` is True. Millimetres
+in, metres to the COM fakes, as SolidWorks takes them.
 """
 
 from __future__ import annotations
@@ -43,14 +46,17 @@ class _Surface:
         self._normal_at = normal_at
 
     def EvaluateAtPoint(self, x: float, y: float, z: float) -> list[float]:  # noqa: N802
-        return [x, y, z, *self._normal_at((x, y, z))]
+        # Normal, first and second principal directions, two curvatures.
+        return [*self._normal_at((x, y, z)), 9.0, 9.0, 9.0, 8.0, 8.0, 8.0, 0.0, 0.0]
 
 
 class _Cylinder:
     """A cylinder about z through ``(cx, cy)``, radius ``r``, z from ``z0`` to ``z1`` (mm).
 
-    ``inside`` is True for a boss (material inside: the face runs with its
-    surface, whose normal points away from the axis) and False for a hole.
+    ``inside`` is True for a boss and False for a hole. The surface's normal
+    points away from the axis on both, as measured; a hole's face reads
+    ``FaceInSurfaceSense`` True (its outward normal is the reverse), a
+    boss's False.
     """
 
     Normal = [0.0, 0.0, 0.0]
@@ -77,8 +83,41 @@ class _Cylinder:
 
         return _Surface(radial)
 
+    def FaceInSurfaceSense(self) -> Any:  # noqa: N802
+        return None if self.inside is None else not self.inside
+
+
+class _Cone:
+    """A cone about z narrowing upward: radius 3 mm at z 5, 1 mm at z 7.
+
+    Its surface normal points out and up; it reads ``FaceInSurfaceSense``
+    False, as the cone of the probe's revolve did.
+    """
+
+    Normal = [0.0, 0.0, 0.0]
+
+    def GetClosestPointOn(self, x: float, y: float, z: float) -> list[float]:  # noqa: N802
+        angle = math.atan2(y, x)
+        # Along the slant line from (3, 5) to (1, 7) in (r, z), mm.
+        r, h = math.hypot(x, y) / MM, z / MM
+        t = min(max(((r - 3) * -2 + (h - 5) * 2) / 8, 0.0), 1.0)
+        radius, height = 3 - 2 * t, 5 + 2 * t
+        return [
+            radius * MM * math.cos(angle),
+            radius * MM * math.sin(angle),
+            height * MM,
+        ]
+
+    def GetSurface(self) -> _Surface:  # noqa: N802
+        def slanted(p: Vector) -> list[float]:
+            angle = math.atan2(p[1], p[0])
+            k = math.sqrt(0.5)
+            return [k * math.cos(angle), k * math.sin(angle), k]
+
+        return _Surface(slanted)
+
     def FaceInSurfaceSense(self) -> bool:  # noqa: N802
-        return self.inside
+        return False
 
 
 class _QuarterRound:
@@ -211,6 +250,14 @@ def test_two_curved_faces_use_the_surface_normal_and_its_sense() -> None:
     boss = _Cylinder(0, 0, 3, 0, 5, inside=True)
 
     assert _read([boss, _Cap()], _circle((0, 0, 5), 3)) == "convex"
+
+
+def test_a_cone_on_a_cylinder_is_convex_where_they_meet() -> None:
+    """The probe's revolve: a cylinder with a cone on it, both read from surfaces."""
+    cylinder = _Cylinder(0, 0, 3, 0, 5, inside=True)
+
+    assert _read([cylinder, _Cone()], _circle((0, 0, 5), 3)) == "convex"
+    assert _read([_Cone(), cylinder], _circle((0, 0, 5), 3)) == "convex"
 
 
 def test_the_kind_is_kept_in_the_description() -> None:

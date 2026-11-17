@@ -11,8 +11,8 @@ or circle, as ``describe_edge`` reads them):
 * the two faces are ``IEdge.GetTwoAdjacentFaces2``;
 * one face's outward normal n: ``IFace2.Normal`` when it is flat (the
   ``side`` rule's normal); for a curved one, ``ISurface.EvaluateAtPoint``'s
-  surface normal, reversed when ``IFace2.FaceInSurfaceSense`` says the face
-  runs against its surface;
+  surface normal (its first three values), reversed when
+  ``IFace2.FaceInSurfaceSense`` is True;
 * the direction t into the other face, at right angles to the edge: the
   closest points on that face (``IFace2.GetClosestPointOn``) to P moved a
   little each way at right angles to e lie inside the face for the moves
@@ -24,9 +24,15 @@ leads away from it at a convex edge (t . n < 0) and toward it at a concave
 one; at a tangent edge t lies in the first face (|t . n| under sin 1 deg).
 An edge whose faces or geometry don't read is None (not kept).
 
-Only ``IFace2.Normal`` and ``GetClosestPointOn`` have run on SolidWorks in
-this code; ``tests/scripts/probe_dipper_edges.py`` (step ``convexity``)
-checks the rest on a block with a pocket, a hole, a boss and a fillet.
+Measured on SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_dipper_edges.py``,
+step ``convexity``): ``EvaluateAtPoint`` gives 11 numbers, the surface
+normal, two principal directions and two curvatures (333.3 per metre on a
+3 mm hole). On eight faces (four planes, a hole's wall, a boss's side, a
+cylinder and a cone) the outward normal was the surface normal reversed
+where ``FaceInSurfaceSense`` read True, and the surface normal itself where
+it read False: the opposite of what the API help says. Reading the normal
+from values 3-5 (the first principal direction) made the circle between a
+cylinder and the cone on it read concave.
 """
 
 from __future__ import annotations
@@ -205,12 +211,12 @@ class ConvexityReader:
         )
         same = _attempt(self._adapter, lambda: face.FaceInSurfaceSense())
         self.reads += 3
-        if len(values) < 6 or not isinstance(same, bool):
+        if len(values) < 3 or not isinstance(same, bool):
             return None
-        normal = _unit((float(values[3]), float(values[4]), float(values[5])))
+        normal = _unit((float(values[0]), float(values[1]), float(values[2])))
         if normal is None:
             return None
-        return normal if same else (-normal[0], -normal[1], -normal[2])
+        return (-normal[0], -normal[1], -normal[2]) if same else normal
 
     def read(self, edge: Any, info: dict[str, Any]) -> str | None:
         """``"convex"``, ``"concave"``, ``"tangent"`` or None; kept in ``info``."""

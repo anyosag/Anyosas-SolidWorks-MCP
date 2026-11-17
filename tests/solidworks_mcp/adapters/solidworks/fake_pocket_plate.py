@@ -268,8 +268,8 @@ class Extension(Dispatch):
             f"edge:{next(i for i, e in enumerate(self.edges) if e is target)}".encode()
         )
 
-    def GetObjectFromPersistReference3(self, ref: Any, _code: Any) -> Any:  # noqa: N802
-        self.count("GetObjectFromPersistReference3")
+    def GetObjectByPersistReference3(self, ref: Any, _code: Any) -> Any:  # noqa: N802
+        self.count("GetObjectByPersistReference3")
         number = int(bytes(getattr(ref, "value", ref)).decode().split(":")[1])
         return None if number in self.gone else self.edges[number]
 

@@ -28,9 +28,17 @@ on a small face.
 The index is kept on the adapter (``_edge_index``) until the document's
 update stamp (``IModelDoc2.GetUpdateStamp``) changes, i.e. until the next
 rebuild, so the next rule on the same part reads nothing again. Without a
-stamp nothing is kept. None of this has run on SolidWorks yet:
-``tests/scripts/probe_dipper_edges.py`` (step ``index``) checks it against
-the old path on a part with a few thousand edges.
+stamp nothing is kept.
+
+Measured on SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_dipper_edges.py``,
+step ``index``), on a 172 x 108 mm plate of 2,904 edges: describing every
+edge (the old path) took 279 s; a box around one pocket took 27 s (1,206
+face boxes read, 12 edges described) and 0.5 s again on the kept index,
+with the same 12 edges. The stamp stayed at 120 through ``list_features``,
+``select_edges`` and ``ClearSelection2``, and moved with ``ForceRebuild3``
+(to 139) and a dimension change (to 142). ``IFace2.GetEdges`` read twice
+gives the same COM objects, and every edge sampled lists two faces that
+both list it.
 """
 
 from __future__ import annotations

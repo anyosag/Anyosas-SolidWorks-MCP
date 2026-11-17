@@ -6,11 +6,14 @@ names the same edge after rebuilds, while the feature that made it stays.
 ``select_edges`` with ``with_ids`` gives one per selected edge, as base64
 text; ``edge_ids`` on ``select_edges`` (and through it ``add_fillet`` and
 ``add_chamfer``) takes them back with
-``IModelDocExtension.GetObjectFromPersistReference3``, whose error code is a
+``IModelDocExtension.GetObjectByPersistReference3``, whose error code is a
 by-reference out-parameter (a ``VT_BYREF | VT_I4`` VARIANT, pitfall #25).
 
-Not run on SolidWorks yet: ``tests/scripts/probe_dipper_edges.py`` (step
-``persist``) reads ids, rebuilds and changes the part, and resolves them.
+On SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_dipper_edges.py``, step
+``persist``) ``GetPersistReference3`` gives a ``memoryview`` of a few hundred
+bytes (369 and 393 measured). The resolving call is ``GetObjectByPersistReference3`` (DISPID 101);
+the ``GetObjectFromPersistReference3`` this module first called is not a
+member, so late binding raised ``AttributeError`` and every id read as gone.
 """
 
 from __future__ import annotations
@@ -96,7 +99,7 @@ def _extension(adapter: Any, model: Any) -> Any:
         adapter,
         extension,
         "GetPersistReference3",
-        "GetObjectFromPersistReference3",
+        "GetObjectByPersistReference3",
     )
     return extension
 
@@ -126,7 +129,7 @@ def _byref_code() -> Any:
 def resolve(adapter: Any, model: Any, ids: list[str]) -> tuple[list[Any], list[int]]:
     """The edges ``ids`` name now, and the positions of those that name none.
 
-    An id resolves when ``GetObjectFromPersistReference3`` gives an object
+    An id resolves when ``GetObjectByPersistReference3`` gives an object
     with a curve (``IEdge.GetCurve``): a face's id is not an edge.
     """
     extension = _extension(adapter, model)
@@ -136,7 +139,7 @@ def resolve(adapter: Any, model: Any, ids: list[str]) -> tuple[list[Any], list[i
         code = _byref_code()
         raw = _attempt(
             adapter,
-            lambda t=text, c=code: extension.GetObjectFromPersistReference3(
+            lambda t=text, c=code: extension.GetObjectByPersistReference3(
                 _bytes_variant(decode(t)), c
             ),
         )

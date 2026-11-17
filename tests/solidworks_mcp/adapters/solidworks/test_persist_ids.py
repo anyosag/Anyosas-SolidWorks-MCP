@@ -44,7 +44,7 @@ class _Extension:
         key = next(k for k, v in self.entities.items() if v is entity)
         return tuple(key) if self._as_tuple else key
 
-    def GetObjectFromPersistReference3(self, ref: Any, code: Any) -> Any:  # noqa: N802
+    def GetObjectByPersistReference3(self, ref: Any, code: Any) -> Any:  # noqa: N802
         self.codes.append(code)
         found = self.entities.get(bytes(_value(ref)))
         return (found, 0) if self._as_tuple and found is not None else found

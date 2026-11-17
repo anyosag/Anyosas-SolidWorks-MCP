@@ -305,7 +305,9 @@ def matched_edges(adapter: Any, name: str, rules: dict[str, Any]) -> list[Any]:
     """
     expanded = expand_query(edge_query(rules))
     selector = EdgeRuleSelector(adapter)
-    kept, counts = match_rules(expanded, selector.candidates, selector.convexity)
+    kept, counts = match_rules(
+        expanded, selector.candidates, selector.convexity, selector.arc_middle
+    )
     if not kept:
         raise ValueError(no_edges_message(name, rules_reason(expanded, counts)))
     return [edge for edge, _info in kept]

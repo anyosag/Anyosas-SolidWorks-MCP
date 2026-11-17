@@ -21,8 +21,13 @@ when that doesn't read, and written the way it was read. The edit itself is
 ``EditRebuild3``, then the values read back with the plane's origin
 (``IRefPlane.Transform``), so the reply shows where the plane now is.
 
-None of this has run on SolidWorks yet; ``tests/scripts/probe_dipper_edges.py``
-(step ``plane``) settles which reads and writes move the plane.
+Measured on SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_dipper_edges.py``,
+step ``plane``): an offset plane reads ``Distance`` 0.01, ``Type`` 5 and
+``Constraint(0)`` 8 (distance), 264 once flipped, with
+``ReversedReferenceDirection(0)`` True. An offset of 9.8 moved the plane
+and its boss (box top 15 to 14.8 mm, 4500 to 4480 mm3), a flip put it at
+y -9.8 and back, and Top Plane (``Type`` 10, ``Constraint(0)`` 0) is
+refused.
 """
 
 from __future__ import annotations
