@@ -1885,13 +1885,15 @@ class SolidWorksAdapter(ABC):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str
+        self, body_name: str, file_path: str, assembly_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
         """Extract one solid body from the active multibody part to a new file.
 
         Args:
             body_name (str): Name of a solid body in the active part.
             file_path (str): Absolute path for the new ``.sldprt``.
+            assembly_path (str | None): Also make an assembly of it there;
+                ``None`` makes none.
 
         Returns:
             AdapterResult[dict[str, Any]]: The body, the written path, and the
@@ -1900,6 +1902,94 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="save_body_as_part is not implemented by this adapter",
+        )
+
+    async def get_save_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Read the active part's Save Bodies features (or one), unchanged.
+
+        Args:
+            feature_name (str | None): One feature; ``None`` reads them all.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``features``: each one's bodies,
+            files and options, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="get_save_bodies is not implemented by this adapter",
+        )
+
+    async def edit_save_bodies(
+        self, feature_name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Change a Save Bodies feature's output files or options.
+
+        Args:
+            feature_name (str): The feature, e.g. ``Save Bodies1``.
+            changes (dict[str, Any]): Any of ``files`` (body name to new
+                path), ``assembly_path``, ``consume_body`` and
+                ``copy_custom_properties``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The feature read back, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="edit_save_bodies is not implemented by this adapter",
+        )
+
+    async def resplit_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Update the existing part files the Save Bodies features write.
+
+        Args:
+            feature_name (str | None): One feature; ``None`` does them all.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Each file's status, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="resplit_bodies is not implemented by this adapter",
+        )
+
+    async def list_loaded_documents(self) -> AdapterResult[dict[str, Any]]:
+        """Every loaded document, with or without a window, and the leftovers.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``documents``, ``leftovers`` and
+            ``count``, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_loaded_documents is not implemented by this adapter",
+        )
+
+    async def close_leftover_documents(self) -> AdapterResult[dict[str, Any]]:
+        """Close loaded documents with no window that no open document uses.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``closed``, ``still_loaded`` and
+            ``kept_modified``, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="close_leftover_documents is not implemented by this adapter",
+        )
+
+    async def list_assembly_parts(self) -> AdapterResult[dict[str, Any]]:
+        """The active assembly's parts, once per file and configuration.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``assembly`` and ``parts``, or
+            error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_assembly_parts is not implemented by this adapter",
         )
 
     async def list_bodies(

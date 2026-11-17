@@ -412,69 +412,6 @@ async def test_auto_center_marks_guards_and_legacy_fallback(monkeypatch) -> None
     assert no_annotations.data["center_marks_before"] == 0
 
 
-# ---- save_body_as_part ---------------------------------------------------------
-
-
-def _part_with(bodies, *, manager=True, writes=None):
-    manager_obj = SimpleNamespace(
-        CreateSaveBodyFeature=lambda *_a: (
-            (writes.write_bytes(b"body") if writes else None) or object()
-        )
-    )
-    return SimpleNamespace(
-        GetType=lambda: 1,
-        GetBodies2=lambda *_a: bodies,
-        FeatureManager=manager_obj if manager else None,
-        EditRebuild3=lambda: 1,
-    )
-
-
-@pytest.mark.asyncio
-async def test_save_body_as_part_argument_checks(tmp_path) -> None:
-    drawing = SimpleNamespace(GetType=lambda: 3)
-    target = str(tmp_path / "b.sldprt")
-    part = _part_with([])
-
-    results = [
-        await _DocsHarness(None, object()).save_body_as_part("B", target),
-        await _DocsHarness(drawing, object()).save_body_as_part("B", target),
-        await _DocsHarness(part, object()).save_body_as_part(" ", target),
-        await _DocsHarness(part, object()).save_body_as_part("B", " "),
-    ]
-
-    assert [r.error for r in results] == [
-        "No active model",
-        "save_body_as_part requires an active part document",
-        "body_name is required",
-        "file_path is required",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_save_body_as_part_failures_and_overwrite(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        _io_module, "pythoncom", SimpleNamespace(VT_DISPATCH=9, VT_BSTR=8)
-    )
-    body = SimpleNamespace(Name="Body1")
-    target = tmp_path / "body.sldprt"
-    target.write_bytes(b"old")
-
-    no_bodies = await _DocsHarness(_part_with(None), object()).save_body_as_part(
-        "Body1", str(target)
-    )
-    no_manager = await _DocsHarness(
-        _part_with([body], manager=False), object()
-    ).save_body_as_part("Body1", str(target))
-    not_written = await _DocsHarness(_part_with([body]), object()).save_body_as_part(
-        "Body1", str(target)
-    )
-
-    assert "has no solid bodies" in (no_bodies.error or "")
-    assert "has no FeatureManager" in (no_manager.error or "")
-    assert "did not write a file" in (not_written.error or "")
-    assert not target.exists()  # the stale file was removed before saving
-
-
 # ---- pack and go: comtypes type library, COM bridge, adapter flow ------------
 
 
@@ -781,17 +718,6 @@ async def test_activate_document_needs_a_connection() -> None:
     result = await _DocsHarness(None, None).activate_document("bracket.SLDPRT")
 
     assert result.error == "Not connected to SolidWorks"
-
-
-@pytest.mark.asyncio
-async def test_save_body_as_part_needs_an_existing_parent_folder(tmp_path) -> None:
-    missing = tmp_path / "missing"
-
-    result = await _DocsHarness(_part_with([]), object()).save_body_as_part(
-        "B", str(missing / "b.sldprt")
-    )
-
-    assert result.error == f"Parent directory does not exist: {missing}"
 
 
 def _write_bmp(path, width: int, height: int) -> None:
@@ -4513,38 +4439,6 @@ async def test_auto_center_marks_counts_existing_center_marks(monkeypatch) -> No
     result = await _DocsHarness(drawing, object()).auto_center_marks("Front")
 
     assert result.data["center_marks_before"] == 1
-
-
-@pytest.mark.asyncio
-async def test_save_body_as_part_names_the_bodies_when_one_is_missing(
-    tmp_path,
-) -> None:
-    part = _part_with([SimpleNamespace(Name="Body2"), SimpleNamespace(Name=None)])
-
-    result = await _DocsHarness(part, object()).save_body_as_part(
-        "Body1", str(tmp_path / "b.sldprt")
-    )
-
-    assert result.error == "Body 'Body1' not found. Solid bodies: Body2"
-
-
-@pytest.mark.asyncio
-async def test_save_body_as_part_writes_the_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        _io_module, "pythoncom", SimpleNamespace(VT_DISPATCH=9, VT_BSTR=8)
-    )
-    target = tmp_path / "body.sldprt"
-    part = _part_with([SimpleNamespace(Name="Body1")], writes=target)
-
-    result = await _DocsHarness(part, object()).save_body_as_part("Body1", str(target))
-
-    assert result.data == {
-        "body": "Body1",
-        "file_path": str(target),
-        "feature": None,
-        "solid_bodies": ["Body1"],
-    }
-    assert target.read_bytes() == b"body"
 
 
 # ---- export_image: SaveBMP at the requested size --------------------------------

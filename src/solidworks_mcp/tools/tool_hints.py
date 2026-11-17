@@ -179,6 +179,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "export_step": _overwrites("Export STEP"),
     "export_iges": _overwrites("Export IGES"),
     "export_stl": _overwrites("Export STL"),
+    "export_assembly_parts_stl": _overwrites("Export Assembly Parts to STL"),
     "export_pdf": _overwrites("Export PDF"),
     "export_dwg": _overwrites("Export DWG"),
     "export_image": _overwrites("Export Image"),
@@ -205,6 +206,9 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "list_open_documents": _reads("List Open Documents"),
     "activate_document": _sets("Activate Document"),
     "save_body_as_part": _overwrites("Save Body as Part"),
+    "list_save_bodies": _reads("List Save Bodies"),
+    "edit_save_bodies": _overwrites("Edit Save Bodies"),
+    "resplit_bodies": _overwrites("Re-split Bodies into Their Files"),
     # macro_recording
     "start_macro_recording": _adds("Start Macro Recording"),
     "stop_macro_recording": _discards("Stop Macro Recording"),

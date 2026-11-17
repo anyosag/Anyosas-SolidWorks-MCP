@@ -1718,12 +1718,58 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str
+        self, body_name: str, file_path: str, assembly_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
         """Save a body to a new part using pool."""
         return await self._execute_with_pool(
             "save_body_as_part",
-            lambda adapter: adapter.save_body_as_part(body_name, file_path),
+            lambda adapter: adapter.save_body_as_part(
+                body_name, file_path, assembly_path
+            ),
+        )
+
+    async def get_save_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Read Save Bodies features using pool."""
+        return await self._execute_with_pool(
+            "get_save_bodies", lambda adapter: adapter.get_save_bodies(feature_name)
+        )
+
+    async def edit_save_bodies(
+        self, feature_name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Change a Save Bodies feature using pool."""
+        return await self._execute_with_pool(
+            "edit_save_bodies",
+            lambda adapter: adapter.edit_save_bodies(feature_name, changes),
+        )
+
+    async def resplit_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Update the Save Bodies files using pool."""
+        return await self._execute_with_pool(
+            "resplit_bodies", lambda adapter: adapter.resplit_bodies(feature_name)
+        )
+
+    async def list_loaded_documents(self) -> AdapterResult[dict[str, Any]]:
+        """List loaded documents using pool."""
+        return await self._execute_with_pool(
+            "list_loaded_documents", lambda adapter: adapter.list_loaded_documents()
+        )
+
+    async def close_leftover_documents(self) -> AdapterResult[dict[str, Any]]:
+        """Close leftover documents using pool."""
+        return await self._execute_with_pool(
+            "close_leftover_documents",
+            lambda adapter: adapter.close_leftover_documents(),
+        )
+
+    async def list_assembly_parts(self) -> AdapterResult[dict[str, Any]]:
+        """List an assembly's parts using pool."""
+        return await self._execute_with_pool(
+            "list_assembly_parts", lambda adapter: adapter.list_assembly_parts()
         )
 
     async def list_bodies(

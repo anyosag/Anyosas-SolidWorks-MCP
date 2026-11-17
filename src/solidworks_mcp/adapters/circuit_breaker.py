@@ -1928,13 +1928,74 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str
+        self, body_name: str, file_path: str, assembly_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
         """Save a body to a new part through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "save_body_as_part",
-            lambda: self.adapter.save_body_as_part(body_name, file_path),
-            input_dict={"body_name": body_name, "file_path": file_path},
+            lambda: self.adapter.save_body_as_part(body_name, file_path, assembly_path),
+            input_dict={
+                "body_name": body_name,
+                "file_path": file_path,
+                "assembly_path": assembly_path,
+            },
+        )
+
+    async def get_save_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Read Save Bodies features through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "get_save_bodies",
+            lambda: self.adapter.get_save_bodies(feature_name),
+            input_dict={"feature_name": feature_name},
+            error_results_are_failures=False,
+        )
+
+    async def edit_save_bodies(
+        self, feature_name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Change a Save Bodies feature through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "edit_save_bodies",
+            lambda: self.adapter.edit_save_bodies(feature_name, changes),
+            input_dict={"feature_name": feature_name, "changes": changes},
+        )
+
+    async def resplit_bodies(
+        self, feature_name: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Update the Save Bodies files through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "resplit_bodies",
+            lambda: self.adapter.resplit_bodies(feature_name),
+            input_dict={"feature_name": feature_name},
+        )
+
+    async def list_loaded_documents(self) -> AdapterResult[dict[str, Any]]:
+        """List loaded documents through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "list_loaded_documents",
+            lambda: self.adapter.list_loaded_documents(),
+            input_dict={},
+            error_results_are_failures=False,
+        )
+
+    async def close_leftover_documents(self) -> AdapterResult[dict[str, Any]]:
+        """Close leftover documents through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "close_leftover_documents",
+            lambda: self.adapter.close_leftover_documents(),
+            input_dict={},
+        )
+
+    async def list_assembly_parts(self) -> AdapterResult[dict[str, Any]]:
+        """List an assembly's parts through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "list_assembly_parts",
+            lambda: self.adapter.list_assembly_parts(),
+            input_dict={},
+            error_results_are_failures=False,
         )
 
     async def list_bodies(

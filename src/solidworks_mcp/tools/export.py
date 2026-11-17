@@ -4,6 +4,8 @@ Provides tools for exporting SolidWorks models to various formats including STEP
 STL, PDF, DWG, and image formats.
 """
 
+import os
+import string
 from typing import Any, Literal, TypeVar
 
 from fastmcp import FastMCP
@@ -14,6 +16,7 @@ from ..utils import export_check, stl_mesh
 from .input_compat import CompatInput
 from .modeling import DisplayType
 from .tool_boundary import (
+    InvalidInputError,
     ToolOperationError,
     UnsupportedOperationError,
     normalize_input,
@@ -46,8 +49,8 @@ class ExportFileInput(CompatInput):
     )
 
 
-class ExportStlInput(ExportFileInput):
-    """Input schema for STL exports, with optional mesh settings for this file.
+class StlMeshOptions(CompatInput):
+    """Optional STL mesh settings, for one export.
 
     Attributes:
         resolution (str | None): coarse, fine or custom.
@@ -113,6 +116,54 @@ class ExportStlInput(ExportFileInput):
         """The mesh settings given, by name (empty: keep the user's)."""
         names = ("resolution", "deviation_mm", "angle_deg", "units", "binary")
         return {n: getattr(self, n) for n in names if getattr(self, n) is not None}
+
+
+class ExportStlInput(StlMeshOptions, ExportFileInput):
+    """Input schema for STL exports, with optional mesh settings for this file."""
+
+
+#: The placeholders ``export_assembly_parts_stl``'s ``name_pattern`` takes.
+PART_NAME_FIELDS = ("name", "config", "assembly", "index")
+
+
+class ExportAssemblyPartsStlInput(StlMeshOptions):
+    """Input schema for exporting each part of an assembly to its own STL.
+
+    Attributes:
+        folder (str): The folder the files go to.
+        name_pattern (str): Each file's name, with placeholders.
+    """
+
+    folder: str = Field(description="Folder for the STL files; created if missing")
+    name_pattern: str = Field(
+        default="{name}.stl",
+        description=(
+            "Each file's name: {name} (the part file's name), {config} (the "
+            "configuration the assembly uses), {assembly} and {index}; must end "
+            "in .stl"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Check the folder and the name pattern, then the mesh settings."""
+        super().model_post_init(__context)
+        if not self.folder.strip():
+            raise ValueError("folder is required")
+        pattern = self.name_pattern.strip()
+        if not pattern.lower().endswith(".stl"):
+            raise ValueError("name_pattern must end in .stl")
+        if any(sep in pattern for sep in ("/", "\\", ":")):
+            raise ValueError("name_pattern is a file name; put folders in folder")
+        try:
+            fields = [f for _t, f, _s, _c in string.Formatter().parse(pattern) if f]
+        except ValueError as exc:
+            raise ValueError(f"name_pattern is not a pattern: {exc}") from exc
+        unknown = sorted(set(fields) - set(PART_NAME_FIELDS))
+        if unknown:
+            raise ValueError(
+                f"name_pattern can use {', '.join('{' + f + '}' for f in PART_NAME_FIELDS)}"
+                f"; not {', '.join(unknown)}"
+            )
 
 
 class ImageSection(BaseModel):
@@ -849,5 +900,187 @@ async def register_export_tools(
             "execution_time": result.execution_time,
         }
 
-    tool_count = 7  # Number of tools registered
+    @mcp.tool()
+    async def export_assembly_parts_stl(
+        input_data: ExportAssemblyPartsStlInput,
+    ) -> dict[str, Any]:
+        """Export every part of the active assembly to its own STL file, one per part.
+
+        Use it to send an assembly's parts to a 3D printer separately; for the whole
+        assembly in one file, use `export_stl`. A part used several times is written
+        once; files are named by `name_pattern`. Each part is exported as `export_stl`
+        does, from its own window (opened and closed again for a part only the assembly
+        had loaded), and read back. Mesh settings apply to these files only; the user's
+        STL options are put back. A part whose components use another configuration
+        than the part's active one is skipped. Needs: an open, active assembly.
+        Changes: writes the files, replacing ones already there; the assembly is active
+        again afterwards. Returns: `files` (each `part`, `file_path`, `instances` and
+        `mesh_check`), `skipped` and `failed`.
+
+        Args:
+            input_data: The export. `folder` is required; `name_pattern`
+                defaults to "{name}.stl"; the mesh settings are optional.
+
+        Returns:
+            dict[str, Any]: The files written.
+        """
+        input_data = normalize_input(input_data, ExportAssemblyPartsStlInput)
+        require_capability(
+            adapter,
+            "list_assembly_parts",
+            "The active adapter can't list an assembly's parts; nothing was exported.",
+        )
+        settings = input_data.mesh_settings()
+        listed = await adapter.list_assembly_parts()
+        require_success(listed, context="Failed to list the assembly's parts")
+        data = listed.data if isinstance(listed.data, dict) else {}
+        assembly = data.get("assembly") or {}
+        parts = list(data.get("parts") or [])
+        if not parts:
+            raise ToolOperationError(
+                f"No parts found in {assembly.get('title') or 'the assembly'}.",
+                listed.execution_time,
+            )
+        folder = os.path.abspath(input_data.folder)
+        plan, skipped = _plan_part_files(
+            parts, input_data.name_pattern, assembly, folder
+        )
+        os.makedirs(folder, exist_ok=True)
+        files: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        try:
+            for part, target in plan:
+                outcome = await _export_part(adapter, part, target, settings)
+                (files if "error" not in outcome else failed).append(outcome)
+        finally:
+            back = await adapter.activate_document(
+                assembly.get("path") or assembly.get("title") or ""
+            )
+        reply_data = {"files": files, "skipped": skipped, "failed": failed}
+        if not files:
+            raise ToolOperationError(
+                "No part was exported; see `failed` and `skipped` in `data`.",
+                listed.execution_time,
+                reply_data,
+            )
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Exported {len(files)} part(s) to STL in {folder}",
+            **reply_data,
+            "execution_time": listed.execution_time,
+        }
+        notes = [w for f in files if (w := f.get("warning"))]
+        if failed:
+            notes.append(
+                f"{len(failed)} part(s) failed: "
+                + ", ".join(f"{f['part']} ({f['error']})" for f in failed)
+                + "."
+            )
+        if skipped:
+            notes.append(f"{len(skipped)} part(s) were skipped; see `skipped`.")
+        if not back.is_success:
+            notes.append(f"The assembly could not be made active again: {back.error}")
+        if notes:
+            reply["warning"] = " ".join(notes)
+        return reply
+
+    tool_count = 8  # Number of tools registered
     return tool_count
+
+
+def _plan_part_files(
+    parts: list[dict[str, Any]],
+    pattern: str,
+    assembly: dict[str, Any],
+    folder: str,
+) -> tuple[list[tuple[dict[str, Any], str]], list[dict[str, Any]]]:
+    """Each part to export with its file, and the parts skipped with why.
+
+    Raises:
+        InvalidInputError: Two parts would get the same file name; nothing
+            is exported.
+    """
+    stem = os.path.splitext(
+        os.path.basename(assembly.get("path") or assembly.get("title") or "")
+    )[0]
+    plan: list[tuple[dict[str, Any], str]] = []
+    skipped: list[dict[str, Any]] = []
+    for part in parts:
+        label = part.get("title") or part.get("path") or "?"
+        config, active = part.get("configuration"), part.get("active_configuration")
+        if part.get("virtual"):
+            skipped.append({"part": label, "reason": "virtual: it has no file"})
+        elif config and active and config != active:
+            skipped.append(
+                {
+                    "part": label,
+                    "reason": (
+                        f"the assembly uses configuration {config!r}, the part's "
+                        f"active one is {active!r}; activate it and use export_stl"
+                    ),
+                }
+            )
+        else:
+            name = os.path.splitext(os.path.basename(part.get("path") or label))[0]
+            file_name = pattern.format(
+                name=name, config=config or "", assembly=stem, index=len(plan) + 1
+            )
+            plan.append((part, os.path.join(folder, file_name)))
+    seen: dict[str, str] = {}
+    for part, target in plan:
+        key = os.path.normcase(target)
+        if key in seen:
+            raise InvalidInputError(
+                f"name_pattern gives {os.path.basename(target)} to both "
+                f"{seen[key]} and {part.get('title')}; add {{config}} or {{index}}."
+            )
+        seen[key] = str(part.get("title"))
+    return plan, skipped
+
+
+async def _export_part(
+    adapter: Any, part: dict[str, Any], target: str, settings: dict[str, Any]
+) -> dict[str, Any]:
+    """Export one part to ``target`` from its own window, and read the file back.
+
+    Returns:
+        dict[str, Any]: ``part``, ``file_path``, ``instances``,
+        ``configuration``, ``mesh_check`` and maybe ``warning``; or ``part``
+        and ``error``.
+    """
+    label = part.get("title") or part.get("path")
+    activated = await adapter.activate_document(part.get("path") or label)
+    if not activated.is_success:
+        return {"part": label, "error": activated.error or "could not activate it"}
+    opened = bool((activated.data or {}).get("opened_window"))
+    try:
+        if settings:
+            result = await adapter.export_stl_with_settings(target, settings)
+        else:
+            result = await adapter.export_file(target, "stl")
+        if not result.is_success:
+            return {"part": label, "error": result.error or "the export failed"}
+        data = result.data if isinstance(result.data, dict) else {}
+        mesh_check = await _stl_mesh_check(
+            adapter, target, settings.get("units") or data.get("units"), "part"
+        )
+    finally:
+        if opened:
+            await adapter.close_model()
+    outcome: dict[str, Any] = {
+        "part": label,
+        "file_path": target,
+        "instances": part.get("instances"),
+        "configuration": part.get("configuration"),
+        "mesh_check": mesh_check,
+    }
+    notes = [w for w in [_partial_mesh_warning(mesh_check)] if w]
+    mesh = data.get("mesh")
+    if isinstance(mesh, dict) and mesh.get("restored") is False:
+        notes.append(
+            "The user's STL options could not all be put back; check Tools > "
+            "Options > Export > STL."
+        )
+    if notes:
+        outcome["warning"] = f"{label}: " + " ".join(notes)
+    return outcome

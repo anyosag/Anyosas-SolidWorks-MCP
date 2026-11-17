@@ -148,10 +148,21 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
   work around. The list, with the workaround for each:
   [references/errors-and-limits.md](references/errors-and-limits.md).
 
+## A multibody master and its part files
+
+`save_body_as_part` writes one body to its own part file (Save Bodies) and
+reads the file back. After changing the master, `resplit_bodies` updates
+those files in place; `list_save_bodies` shows which file each body goes
+to, and `edit_save_bodies` changes it. `export_assembly_parts_stl` writes
+one STL per part of an assembly.
+
 ## Long sessions
 
 SolidWorks slows down as documents pile up. Close a part with `close_model`
-once it is saved and you are done with it.
+once it is saved and you are done with it. Closing an assembly can leave its
+parts loaded with no window (their `~$` lock files stay):
+`list_open_documents` with `check_hidden` lists them, and `close_model` with
+`close_leftovers` closes the ones without unsaved changes.
 
 ## When to write VBA instead
 

@@ -163,8 +163,12 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "export_pdf": _STABLE,
     "export_step": _STABLE,
     "export_stl": _STABLE,
+    "export_assembly_parts_stl": _UNCHECKED,
     # file_management
     "activate_document": _STABLE,
+    "edit_save_bodies": _UNCHECKED,
+    "list_save_bodies": _UNCHECKED,
+    "resplit_bodies": _UNCHECKED,
     "batch_file_operations": _PLANNED,
     "classify_feature_tree": _UNCHECKED,
     "convert_file_format": _PLANNED,

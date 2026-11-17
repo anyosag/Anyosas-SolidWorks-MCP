@@ -799,7 +799,7 @@ def test_real_adapter_resolves_to_the_features_mixin() -> None:
     )
 
 
-def test_real_adapter_resolves_to_the_io_mixin() -> None:
+def test_real_adapter_resolves_to_the_save_bodies_mixin() -> None:
     """PyWin32Adapter resolves ``save_body_as_part`` to the COM mixin, not the stub."""
     pytest.importorskip("win32com", reason="pywin32 is Windows-only")
     from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
@@ -808,7 +808,7 @@ def test_real_adapter_resolves_to_the_io_mixin() -> None:
         (k.__name__ for k in PyWin32Adapter.__mro__ if "save_body_as_part" in vars(k)),
         None,
     )
-    assert owner == "SolidWorksIOMixin", (
+    assert owner == "SolidWorksSaveBodiesMixin", (
         f"PyWin32Adapter.save_body_as_part resolves to {owner}, not the COM mixin."
     )
 

@@ -862,7 +862,7 @@ class TestConnectionPoolAdapterExtras:
             ):
                 return _ok("marks")
 
-            async def save_body_as_part(self, body_name, file_path):
+            async def save_body_as_part(self, body_name, file_path, assembly_path=None):
                 return _ok({"body": body_name})
 
             async def check_interference(self, params=None):

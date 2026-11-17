@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..adapters.base import (
     AdapterResult,
+    AdapterResultStatus,
     ExtrusionParameters,
     LoftParameters,
     RevolveParameters,
@@ -544,6 +545,26 @@ class CloseModelInput(BaseModel):
             "`confirmation_required` error listed."
         ),
     )
+    close_leftovers: bool = Field(
+        default=False,
+        description=(
+            "Also close documents SolidWorks still has loaded with no window that "
+            "no open document uses, such as parts left by an assembly that was "
+            "closed. Ones with unsaved changes stay open and are listed"
+        ),
+    )
+    keep_active: bool = Field(
+        default=False,
+        description="With close_leftovers: leave the active document open",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.keep_active and not self.close_leftovers:
+            raise ValueError("keep_active needs close_leftovers")
+        if self.keep_active and self.save:
+            raise ValueError(
+                "keep_active leaves the document open, so save does nothing"
+            )
 
 
 class CreateCutExtrudeInput(CompatInput):
@@ -1878,30 +1899,84 @@ async def register_modeling_tools(
         """Close the active document, saving it first only if asked.
 
         Use it when you are done with a document. Unsaved changes are lost unless `save`
-        is on. Needs: an open, active document. Changes: closes the document, and with
+        is on. With `close_leftovers` it also closes parts SolidWorks still has loaded
+        with no window and no open document using them (left by a closed assembly; their
+        `~$` lock files stay until then), never one with unsaved changes;
+        `list_open_documents` with `check_hidden` shows them first. Needs: an open,
+        active document, unless `keep_active`. Changes: closes the document, and with
         `save` writes it first, without SolidWorks dialogs; a save that fails, or that
         would overwrite the user's own modified part files (`confirmation_required`),
-        leaves the document open. Returns: `saved`, whether a save was asked for.
+        leaves the document open. Returns: `saved`, whether a save was asked for, and
+        with `close_leftovers` `leftovers` (`closed`, `still_loaded`,
+        `kept_modified`).
 
         Args:
-            input_data: The close. Nothing is required: `save` and
-                `overwrite_modified_references` are off.
+            input_data: The close. Nothing is required: `save`,
+                `overwrite_modified_references`, `close_leftovers` and
+                `keep_active` are off.
 
         Returns:
             dict[str, Any]: The close result.
         """
         input_data = normalize_input(input_data, CloseModelInput)
-        result = await adapter.close_model(
-            input_data.save, input_data.overwrite_modified_references
-        )
-
-        require_success(result, context="Failed to close model")
-        return {
+        execution_time = 0.0
+        closed_active = False
+        if not input_data.keep_active:
+            result = await adapter.close_model(
+                input_data.save, input_data.overwrite_modified_references
+            )
+            nothing_open = (
+                input_data.close_leftovers
+                and result.status == AdapterResultStatus.WARNING
+            )
+            if not nothing_open:
+                require_success(result, context="Failed to close model")
+                closed_active = True
+            execution_time += result.execution_time or 0.0
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": "Model closed successfully",
-            "saved": input_data.save,
-            "execution_time": result.execution_time,
+            "message": "Model closed successfully" if closed_active else "",
+            "saved": input_data.save and closed_active,
+            "execution_time": execution_time,
         }
+        if not input_data.close_leftovers:
+            return reply
+        require_capability(
+            adapter,
+            "close_leftover_documents",
+            "The active adapter can't close documents loaded without a window.",
+        )
+        left = await adapter.close_leftover_documents()
+        require_success(left, context="Failed to close the leftover documents")
+        leftovers = left.data if isinstance(left.data, dict) else {}
+        closed = leftovers.get("closed") or []
+        reply["leftovers"] = leftovers
+        reply["execution_time"] = execution_time + (left.execution_time or 0.0)
+        reply["message"] = "; ".join(
+            part
+            for part in (
+                reply["message"],
+                f"closed {len(closed)} leftover document(s)",
+            )
+            if part
+        )
+        notes = []
+        if kept := leftovers.get("kept_modified"):
+            notes.append(
+                "Left open because they have unsaved changes: "
+                + ", ".join(d["title"] for d in kept)
+                + ". Ask the user whether to save or discard them."
+            )
+        if still := leftovers.get("still_loaded"):
+            notes.append(
+                "SolidWorks kept these loaded, so another loaded document still "
+                "uses them: "
+                + ", ".join(d["title"] for d in still)
+                + ". Closing that document releases them."
+            )
+        if notes:
+            reply["warning"] = " ".join(notes)
+        return reply
 
     @mcp.tool()
     async def create_extrusion(input_data: CreateExtrusionInput) -> dict[str, Any]:
