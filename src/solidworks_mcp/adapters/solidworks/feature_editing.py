@@ -605,6 +605,34 @@ def _point_mm(adapter: Any, point: Any) -> list[float] | None:
 #: ``swSketchSegments_e.swSketchTEXT``.
 SEGMENT_TEXT = 4
 
+#: ``swSketchSegments_e.swSketchARC``.
+SEGMENT_ARC = 1
+
+
+def describe_circle(adapter: Any, segment: Any) -> dict[str, Any] | None:
+    """A full circle's ``center_mm`` and ``radius_mm``; None for an arc.
+
+    ``ISketchArc.IsCircle()`` says whether the arc closes, and
+    ``GetRadius()`` gives the radius in metres. Three reads past the
+    segment's type, against six for its start, end and centre.
+
+    Returns:
+        dict[str, Any] | None: ``type`` ``circle``, ``center_mm`` and
+        ``radius_mm`` (each when it reads); None when the arc isn't a full
+        circle or ``IsCircle`` doesn't read.
+    """
+    _flag(adapter, segment, "IsCircle", "GetRadius", "GetCenterPoint2")
+    if _attempt(adapter, lambda: segment.IsCircle()) is not True:
+        return None
+    info: dict[str, Any] = {"type": "circle"}
+    center = _point_mm(adapter, _attempt(adapter, lambda: segment.GetCenterPoint2()))
+    if center is not None:
+        info["center_mm"] = center
+    radius = _attempt(adapter, lambda: segment.GetRadius())
+    if isinstance(radius, (int, float)) and not isinstance(radius, bool):
+        info["radius_mm"] = round(float(radius) * 1000, 6)
+    return info
+
 
 def describe_text(adapter: Any, text: Any) -> dict[str, Any]:
     """A sketch text's string, height, font and position, as far as they read.
@@ -678,14 +706,20 @@ def describe_segment(adapter: Any, segment: Any, text_of: Any = None) -> dict[st
     Returns:
         dict[str, Any]: ``type``, the points that read (``start_mm``,
         ``end_mm``, ``center_mm``), ``construction``; a text's
-        :func:`describe_text` instead of points.
+        :func:`describe_text` instead of points; a full circle (an arc whose
+        ``ISketchArc.IsCircle`` reads True) is ``type`` ``circle`` with
+        ``center_mm`` and ``radius_mm`` (:func:`describe_circle`), since its
+        start and end are the same point and said nothing.
     """
     _flag(
         adapter, segment, "GetType", "GetStartPoint2", "GetEndPoint2", "GetCenterPoint2"
     )
     kind = _attempt(adapter, lambda: segment.GetType())
     info: dict[str, Any] = {"type": SEGMENT_PREFIXES.get(kind, "Segment").lower()}
-    if kind == SEGMENT_TEXT:
+    circle = describe_circle(adapter, segment) if kind == SEGMENT_ARC else None
+    if circle is not None:
+        info = circle
+    elif kind == SEGMENT_TEXT:
         # A text has no end points; "Text_5" alone said nothing of it.
         info.update(describe_text(adapter, text_of(segment) if text_of else segment))
     else:
@@ -713,6 +747,22 @@ def describe_segments(adapter: Any, sketch: Any) -> list[tuple[Any, dict[str, An
         (segment, describe_segment(adapter, segment, text_of))
         for segment in as_list(_attempt(adapter, lambda: sketch.GetSketchSegments()))
     ]
+
+
+def reference_point_mm(info: dict[str, Any]) -> tuple[float, float] | None:
+    """A described segment's reference point: a circle's or arc's centre, a line's middle.
+
+    ``open_sketch`` records it as ``add_circle`` and ``add_line`` do, so a
+    dimension to an entity of a reopened sketch is placed without reading
+    the entity back (``sketch._sketch_point_xyz``).
+    """
+    center = info.get("center_mm")
+    if info.get("type") in ("circle", "arc") and isinstance(center, list):
+        return (float(center[0]), float(center[1]))
+    start, end = info.get("start_mm"), info.get("end_mm")
+    if info.get("type") == "line" and isinstance(start, list) and isinstance(end, list):
+        return ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+    return None
 
 
 def save_flag(adapter: Any, model: Any) -> bool | None:
@@ -778,6 +828,9 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     for segment, info in described:
         entity_id = adapter._register_sketch_entity(info["type"].capitalize(), segment)
         segments.append({"id": entity_id, **info})
+        reference = reference_point_mm(info)
+        if reference is not None:
+            adapter._sketch_entity_centers[entity_id] = reference
     adapter._opened_sketch = {
         "name": name,
         "was_dirty": was_dirty,

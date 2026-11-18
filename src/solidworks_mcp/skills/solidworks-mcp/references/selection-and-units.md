@@ -89,6 +89,9 @@ the tools that act on a selection.
 Each sketch tool returns an `id` (e.g. "Line_1"); `add_outlines` returns one
 per segment. `add_sketch_constraint`, `add_sketch_dimension`,
 `sketch_mirror`, `sketch_offset` and the sketch patterns take these ids.
+`add_sketch_constraint` and `add_sketch_dimension` also take "Origin" and
+points: "<id>.center", "<id>.start", "<id>.end"; a full circle reads as a
+circle with a centre and radius in `get_sketch` and `edit_sketch`.
 `check_sketch_fully_defined` says whether the sketch still has free geometry.
 
 Arcs run counter-clockwise from start to end, looking at the sketch with x

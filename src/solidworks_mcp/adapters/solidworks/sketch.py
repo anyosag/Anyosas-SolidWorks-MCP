@@ -11,7 +11,8 @@ from loguru import logger
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
-from . import limits, rectangle_check
+from . import limits, rectangle_check, sketch_points, sketch_relations
+from .com_utils import flag as _flag
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -242,14 +243,14 @@ class SolidWorksSketchMixin:
         entity2: str | None,
         relation_type: str,
         entity3: str | None = None,
-    ) -> AdapterResult[str]:
+    ) -> AdapterResult[Any]:
         return _add_sketch_constraint_impl(
             self, entity1, entity2, relation_type, entity3
         )
 
     async def add_sketch_dimension(
         self, entity1: str, entity2: str | None, dimension_type: str, value: float
-    ) -> AdapterResult[str]:
+    ) -> AdapterResult[Any]:
         return _add_sketch_dimension_impl(self, entity1, entity2, dimension_type, value)
 
     async def sketch_linear_pattern(
@@ -1448,11 +1449,13 @@ def _add_sketch_constraint_impl(
     entity2: str | None,
     relation_type: str,
     entity3: str | None = None,
-) -> AdapterResult[str]:
+) -> AdapterResult[dict[str, Any]]:
     """Add a geometric relation (constraint) between sketch entities.
 
     Resolves ``entity1`` (and ``entity2``/``entity3`` if provided) against the
-    adapter's sketch-entity registry, then calls
+    adapter's sketch-entity registry, ``"Origin"`` or a point of an entity
+    (``"<id>.center"``, ``.start``, ``.end``; see :func:`relation_targets`
+    and ``sketch_points``), then calls
     ``ISketchRelationManager.AddRelation(entities, relation_type_enum)`` on
     the active sketch. Entity handles are passed as a
     ``VARIANT(VT_ARRAY | VT_DISPATCH, [...])`` — pywin32 will not marshal a
@@ -1475,25 +1478,33 @@ def _add_sketch_constraint_impl(
     Args:
         adapter: A ``PyWin32Adapter`` with an open sketch and a valid
             ``currentModel``.
-        entity1: Registered entity ID of the primary sketch entity (from a
-            prior ``add_line`` / ``add_circle`` call).
-        entity2: Registered entity ID of the secondary sketch entity, or
-            ``None`` for single-entity relations (horizontal, vertical, fix).
+        entity1: The primary entity: a registered id (from ``add_line`` /
+            ``add_circle`` / ``edit_sketch``), ``"Origin"`` or a point of one.
+        entity2: The secondary entity, named the same way, or ``None`` for
+            single-entity relations (horizontal, vertical, fix).
         relation_type: Constraint type string (see above).
         entity3: Registered ID of a third entity. Only meaningful for
             ``"symmetric"`` — pass the centerline ID (from ``add_centerline``)
             as the line of symmetry. Must be ``None`` for every other
             relation type.
 
+    The relation is checked after: the sketch's relation count
+    (``GetRelationsCount``) must rise or an entity must move. When the count
+    reads and neither happened, SolidWorks took the call and did nothing (a
+    circle coincident with a centreline did that), which is an error rather
+    than a success that looks defined.
+
     Returns:
-        AdapterResult[str]: On success, ``data`` is the registered entity ID
-        of the new constraint object (e.g. ``"Constraint_3"``). On failure,
-        ``status`` is ``ERROR``.
+        AdapterResult[dict[str, Any]]: On success, ``data`` has ``id`` (the
+        registered relation, e.g. ``"Constraint_3"``), ``entities`` (the
+        references tied, after mapping a circle to its centre) and
+        ``verified_by`` (``relation_count``, ``geometry`` or None when
+        neither reads). On failure, ``status`` is ``ERROR``.
     """
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
 
-    def _constraint_operation() -> str:
+    def _constraint_operation() -> dict[str, Any]:
         if not adapter.currentModel:
             raise Exception("No active model")
 
@@ -1518,27 +1529,9 @@ def _add_sketch_constraint_impl(
                 "'symmetric' takes a third entity (the centerline)"
             )
 
-        entity1_obj = adapter._sketch_entities.get(entity1)
-        if entity1_obj is None:
-            raise Exception(
-                f"Unknown sketch entity '{entity1}'. Use IDs returned by add_line/add_arc/add_circle/add_spline/add_centerline."
-            )
-
-        entities = [entity1_obj]
-        if entity2:
-            entity2_obj = adapter._sketch_entities.get(entity2)
-            if entity2_obj is None:
-                raise Exception(
-                    f"Unknown sketch entity '{entity2}'. Use IDs returned by add_line/add_arc/add_circle/add_spline/add_centerline."
-                )
-            entities.append(entity2_obj)
-        if entity3:
-            entity3_obj = adapter._sketch_entities.get(entity3)
-            if entity3_obj is None:
-                raise Exception(
-                    f"Unknown sketch entity '{entity3}'. Use IDs returned by add_line/add_arc/add_circle/add_spline/add_centerline."
-                )
-            entities.append(entity3_obj)
+        refs = [r for r in (entity1, entity2, entity3) if r]
+        targets = relation_targets(adapter, rt_norm, refs)
+        entities = [t.obj for t in targets]
 
         # Flag IModelDoc2 + ISketch + ISketchRelationManager so late-binding
         # resolves GetActiveSketch2, RelationManager, and AddRelation as
@@ -1596,25 +1589,99 @@ def _add_sketch_constraint_impl(
             # Non-Windows: this branch is exercised only by mocked unit tests
             # whose fake AddRelation accepts any sequence.
             ents_variant = entities
+        count_before = sketch_relations.relation_count(adapter, relmgr)
+        where_before = [sketch_points.signature(adapter, t) for t in targets]
         sketch_relation, add_err = adapter._attempt_with_error(
             lambda: relmgr.AddRelation(ents_variant, relation_type_enum)
         )
+        named = " and ".join(f"'{t.ref}'" for t in targets)
         if add_err is not None or sketch_relation is None:
-            target = f"'{entity1}'" + (f" and '{entity2}'" if entity2 else "")
             detail = f": {add_err}" if add_err else ""
             raise Exception(
-                f"SolidWorks rejected '{relation_type}' relation on {target}{detail}"
+                f"SolidWorks rejected '{relation_type}' relation on {named}{detail}"
             )
-
-        return cast(
-            str,
-            adapter._register_sketch_entity("Constraint", sketch_relation),
+        verified_by = relation_took(
+            count_before,
+            sketch_relations.relation_count(adapter, relmgr),
+            where_before,
+            [sketch_points.signature(adapter, t) for t in targets],
         )
+        if verified_by == "nothing":
+            raise Exception(
+                f"SolidWorks accepted the '{rt_norm}' relation on {named} but "
+                "added no relation and moved nothing, so it did not take (it may "
+                "already hold, or not apply to these entities). Name a point "
+                "('<id>.center', '<id>.start', '<id>.end', 'Origin') to tie "
+                "points, and check with get_sketch detail 'summary'."
+            )
+        return {
+            "id": adapter._register_sketch_entity("Constraint", sketch_relation),
+            "entities": [t.ref for t in targets],
+            "verified_by": verified_by,
+        }
 
     return cast(
-        AdapterResult[str],
+        AdapterResult[dict[str, Any]],
         adapter._handle_com_operation("add_sketch_constraint", _constraint_operation),
     )
+
+
+def relation_targets(
+    adapter: Any, relation: str, refs: list[str]
+) -> list[sketch_points.Target]:
+    """What a relation ties, each reference resolved (``sketch_points.resolve``).
+
+    A coincident between an arc or circle and a line ties the arc's centre to
+    the line; SolidWorks accepted the curve itself and did nothing (a circle
+    and a centreline on SW 2026 SP4.1). A full circle coincident with a point
+    (the origin, say) ties its centre to the point too; an arc and a point
+    keep SolidWorks' meaning, the point on the arc.
+
+    Raises:
+        Exception: A reference names nothing (``sketch_points.resolve``).
+    """
+    targets = [sketch_points.resolve(adapter, ref) for ref in refs]
+    if relation != "coincident" or len(targets) != 2:
+        return targets
+
+    def _to_centre(curve: sketch_points.Target, other: sketch_points.Target) -> bool:
+        if curve.kind not in ("arc", "circle"):
+            return False
+        return other.kind == "line" or (other.is_point and curve.kind == "circle")
+
+    first, second = targets
+    if _to_centre(first, second):
+        return [sketch_points.as_centre(adapter, first), second]
+    if _to_centre(second, first):
+        return [first, sketch_points.as_centre(adapter, second)]
+    return targets
+
+
+def relation_took(
+    count_before: int | None,
+    count_after: int | None,
+    where_before: list[tuple[float, ...] | None],
+    where_after: list[tuple[float, ...] | None],
+) -> str | None:
+    """How a new relation shows it took, or ``"nothing"`` when it shows it didn't.
+
+    Returns:
+        str | None: ``"relation_count"`` (the sketch has one more),
+        ``"geometry"`` (an entity moved), ``"nothing"`` (the count read and
+        didn't rise, and nothing that read moved), or None when the count
+        can't be read and nothing moved.
+    """
+    if count_before is not None and count_after is not None:
+        if count_after > count_before:
+            return "relation_count"
+    moved = any(
+        before is not None and after is not None and before != after
+        for before, after in zip(where_before, where_after, strict=True)
+    )
+    if moved:
+        return "geometry"
+    counted = count_before is not None and count_after is not None
+    return "nothing" if counted else None
 
 
 def _add_sketch_dimension_impl(
@@ -1623,14 +1690,19 @@ def _add_sketch_dimension_impl(
     entity2: str | None,
     dimension_type: str,
     value: float,
-) -> AdapterResult[str]:
-    """Add a driven dimension to one or two registered sketch entities.
+) -> AdapterResult[dict[str, Any]]:
+    """Add a driving dimension to one or two sketch entities or points.
 
-        Supports linear, angular, radial, and diameter dimensions:
+    Supports linear, horizontal, vertical, angular, radial, and diameter
+    dimensions:
 
-    * **linear** — places a horizontal or vertical smart dimension on a single
-      entity.  The text-placement point is computed by
-      ``adapter._single_line_dimension_placement``.
+    * **linear** — a line's length on a single entity (text placed by
+      ``adapter._single_line_dimension_placement``); between a line and
+      another entity, :func:`_two_entity_linear_dimension`; between points,
+      circles (their centres) and lines otherwise, :func:`_distance_dimension`.
+    * **horizontal** / **vertical** — the distance along sketch x or y
+      between two points or lines, or a line's run or rise
+      (:func:`_distance_dimension`).
     * **angular** — places an angular dimension between two connected line
       segments sharing a common vertex.  The vertex is found via
       ``adapter._shared_segment_vertex`` and multiple direction/segment
@@ -1647,22 +1719,27 @@ def _add_sketch_dimension_impl(
     COM sessions.
 
     Dimensional values for **linear** dimensions are in **millimetres**;
-    for **angular** dimensions they are in **degrees**.
+    for **angular** dimensions they are in **degrees**. The value is set, then
+    read back (``IDimension.SystemValue``): a dimension that doesn't take it
+    (a driven one, where the sketch already fixes that distance) is an error.
 
     Args:
         adapter: A ``PyWin32Adapter`` with an open sketch and a valid
             ``currentModel`` and ``swApp``.
-        entity1: Registered entity ID of the primary sketch entity.
-        entity2: Registered entity ID of a secondary sketch entity (required
-            for angular dimensions), or ``None``.
-        dimension_type: ``"linear"``, ``"angular"``, ``"radial"``, or
-            ``"diameter"`` (case-insensitive).
+        entity1: The primary entity: a registered id, ``"Origin"`` or a point
+            of an entity (``"<id>.center"``, ``.start``, ``.end``).
+        entity2: The secondary entity, named the same way (required for
+            angular dimensions and distances), or ``None``.
+        dimension_type: ``"linear"``, ``"horizontal"``, ``"vertical"``,
+            ``"angular"``, ``"radial"``, or ``"diameter"`` (case-insensitive).
         value: Dimension value. Millimetres for linear, radial, and diameter;
             degrees for angular.
 
     Returns:
-        AdapterResult[str]: On success, ``data`` is the registered entity ID
-        of the new dimension object.  On failure, ``status`` is ``ERROR``.
+        AdapterResult[dict[str, Any]]: On success, ``data`` has ``id`` (the
+        registered dimension), ``entities`` (what it measures), and when they
+        read ``name`` (as ``set_dimension`` takes it) and ``measured`` (mm or
+        degrees). On failure, ``status`` is ``ERROR``.
 
     Raises:
         Exception: Propagated through ``_handle_com_operation`` when the
@@ -1675,7 +1752,7 @@ def _add_sketch_dimension_impl(
         result = pywin32_sketch_ops.add_sketch_dimension(
             adapter, "Line_1", None, "linear", 50.0
         )
-        print(result.data)  # "Dimension_7"
+        print(result.data["id"])  # "Dimension_7"
 
         # Angular dimension between two intersecting lines
         result = pywin32_sketch_ops.add_sketch_dimension(
@@ -1685,7 +1762,7 @@ def _add_sketch_dimension_impl(
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
 
-    def _dimension_operation() -> str:
+    def _dimension_operation() -> dict[str, Any]:
         """Inner COM closure that resolves entities, places and values the dimension.
 
         Resolves entity objects from the adapter registry, computes the
@@ -1694,14 +1771,12 @@ def _add_sketch_dimension_impl(
         ``SetSystemValue3`` / ``SetSystemValue2`` / ``SystemValue`` fallbacks.
 
         Returns:
-            str: Registered entity ID for the new dimension display object.
+            dict[str, Any]: The new dimension (see the outer docstring).
 
         Raises:
             Exception: If entity IDs are unknown, placement cannot be
                 determined, or the COM call fails.
         """
-        import math as _math_dim
-
         # Re-assert per-call: SolidWorks resets swInputDimValOnCreate (10)
         # when entering a new sketch, so the global connect-time suppression
         # is not sufficient. Setting it to False here prevents the Modify
@@ -1726,7 +1801,14 @@ def _add_sketch_dimension_impl(
             )
 
         if not adapter.currentModel:
-            return f"Dimension_{int(time.time() * 1000) % 10000}"
+            return {"id": f"Dimension_{int(time.time() * 1000) % 10000}"}
+
+        dim_type = (dimension_type or "linear").strip().lower()
+        refs = [entity1] + ([entity2] if entity2 else [])
+        if dim_type in ("horizontal", "vertical") or (
+            dim_type == "linear" and any(_is_point_reference(r) for r in refs)
+        ):
+            return _distance_dimension(adapter, refs, dim_type, value)
 
         entity1_obj = adapter._sketch_entities.get(entity1)
         if entity1_obj is None:
@@ -1742,7 +1824,15 @@ def _add_sketch_dimension_impl(
                     f"Unknown sketch entity '{entity2}'. Use IDs returned by add_line/add_arc/add_circle/add_spline/add_centerline."
                 )
 
-        dim_type = (dimension_type or "linear").strip().lower()
+        if (
+            dim_type == "linear"
+            and entity2_obj is not None
+            and sketch_points.segment_kind(adapter, entity1_obj) in ("arc", "circle")
+        ):
+            # Centre to centre, or centre to line: the line-first path below
+            # needs a line as entity1 (it failed for these on SW 2026 SP4.1).
+            return _distance_dimension(adapter, refs, dim_type, value)
+
         placement = None
         if dim_type == "angular" and entity2_obj is not None:
             placement = adapter._angular_dimension_placement(entity1_obj, entity2_obj)
@@ -1853,37 +1943,225 @@ def _add_sketch_dimension_impl(
 
         if not display_dim:
             raise Exception("SolidWorks failed to create sketch dimension")
-
-        if dim_type == "angular":
-            value_si = value * _math_dim.pi / 180.0
-        else:
-            value_si = value / 1000.0
-
-        dim_obj = (
-            adapter._attempt(lambda: display_dim.GetDimension2(0), default=None)
-            or adapter._attempt(lambda: display_dim.GetDimension(), default=None)
-            or display_dim
-        )
-        if (
-            adapter._attempt(
-                lambda: dim_obj.SetSystemValue3(value_si, 1, None), default=None
-            )
-            is None
-        ):
-            if (
-                adapter._attempt(
-                    lambda: dim_obj.SetSystemValue2(value_si, 1), default=None
-                )
-                is None
-            ):
-                if hasattr(dim_obj, "SystemValue"):
-                    dim_obj.SystemValue = value_si
-
-        return adapter._register_sketch_entity("Dimension", display_dim)  # type: ignore[no-any-return]
+        return _finish_dimension(adapter, display_dim, dim_type, value, refs)
 
     return cast(
-        AdapterResult[str],
+        AdapterResult[dict[str, Any]],
         adapter._handle_com_operation("add_sketch_dimension", _dimension_operation),
+    )
+
+
+#: Dimension types that measure a distance between two things.
+_DISTANCE_TYPES = ("linear", "horizontal", "vertical")
+
+
+def _is_point_reference(ref: str) -> bool:
+    """Whether ``ref`` names a point (``"Origin"``, ``"<id>.center"``, ...)."""
+    text = (ref or "").strip()
+    return text.lower() == sketch_points.ORIGIN or "." in text
+
+
+def _dimension_units(dim_type: str) -> tuple[float, str]:
+    """System units per the value's unit, and the unit: radians per degree or m per mm."""
+    if dim_type == "angular":
+        return math.pi / 180.0, "deg"
+    return 0.001, "mm"
+
+
+def _finish_dimension(
+    adapter: Any, display_dim: Any, dim_type: str, value: float, refs: list[str]
+) -> dict[str, Any]:
+    """Set a new dimension's value, read it back, and register it.
+
+    The value goes through ``SetSystemValue3`` (this configuration),
+    ``SetSystemValue2`` or the ``SystemValue`` property, whichever takes it.
+    ``SystemValue`` is then read: a dimension that reads something else
+    didn't take the value (it is driven: the sketch already fixes that
+    distance) and is an error naming it, so a sketch that looks dimensioned
+    isn't left at another size.
+
+    Returns:
+        dict[str, Any]: ``id``, ``entities`` and, when they read, ``name``
+        and ``measured``.
+
+    Raises:
+        Exception: The value read back is not the value asked.
+    """
+    from .documentation import _strip_document_suffix
+
+    factor, unit = _dimension_units(dim_type)
+    value_si = value * factor
+    dim_obj = (
+        adapter._attempt(lambda: display_dim.GetDimension2(0), default=None)
+        or adapter._attempt(lambda: display_dim.GetDimension(), default=None)
+        or display_dim
+    )
+    if (
+        adapter._attempt(
+            lambda: dim_obj.SetSystemValue3(value_si, 1, None), default=None
+        )
+        is None
+    ):
+        if (
+            adapter._attempt(lambda: dim_obj.SetSystemValue2(value_si, 1), default=None)
+            is None
+        ):
+            if hasattr(dim_obj, "SystemValue"):
+                dim_obj.SystemValue = value_si
+
+    dimension_id = adapter._register_sketch_entity("Dimension", display_dim)
+    reply: dict[str, Any] = {"id": dimension_id, "entities": list(refs)}
+    name = _strip_document_suffix(
+        adapter._attempt(lambda: dim_obj.FullName, default=None)
+    )
+    if name:
+        reply["name"] = name
+    read = adapter._attempt(lambda: dim_obj.SystemValue, default=None)
+    if isinstance(read, (int, float)) and not isinstance(read, bool):
+        measured = round(float(read) / factor, 6)
+        reply["measured"] = measured
+        if abs(float(read) - value_si) > max(1e-8, abs(value_si) * 1e-6):
+            raise Exception(
+                f"The {dim_type} dimension {name or dimension_id} was added but "
+                f"reads {measured:g} {unit}, not {value:g} {unit}: SolidWorks "
+                "didn't drive the sketch to it (it is a driven dimension when "
+                "the sketch already fixes that size). undo removes it."
+            )
+    return reply
+
+
+def _distance_dimension(
+    adapter: Any, refs: list[str], dim_type: str, value: float
+) -> dict[str, Any]:
+    """A distance between points, circles and lines, or a line's run or rise.
+
+    Each reference is resolved (``sketch_points.resolve``); a circle or arc
+    stands for its centre, so two circles are dimensioned centre to centre
+    and a circle and a line centre to line. Both are selected and
+    ``IModelDoc2.AddDimension2`` (``linear``: the shortest distance),
+    ``AddHorizontalDimension2`` or ``AddVerticalDimension2`` places the
+    dimension (what the macro recorder writes for a smart, horizontal or
+    vertical dimension). One line alone gives its length, run or rise.
+    When a centre can't be dimensioned the circle itself is tried, which
+    SolidWorks measures at its centre too.
+
+    Raises:
+        Exception: A reference names nothing, is neither a point nor a line,
+            a position can't be read, or SolidWorks made no dimension.
+    """
+    model = adapter.currentModel
+    targets = [sketch_points.resolve(adapter, ref) for ref in refs]
+    if len(targets) == 1:
+        only = targets[0]
+        if only.kind not in ("line", "segment"):
+            raise Exception(
+                f"A {dim_type} dimension of '{only.ref}' needs entity2: the point "
+                "or line to measure from, e.g. 'Origin'."
+            )
+    curves = [t for t in targets if t.kind in ("arc", "circle")]
+    curve_ids = {t.entity_id for t in curves}
+    if len(targets) == 2:
+        targets = [sketch_points.as_centre(adapter, t) for t in targets]
+        for target in targets:
+            if not (target.is_point or target.kind in ("line", "segment")):
+                raise Exception(
+                    f"'{target.ref}' is a {target.kind}: a distance is measured "
+                    "between points (a circle's centre, 'Origin', '<id>.start') "
+                    "and lines."
+                )
+    targets = [sketch_points.with_position(adapter, t) for t in targets]
+    text = _distance_text(adapter, targets, dim_type)
+
+    _flag(
+        adapter,
+        model,
+        "ClearSelection2",
+        "AddDimension2",
+        "AddHorizontalDimension2",
+        "AddVerticalDimension2",
+    )
+    create = {
+        "linear": lambda: model.AddDimension2(*text),
+        "horizontal": lambda: model.AddHorizontalDimension2(*text),
+        "vertical": lambda: model.AddVerticalDimension2(*text),
+    }[dim_type]
+    choices = [[t.obj for t in targets]]
+    if curves and len(targets) == 2:
+        # The circles themselves, in place of the centres they stood for.
+        choices.append(
+            [t.owner if t.entity_id in curve_ids else t.obj for t in targets]
+        )
+    display_dim = None
+    for objects in choices:
+        adapter._attempt(lambda: model.ClearSelection2(True), default=None)
+        if not all(
+            adapter._select_sketch_entity(obj, append=i > 0)
+            for i, obj in enumerate(objects)
+        ):
+            continue
+        display_dim = adapter._attempt(create, default=None)
+        if display_dim:
+            break
+    if not display_dim:
+        named = " and ".join(f"'{t.ref}'" for t in targets)
+        raise Exception(
+            f"SolidWorks made no {dim_type} dimension on {named} (with both "
+            "selected, nothing came back)."
+        )
+    return _finish_dimension(
+        adapter, display_dim, dim_type, value, [t.ref for t in targets]
+    )
+
+
+def _distance_text(
+    adapter: Any, targets: list[sketch_points.Target], dim_type: str
+) -> tuple[float, float, float]:
+    """Where a distance dimension's text goes, in sketch metres.
+
+    A point and a line, measured square to the line: beside the line, past
+    its nearer end (:func:`_text_beside_line`). Otherwise half way between
+    the two, moved :data:`_DIMENSION_CLEARANCE_M` off the measurement: above
+    for a horizontal one, right for a vertical one, square to it for a
+    linear one. One line alone: its single-line placement.
+
+    Raises:
+        Exception: A position can't be read.
+    """
+    clearance = _DIMENSION_CLEARANCE_M
+    if len(targets) == 1:
+        placement = adapter._attempt(
+            lambda: adapter._single_line_dimension_placement(targets[0].obj),
+            default=None,
+        )
+        if placement is not None:
+            return (placement[0], placement[1], placement[2])
+        if targets[0].xy is None:
+            raise Exception(f"Cannot read where '{targets[0].ref}' is to place it")
+        return (targets[0].xy[0], targets[0].xy[1] + clearance, 0.0)
+    first, second = targets
+    if first.xy is None or second.xy is None:
+        unread = first if first.xy is None else second
+        raise Exception(f"Cannot read where '{unread.ref}' is to place the dimension")
+    if dim_type == "linear":
+        line = next((t for t in targets if t.kind == "line"), None)
+        point = next((t for t in targets if t.is_point), None)
+        if line is not None and point is not None and point.xy is not None:
+            beside = _text_beside_line(adapter, line.obj, (*point.xy, 0.0))
+            if beside is not None:
+                return beside
+    (x1, y1), (x2, y2) = first.xy, second.xy
+    mid_x, mid_y = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    if dim_type == "horizontal":
+        return (mid_x, max(y1, y2) + clearance, 0.0)
+    if dim_type == "vertical":
+        return (max(x1, x2) + clearance, mid_y, 0.0)
+    length = math.hypot(x2 - x1, y2 - y1)
+    if length <= 1e-12:
+        return (mid_x, mid_y + clearance, 0.0)
+    return (
+        mid_x - (y2 - y1) / length * clearance,
+        mid_y + (x2 - x1) / length * clearance,
+        0.0,
     )
 
 
@@ -2850,275 +3128,68 @@ def _exit_sketch_impl(adapter: Any) -> AdapterResult[None]:
     return cast(AdapterResult[None], result)
 
 
-def _to_bool(value: Any) -> bool | None:
-    """Normalise an arbitrary raw value to a Python bool.
-
-    Handles booleans, 0/1 integers and floats, truthy/falsy strings, and
-    single-element sequences.
-
-    Args:
-        value: Raw value from a SolidWorks COM attribute or method return.
-
-    Returns:
-        bool | None: ``True``, ``False``, or ``None`` when the value is
-        ambiguous or unrecognised.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and int(value) in (0, 1):
-        return bool(int(value))
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "yes", "fully_defined", "fully defined"}:
-            return True
-        if normalized in {
-            "false",
-            "no",
-            "under_defined",
-            "under defined",
-            "over_defined",
-            "over defined",
-        }:
-            return False
-    if isinstance(value, (list, tuple)) and value:
-        return _to_bool(value[0])
-    return None
-
-
-def _to_number(value: Any) -> float | None:
-    """Normalise an arbitrary raw value to a float.
-
-    Args:
-        value: Raw value from a COM attribute or method return.
-
-    Returns:
-        float | None: Numeric value, or ``None`` when conversion fails.
-    """
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
-    if isinstance(value, (list, tuple)) and value:
-        return _to_number(value[0])
-    return None
-
-
-def _probe_to_flag(source: str, raw: Any) -> bool | None:
-    """Interpret a raw probe result according to the property-name semantics.
-
-    The SolidWorks API uses both positive and negative naming conventions
-    (``IsFullyConstrained`` vs ``IsUnderDefined``) so the source name is
-    used as a hint when interpreting the raw value.
-
-    Args:
-        source: The name of the API attribute that produced ``raw``, e.g.
-            ``"IsFullyConstrained"`` or ``"IsUnderDefined"``.
-        raw: The raw return value from the COM attribute.
-
-    Returns:
-        bool | None: ``True`` if the sketch is fully defined, ``False`` if
-        not, or ``None`` when interpretation is impossible.
-    """
-    source_lower = source.lower()
-    text_value = str(raw).strip().lower() if raw is not None else ""
-    numeric_value = _to_number(raw)
-
-    if "underdefined" in source_lower or "under_defined" in source_lower:
-        if numeric_value is not None:
-            return numeric_value == 0
-        bool_value = _to_bool(raw)
-        if bool_value is not None:
-            return not bool_value
-
-    if "overdefined" in source_lower or "over_defined" in source_lower:
-        if numeric_value is not None and numeric_value > 0:
-            return False
-        bool_value = _to_bool(raw)
-        if bool_value is True:
-            return False
-
-    if "fullydefined" in source_lower or "fully_defined" in source_lower:
-        bool_value = _to_bool(raw)
-        if bool_value is not None:
-            return bool_value
-
-    if "fully" in text_value and "under" not in text_value and "over" not in text_value:
-        return True
-    if "under" in text_value or "over" in text_value:
-        return False
-
-    return _to_bool(raw)
-
-
-def _state_from_bool(flag: bool | None) -> str:
-    """Convert a nullable bool flag to a descriptive state string.
-
-    Args:
-        flag: The fully-defined flag value.
-
-    Returns:
-        str: ``"fully_defined"``, ``"not_fully_defined"``, or
-        ``"unknown"``.
-    """
-    if flag is True:
-        return "fully_defined"
-    if flag is False:
-        return "not_fully_defined"
-    return "unknown"
-
-
 def _check_sketch_fully_defined_impl(
     adapter: Any,
     sketch_name: str | None = None,
 ) -> AdapterResult[dict[str, Any]]:
-    """Check whether a sketch is fully constrained (fully defined).
+    """Check whether a sketch is fully defined (``ISketch.GetConstrainedStatus``).
 
-    Queries the SolidWorks sketch object through multiple probe methods
-    because different API versions expose this information differently:
-
-    * ``ISketch.IsFullyConstrained`` (SolidWorks 2018+)
-    * ``ISketch.GetStatus`` returning a status integer
-    * ``ISketch.FullyDefined`` property
-
-    All raw values are normalised through ``_probe_to_flag`` which handles
-    bool, int, float, and string representations.  When the targeted sketch
-    cannot be found, the active model\'s current sketch is probed instead.
+    The earlier version probed members such as ``IsFullyConstrained``,
+    ``GetStatus`` and ``FullyDefined``, none of which ``ISketch`` or
+    ``IFeature`` has in SolidWorks' type library, so every sketch read
+    ``unknown`` / ``unavailable``. ``GetConstrainedStatus`` is the member
+    (``swConstrainedStatus_e``); see ``sketch_relations.constrained_status``,
+    which also counts the over-defining and dangling relations.
 
     Args:
         adapter: A ``PyWin32Adapter`` with a non-``None`` ``currentModel``.
         sketch_name: Name of the sketch feature as it appears in the
             FeatureManager tree (e.g. ``"Sketch1"``).  When ``None``, the
-            adapter\'s ``_last_sketch_name`` is used, then the currently open
-            sketch.
+            open sketch is read, then the adapter's ``_last_sketch_name``.
 
     Returns:
-        AdapterResult[dict[str, Any]]: On success, ``data`` is a dict:
-
-        .. code-block:: python
-
-            {
-                "sketch_name": "Sketch1",
-                "fully_defined": True,          # bool or None
-                "state": "fully_defined",        # or "not_fully_defined" / "unknown"
-                "source_api": "IsFullyConstrained",  # probe that succeeded
-            }
-
-        On failure, ``status`` is ``ERROR``.
-
-    Raises:
-        Exception: Propagated through ``_handle_com_operation`` on unexpected
-            COM errors.
-
-    Example::
-
-        result = pywin32_sketch_ops.check_sketch_fully_defined(adapter, "Sketch1")
-        if result.data["fully_defined"]:
-            print("Sketch is fully constrained")
-        else:
-            print("Sketch state:", result.data["state"])
+        AdapterResult[dict[str, Any]]: On success, ``data`` has
+        ``sketch_name``, ``is_fully_defined`` (None when SolidWorks can't
+        tell), ``definition_state`` (``fully_defined``, ``under_defined``,
+        ``over_defined``, ``no_solution``, ``invalid_solution``,
+        ``autosolve_off`` or ``unknown``), ``source``, ``raw_status`` and,
+        when they read, ``over_defining_relations`` and
+        ``dangling_relations``. On failure, ``status`` is ``ERROR``.
     """
     if not adapter.currentModel:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
 
+    def _sketch_of(name: str) -> Any:
+        feature = adapter._attempt(
+            lambda: adapter.currentModel.FeatureByName(name), default=None
+        )
+        if not feature:
+            raise Exception(f"Sketch not found: {name}")
+        _flag(adapter, feature, "GetSpecificFeature2")
+        found = adapter._attempt(lambda: feature.GetSpecificFeature2(), default=None)
+        if found is None:
+            raise Exception(f"SolidWorks gave no sketch for {name!r}")
+        return found
+
     def _get_sketch_payload() -> dict[str, Any]:
-        """Main inner closure that locates the sketch and probes its constraint status.
-
-        Resolves the sketch feature by name (falling back to the last-known
-        name and then the currently open sketch).  Iterates through multiple
-        API probes in priority order, stops at the first conclusive result.
-
-        Returns:
-            dict[str, Any]: Payload dict with keys ``sketch_name``,
-            ``fully_defined``, ``state``, and ``source_api``.
-
-        Raises:
-            Exception: On unexpected COM errors during feature lookup.
-        """
-        sketch_feature = None
-        sketch_obj = None
         resolved_name = sketch_name
-
         if sketch_name:
-            sketch_feature = adapter._attempt(
-                lambda: adapter.currentModel.FeatureByName(sketch_name), default=None
-            )
-            if not sketch_feature:
-                raise Exception(f"Sketch not found: {sketch_name}")
-            sketch_obj = adapter._attempt(
-                lambda: sketch_feature.GetSpecificFeature2(), default=None
-            )
+            sketch_obj = _sketch_of(sketch_name)
         else:
+            _flag(adapter, adapter.currentModel, "GetActiveSketch2")
             sketch_obj = adapter.currentSketch or adapter._attempt(
                 lambda: adapter.currentModel.GetActiveSketch2(), default=None
             )
-            if sketch_obj is None and adapter._last_sketch_name:
-                sketch_feature = adapter._attempt(
-                    lambda: adapter.currentModel.FeatureByName(
-                        adapter._last_sketch_name
-                    ),
-                    default=None,
-                )
-                sketch_obj = adapter._attempt(
-                    lambda: sketch_feature.GetSpecificFeature2(), default=None
-                )
+            if sketch_obj is not None:
                 resolved_name = adapter._last_sketch_name
-
-        if sketch_obj is None and sketch_feature is None:
-            raise Exception("No active sketch found")
-
-        probes: list[tuple[str, Any]] = []
-
-        for label, obj in (("sketch", sketch_obj), ("feature", sketch_feature)):
-            if obj is None:
-                continue
-            for attr_name in (
-                "GetFullyDefined",
-                "IsFullyDefined",
-                "FullyDefined",
-                "GetFullyDefinedStatus",
-                "GetSketchStatus",
-                "GetStatus",
-                "GetUnderDefined",
-                "IsUnderDefined",
-                "UnderDefined",
-                "GetUnderDefinedCount",
-                "UnderDefinedCount",
-                "GetUnderDefinedEntitiesCount",
-                "GetUnderDefinedSketchEntitiesCount",
-                "GetOverDefinedCount",
-                "OverDefinedCount",
-                "GetFullyDefineStatus",
-            ):
-                value = adapter._attempt(
-                    lambda o=obj, a=attr_name: adapter._get_attr_or_call(o, a),
-                    default=None,
-                )
-                if value is None:
-                    continue
-                probes.append((f"{label}.{attr_name}", value))
-
-        for source, raw in probes:
-            flag = _probe_to_flag(source, raw)
-            if flag is None:
-                continue
-
-            return {
-                "sketch_name": resolved_name,
-                "is_fully_defined": flag,
-                "definition_state": _state_from_bool(flag),
-                "source": source,
-                "raw_status": raw,
-            }
-
+            elif adapter._last_sketch_name:
+                resolved_name = adapter._last_sketch_name
+                sketch_obj = _sketch_of(resolved_name)
+            else:
+                raise Exception("No active sketch found")
         return {
             "sketch_name": resolved_name,
-            "is_fully_defined": None,
-            "definition_state": "unknown",
-            "source": "unavailable",
-            "raw_status": None,
+            **sketch_relations.constrained_status(adapter, sketch_obj),
         }
 
     return cast(

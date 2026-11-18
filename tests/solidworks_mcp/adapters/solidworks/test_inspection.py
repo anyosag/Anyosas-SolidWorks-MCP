@@ -627,3 +627,112 @@ def test_a_feature_built_from_no_sketch_names_none() -> None:
 
     assert "sketch" not in data
     assert data["parameters"]["chamfer_type"] == "equal_distance"
+
+
+# ---- the summary of a sketch (MMPLA session) --------------------------------------
+
+
+class _Circle:
+    """A full circle segment: centre (mm), radius (mm) and an id."""
+
+    def __init__(self, x: float, y: float, r: float, key: tuple[int, int]) -> None:
+        self._centre = SimpleNamespace(X=x / 1000, Y=y / 1000)
+        self._r, self._key = r / 1000, key
+        self.reads: list[str] = []
+
+    def GetType(self) -> int:  # noqa: N802
+        return 1
+
+    def IsCircle(self) -> bool:  # noqa: N802
+        return True
+
+    def GetCenterPoint2(self) -> Any:  # noqa: N802
+        return self._centre
+
+    def GetRadius(self) -> float:  # noqa: N802
+        return self._r
+
+    def GetID(self) -> tuple[int, int]:  # noqa: N802
+        return self._key
+
+    def GetStartPoint2(self) -> Any:  # noqa: N802
+        self.reads.append("start")
+        return None
+
+
+class _KeyedLine(_Line):
+    def GetID(self) -> tuple[int, int]:  # noqa: N802
+        return (0, 9)
+
+
+class _RelationSketch(_Sketch):
+    def __init__(self, segments: list[Any], relations: list[Any]) -> None:
+        super().__init__(segments)
+        self.RelationManager = SimpleNamespace(
+            GetRelations=lambda _kind: tuple(relations),
+            GetRelationsCount=lambda kind: 0,
+        )
+
+    def GetConstrainedStatus(self) -> int:  # noqa: N802
+        return 2
+
+
+def test_a_summary_lists_circles_dimensions_relations_and_the_state() -> None:
+    circle = _Circle(8.0, 3.0, 0.3, (1, 5))
+    line = _KeyedLine()
+    concentric = SimpleNamespace(
+        GetRelationType=lambda: 10,
+        GetEntities=lambda: (circle, SimpleNamespace(X=0.0, Y=0.0)),
+        GetEntitiesType=lambda: (4, 2),
+    )
+    diameter = SimpleNamespace(GetRelationType=lambda: 15)
+    sketch = _RelationSketch([circle, line], [concentric, diameter])
+    feature = _Feature(
+        "Sketch1",
+        "ProfileFeature",
+        sketch=sketch,
+        parents=[_plane("Front Plane")],
+        dimensions=[_display("D1@Sketch1@MMPLA.Part", 0.0006)],
+    )
+
+    data = ins.read_sketch(_Adapter(_Model(feature)), "Sketch1", "summary")
+
+    assert data["detail"] == "summary" and data["plane"] == "Front Plane"
+    assert "segments" not in data and "axes" not in data
+    assert data["segment_counts"] == {"circle": 1, "line": 1}
+    assert data["circles"] == [{"index": 0, "center_mm": [8.0, 3.0], "radius_mm": 0.3}]
+    assert data["dimensions"] == [{"name": "D1@Sketch1", "value": 0.6, "units": "mm"}]
+    assert data["relations"] == [
+        {
+            "type": "concentric",
+            "entities": [
+                {"kind": "arc", "segment": 0},
+                {"kind": "point", "at_mm": [0.0, 0.0]},
+            ],
+        }
+    ]
+    assert data["relation_counts"] == {"concentric": 1, "diameter": 1}
+    assert data["dimension_relations"] == 1
+    assert data["definition_state"] == "under_defined"
+    assert data["is_fully_defined"] is False
+    assert circle.reads == []  # no end points read in a summary
+
+
+def test_read_sketch_refuses_an_unknown_detail() -> None:
+    with pytest.raises(ValueError, match="detail must be 'full' or 'summary'"):
+        ins.read_sketch(_Adapter(_Model()), "Sketch1", "brief")
+
+
+def test_a_summary_wraps_raw_items_without_flagging_whole_interfaces(
+    monkeypatch,
+) -> None:
+    class PyIDispatch:
+        pass
+
+    from solidworks_mcp.adapters.solidworks import io
+
+    wrapped = _KeyedLine()
+    monkeypatch.setattr(io, "_dynamic", SimpleNamespace(Dispatch=lambda _o: wrapped))
+
+    assert ins._plain_dispatch(_Adapter(), PyIDispatch()) is wrapped
+    assert ins._plain_dispatch(_Adapter(), wrapped) is wrapped

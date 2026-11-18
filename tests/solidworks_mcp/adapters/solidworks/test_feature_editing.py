@@ -1108,3 +1108,82 @@ def test_an_empty_sketch_deletes_nothing_and_forgets_stale_ids() -> None:
     assert reply == {"deleted": [], "deleted_count": 0, "skipped": [], "remaining": []}
     assert "EditDelete" not in model.calls
     assert adapter._sketch_entities == {}
+
+
+# ---- full circles (MMPLA session) ------------------------------------------------
+
+
+class _Arc(_Segment):
+    """An arc segment that knows whether it closes and its radius (metres)."""
+
+    def __init__(self, circle: Any, radius: Any = 0.0003, **points: Any) -> None:
+        super().__init__(1, **points)
+        self._circle, self._radius = circle, radius
+
+    def IsCircle(self) -> Any:  # noqa: N802
+        return self._circle
+
+    def GetRadius(self) -> Any:  # noqa: N802
+        return self._radius
+
+
+def test_a_full_circle_is_described_by_centre_and_radius() -> None:
+    adapter = _Adapter(_Model([]))
+    circle = _Arc(True, center=_Point(8, 3), start=_Point(8.3, 3), end=_Point(8.3, 3))
+
+    assert fe.describe_segment(adapter, circle) == {
+        "type": "circle",
+        "center_mm": [8.0, 3.0],
+        "radius_mm": 0.3,
+        "construction": False,
+    }
+
+
+def test_an_open_arc_and_an_unreadable_circle_keep_their_points() -> None:
+    adapter = _Adapter(_Model([]))
+    points = {"center": _Point(0, 0), "start": _Point(1, 0), "end": _Point(0, 1)}
+
+    for closes in (False, None):
+        info = fe.describe_segment(adapter, _Arc(closes, **points))
+        assert info["type"] == "arc"
+        assert info["start_mm"] == [1.0, 0.0] and info["end_mm"] == [0.0, 1.0]
+
+
+def test_a_circle_whose_centre_and_radius_do_not_read() -> None:
+    adapter = _Adapter(_Model([]))
+
+    assert fe.describe_circle(adapter, _Arc(True, radius="?")) == {"type": "circle"}
+    assert fe.describe_circle(adapter, _Arc(False)) is None
+
+
+@pytest.mark.parametrize(
+    ("info", "expected"),
+    [
+        ({"type": "circle", "center_mm": [8.0, 3.0]}, (8.0, 3.0)),
+        ({"type": "arc", "center_mm": [1.0, 2.0]}, (1.0, 2.0)),
+        ({"type": "line", "start_mm": [0.0, 0.0], "end_mm": [20.0, 10.0]}, (10.0, 5.0)),
+        ({"type": "line", "start_mm": [0.0, 0.0]}, None),
+        ({"type": "spline"}, None),
+    ],
+)
+def test_reference_point_mm(info: dict[str, Any], expected: Any) -> None:
+    assert fe.reference_point_mm(info) == expected
+
+
+def test_a_reopened_sketch_records_each_entitys_point() -> None:
+    segments = [
+        _Segment(0, _Point(0, 0), _Point(20, 0)),
+        _Arc(True, center=_Point(8, 3)),
+        _Segment(3),
+    ]
+    sketch = SimpleNamespace(GetSketchSegments=lambda: segments)
+    model = _Model([_Feature("Sketch2", "ProfileFeature", None)], sketch=sketch)
+    adapter = _Adapter(model)
+
+    reply = fe.open_sketch(adapter, "Sketch2")
+
+    assert [s["id"] for s in reply["segments"]] == ["Line_1", "Circle_2", "Spline_3"]
+    assert adapter._sketch_entity_centers == {
+        "Line_1": (10.0, 0.0),
+        "Circle_2": (8.0, 3.0),
+    }

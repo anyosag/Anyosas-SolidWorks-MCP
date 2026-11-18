@@ -178,3 +178,12 @@ def test_a_sketch_is_read_for_its_crossings() -> None:
         sc.crossings_in(_Adapter(SimpleNamespace(FeatureByName=lambda _n: empty)), "X")
         == []
     )
+
+
+def test_circles_described_by_centre_and_radius_are_contours() -> None:
+    described = {"type": "circle", "center_mm": [35.5, 0.0], "radius_mm": 18.0}
+    unplaced = {"type": "circle", "radius_mm": 18.0}
+
+    assert _found(_circle(0, 0, 18), described, unplaced) == [
+        "the circle at (0, 0) r 18 and the circle at (35.5, 0) r 18"
+    ]

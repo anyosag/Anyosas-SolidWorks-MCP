@@ -1905,8 +1905,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["feature_operation"],
         )
 
-    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
-        """Mock reading a sketch without opening it: its plane, no geometry kept."""
+    async def get_sketch(
+        self, name: str, detail: str = "full"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock reading a sketch without opening it: its plane, no geometry kept.
+
+        A ``"summary"`` gives the summary's keys, empty, and a fully defined
+        state (the mock keeps no geometry to leave free).
+        """
         if not self._current_model:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
@@ -1921,9 +1927,24 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
             return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
         self._operation_count += 1
+        data = self._mock_sketch_definition(name)
+        if detail == "summary":
+            data = {
+                **{k: v for k, v in data.items() if k not in ("segments", "axes")},
+                "detail": "summary",
+                "circles": [],
+                "dimensions": [],
+                "relations": [],
+                "relation_counts": {},
+                "dimension_relations": 0,
+                "is_fully_defined": True,
+                "definition_state": "fully_defined",
+                "source": "mock",
+                "raw_status": 3,
+            }
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data=self._mock_sketch_definition(name),
+            data=data,
             execution_time=self._delays["sketch_operation"],
         )
 
@@ -3612,7 +3633,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # so the mock surfaces the same "Unknown sketch entity" error as the
         # real adapter (which checks adapter._sketch_entities).
         for ent in (entity1, entity2, entity3):
-            if ent is not None and ent not in self._sketch_entity_ids:
+            # "Origin" and "<id>.center" / ".start" / ".end" name points, as
+            # the real adapter takes them (sketch_points.resolve).
+            if ent is None or ent.strip().lower() == "origin":
+                continue
+            if (ent.rpartition(".")[0] or ent) not in self._sketch_entity_ids:
                 return AdapterResult(
                     status=AdapterResultStatus.ERROR,
                     error=(

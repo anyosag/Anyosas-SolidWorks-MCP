@@ -177,6 +177,28 @@ wholly inside another is filled too: draw holes in a sketch of their own and
 cut them. Without `regions`, such a failure is retried this way when no
 contour lies inside another, and the reply's `warning` says so.
 
+## A fully defined sketch (one a person can edit later)
+
+1. Draw the profile, then tie it down with `add_sketch_constraint` and
+   `add_sketch_dimension`. Besides the ids the add_* tools and `edit_sketch`
+   give, both take "Origin" and a point of an entity: "Circle_1.center",
+   "Line_2.start", "Line_2.end".
+2. Place each feature from the origin or from a fixed line: a hole is a
+   `dimension_type` "horizontal" and a "vertical" from "Circle_1.center" to
+   "Origin" (or "linear" to a line), plus a "diameter". Two circles take a
+   "linear" centre to centre; a circle and a line, centre to line.
+   `relation_type` "coincident" between a circle and a line (or the origin)
+   puts the circle's centre on it; "fix" pins what nothing else holds.
+3. A relation that added nothing and moved nothing, or a dimension that
+   reads back another value (it became driven: something already fixed that
+   size), is an error, not a success; `undo` removes such a dimension.
+4. `check_sketch_fully_defined` gives the `definition_state`: under, fully
+   or over defined, with the over-defining relations counted. It can't say
+   which entities are still free: `get_sketch` with `detail` "summary" lists
+   the circles, dimensions and relations (each naming its segment by index,
+   which `edit_sketch` numbers from 1), so the free one is the one nothing
+   names. On a large sketch use the summary rather than the full read.
+
 ## A row or grid of slots or holes
 
 Cut (or extrude) the first one, then `pattern_linear` with its name in
