@@ -15,6 +15,10 @@ _CALLS = {
     "get_custom_properties": (),
     "set_custom_property": ("PartNo", "P-1"),
     "export_flat_pattern": ("flat.dxf",),
+    "list_equations": (),
+    "set_global_variable": ("well_d", 1.2),
+    "add_equation": ("D1@Sketch3", '"well_d"'),
+    "delete_equation": ("well_d",),
 }
 
 

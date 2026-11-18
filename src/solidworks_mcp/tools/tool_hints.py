@@ -171,6 +171,10 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "generate_drawing_package": _overwrites("Generate Drawing Package"),
     # engineering_data
     "list_model_dimensions": _reads("List Model Dimensions"),
+    "list_equations": _reads("List Equations"),
+    "set_global_variable": _sets("Set Global Variable"),
+    "add_equation": _sets("Add Equation"),
+    "delete_equation": _discards("Delete Equation"),
     "measure_entities": _reads("Measure Entities"),
     "get_material": _reads("Get Material"),
     "set_material": _sets("Set Material"),

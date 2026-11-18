@@ -7146,6 +7146,234 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
         return AdapterResult(status=AdapterResultStatus.SUCCESS, data=dims)
 
+    # ------------------------------------------------------------------
+    # Equations and global variables
+    # ------------------------------------------------------------------
+
+    def _mock_equation_list(self) -> list[str]:
+        """This mock document's equation texts, in order."""
+        if not hasattr(self, "_mock_equations"):
+            self._mock_equations: dict[str, list[str]] = {}
+        return self._mock_equations.setdefault(self._mock_doc_key(), [])
+
+    def _mock_values(self) -> dict[str, float]:
+        """The dimensions and the global variables, solved in order."""
+        from .solidworks import equations as eq
+
+        values: dict[str, float] = dict(self._dimensions)
+        for text in self._mock_equation_list():
+            name = eq.left_side(text) or ""
+            if "@" not in name:
+                values[name] = self._mock_evaluate(eq.right_side(text), values)
+        return values
+
+    def _mock_evaluate(
+        self, expression: str, values: dict[str, float] | None = None
+    ) -> float:
+        """Evaluate an equation's right side: numbers, units, quoted names, + - * /."""
+        import ast
+        import re
+
+        values = self._mock_values() if values is None else values
+        scale = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "ft": 304.8}
+
+        def _name(match: re.Match[str]) -> str:
+            key = next((k for k in values if k.lower() == match.group(1).lower()), None)
+            if key is None:
+                raise ValueError(f"unknown name {match.group(0)}")
+            return repr(values[key])
+
+        def _unit(match: re.Match[str]) -> str:
+            return repr(float(match.group(1)) * scale.get(match.group(2), 1.0))
+
+        text = re.sub(r'"([^"]+)"', _name, expression)
+        text = re.sub(r"(\d+(?:\.\d+)?)\s*(mm|cm|m|in|ft|deg|rad)\b", _unit, text)
+
+        def _walk(node: ast.AST) -> float:
+            if isinstance(node, ast.Expression):
+                return _walk(node.body)
+            if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+                return float(node.value)
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+                return -_walk(node.operand)
+            if isinstance(node, ast.BinOp):
+                left, right = _walk(node.left), _walk(node.right)
+                operations = {
+                    ast.Add: lambda: left + right,
+                    ast.Sub: lambda: left - right,
+                    ast.Mult: lambda: left * right,
+                    ast.Div: lambda: left / right,
+                }
+                for kind, run in operations.items():
+                    if isinstance(node.op, kind):
+                        return run()
+            raise ValueError(f"can't evaluate {expression!r}")
+
+        try:
+            return _walk(ast.parse(text.strip(), mode="eval"))
+        except (SyntaxError, ZeroDivisionError) as exc:
+            raise ValueError(f"can't evaluate {expression!r}") from exc
+
+    def _mock_equation_entries(self) -> list[dict[str, Any]]:
+        """The real adapter's entry shape, solved against the mock dimensions."""
+        from .solidworks import equations as eq
+
+        entries: list[dict[str, Any]] = []
+        for index, text in enumerate(self._mock_equation_list()):
+            name = eq.left_side(text) or ""
+            is_dimension = "@" in name
+            value = self._mock_evaluate(eq.right_side(text))
+            entry: dict[str, Any] = {
+                "index": index,
+                "name": name,
+                "equation": text,
+                "kind": "dimension" if is_dimension else "global_variable",
+                "value": value,
+                "suppressed": False,
+            }
+            if is_dimension:
+                self._dimensions[name] = value
+                entry["dimension"] = {
+                    "name": name,
+                    "value": value,
+                    "units": "mm",
+                    "kind": "length",
+                }
+            entries.append(entry)
+        return entries
+
+    def _mock_put_equation(
+        self, equation: str, existing: dict[str, Any] | None
+    ) -> None:
+        """Add or replace ``equation``; refuse one the mock can't solve."""
+        from .solidworks import equations as eq
+
+        try:
+            self._mock_evaluate(eq.right_side(equation))
+        except ValueError as exc:
+            raise eq.invalid(equation, str(exc)) from exc
+        texts = self._mock_equation_list()
+        if existing is None:
+            texts.append(equation)
+        else:
+            texts[existing["index"]] = equation
+
+    async def _mock_equation_call(
+        self, operation: str, work: Callable[[], dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        guard = self._mock_doc_error({"Part", "Assembly"}, operation)
+        if guard is not None:
+            return guard
+        self._operation_count += 1
+        try:
+            data = work()
+        except (ValueError, LookupError) as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        return AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)
+
+    async def list_equations(self) -> AdapterResult[dict[str, Any]]:
+        """Mock listing the global variables and equations."""
+        from .solidworks import equations as eq
+
+        return await self._mock_equation_call(
+            "list_equations", lambda: eq.summary(self._mock_equation_entries())
+        )
+
+    async def set_global_variable(
+        self, name: str, value: float, units: str = "mm"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock adding or changing a global variable."""
+        from .solidworks import equations as eq
+
+        def _set() -> dict[str, Any]:
+            label = eq.unquote(name)
+            unit = (units or "").strip().lower()
+            if not label or "@" in label or unit not in eq.UNIT_SUFFIXES:
+                raise ValueError(f"Invalid request: {name!r} {units!r}")
+            existing = eq.find(self._mock_equation_entries(), label)
+            equation = f'"{label}" = ' + eq.format_number(value, unit)
+            self._mock_put_equation(equation, existing)
+            after = self._mock_equation_entries()
+            return {
+                "action": "changed" if existing else "added",
+                "global_variable": eq.find(after, label),
+                "previous": existing["equation"] if existing else None,
+                "driven": [
+                    e
+                    for e in after
+                    if e["kind"] == "dimension" and eq.references(e["equation"], label)
+                ],
+                **eq.summary(after),
+            }
+
+        return await self._mock_equation_call("set_global_variable", _set)
+
+    async def add_equation(
+        self, dimension: str, expression: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock driving a dimension by an equation."""
+        from .solidworks import equations as eq
+
+        def _add() -> dict[str, Any]:
+            target = eq.unquote(dimension)
+            if "@" not in target:
+                raise ValueError(f"Invalid request: {dimension!r} isn't a full name")
+            if target not in self._dimensions:
+                raise LookupError(f"Dimension {target!r} not found")
+            text = (expression or "").strip().lstrip("=").strip()
+            entries = self._mock_equation_entries()
+            variable = eq.find(entries, text) if text else None
+            if variable is not None and variable["kind"] == "global_variable":
+                text = f'"{variable["name"]}"'
+            existing = eq.find(entries, target)
+            before = self._dimensions[target]
+            self._mock_put_equation(f'"{target}" = {text}', existing)
+            after = self._mock_equation_entries()
+            return {
+                "action": "changed" if existing else "added",
+                "equation": eq.find(after, target),
+                "previous": existing["equation"] if existing else None,
+                "dimension": eq.find(after, target)["dimension"],
+                "value_before": before,
+                **eq.summary(after),
+            }
+
+        return await self._mock_equation_call("add_equation", _add)
+
+    async def delete_equation(
+        self, name: str | None = None, index: int | None = None, force: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock deleting an equation or global variable."""
+        from .solidworks import equations as eq
+
+        def _delete() -> dict[str, Any]:
+            entries = self._mock_equation_entries()
+            if name:
+                target = eq.find(entries, eq.unquote(name))
+            else:
+                target = next((e for e in entries if e["index"] == index), None)
+            if target is None:
+                raise LookupError(f"Equation {name or index!r} not found")
+            users = [
+                e
+                for e in entries
+                if e is not target and eq.references(e["equation"], target["name"])
+            ]
+            if users and not force:
+                raise ValueError(f"Invalid request: {target['name']} is in use")
+            del self._mock_equation_list()[target["index"]]
+            if users:
+                # The mock holds only equations it can solve: those go too.
+                for user in users:
+                    self._mock_equation_list().remove(user["equation"])
+            return {
+                "deleted": target,
+                "left_using_it": [e["equation"] for e in users],
+                **eq.summary(self._mock_equation_entries()),
+            }
+
+        return await self._mock_equation_call("delete_equation", _delete)
+
     async def measure_entities(
         self, entities: list[str]
     ) -> AdapterResult[dict[str, Any]]:

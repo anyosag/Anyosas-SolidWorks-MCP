@@ -2795,6 +2795,56 @@ class SolidWorksAdapter(ABC):
             error="list_model_dimensions is not implemented by this adapter",
         )
 
+    async def list_equations(self) -> AdapterResult[dict[str, Any]]:
+        """List the active model's global variables and equations.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_equations is not implemented by this adapter",
+        )
+
+    async def set_global_variable(
+        self, name: str, value: float, units: str = "mm"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add or change a global variable of the active model.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_global_variable is not implemented by this adapter",
+        )
+
+    async def add_equation(
+        self, dimension: str, expression: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Drive a dimension of the active model by an equation.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_equation is not implemented by this adapter",
+        )
+
+    async def delete_equation(
+        self, name: str | None = None, index: int | None = None, force: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete an equation or global variable of the active model.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_equation is not implemented by this adapter",
+        )
+
     async def measure_entities(
         self,
         entities: list[str],

@@ -2223,6 +2223,39 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.list_model_dimensions(feature_name),
         )
 
+    async def list_equations(self) -> AdapterResult[dict[str, Any]]:
+        """List the global variables and equations using pool."""
+        return await self._execute_with_pool(
+            "list_equations", lambda adapter: adapter.list_equations()
+        )
+
+    async def set_global_variable(
+        self, name: str, value: float, units: str = "mm"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add or change a global variable using pool."""
+        return await self._execute_with_pool(
+            "set_global_variable",
+            lambda adapter: adapter.set_global_variable(name, value, units),
+        )
+
+    async def add_equation(
+        self, dimension: str, expression: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Drive a dimension by an equation using pool."""
+        return await self._execute_with_pool(
+            "add_equation",
+            lambda adapter: adapter.add_equation(dimension, expression),
+        )
+
+    async def delete_equation(
+        self, name: str | None = None, index: int | None = None, force: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete an equation or global variable using pool."""
+        return await self._execute_with_pool(
+            "delete_equation",
+            lambda adapter: adapter.delete_equation(name, index, force),
+        )
+
     async def measure_entities(
         self,
         entities: list[str],

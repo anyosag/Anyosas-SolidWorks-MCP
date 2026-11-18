@@ -45,6 +45,7 @@ from .solidworks import (
 )
 from .solidworks.com_utils import clear_selection
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
+from .solidworks.equations import SolidWorksEquationsMixin
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.file_ledger import FileLedger, ledger_path
 from .solidworks.io import activate_doc
@@ -2273,6 +2274,7 @@ class PyWin32Adapter(
     SolidWorksBodiesMixin,
     SolidWorksDrawingStandardMixin,
     SolidWorksDocumentationMixin,
+    SolidWorksEquationsMixin,
     SolidWorksSketchMixin,
     SolidWorksFeaturesMixin,
     SolidWorksSaveBodiesMixin,
