@@ -627,8 +627,8 @@ def test_add_sketch_constraint_two_entity_happy_path() -> None:
     )
 
     assert result.status == AdapterResultStatus.SUCCESS
-    assert result.data.startswith("Constraint_")
-    assert adapter._sketch_entities[result.data] is constraint_obj
+    assert result.data["id"].startswith("Constraint_")
+    assert adapter._sketch_entities[result.data["id"]] is constraint_obj
     # AddRelation is called with the VARIANT entity array and PERPENDICULAR=8
     assert add_relation.call_count == 1
     _ents_arg, rt_arg = add_relation.call_args.args
@@ -680,8 +680,8 @@ def test_add_sketch_constraint_symmetric_happy_path() -> None:
     )
 
     assert result.status == AdapterResultStatus.SUCCESS
-    assert result.data.startswith("Constraint_")
-    assert adapter._sketch_entities[result.data] is constraint_obj
+    assert result.data["id"].startswith("Constraint_")
+    assert adapter._sketch_entities[result.data["id"]] is constraint_obj
     ents_arg, rt_arg = add_relation.call_args.args
     assert rt_arg == 11  # swConstraintType_SYMMETRIC
     # Three-element entity list, in order: entity1, entity2, entity3.
@@ -823,7 +823,7 @@ def test_add_sketch_dimension_linear_success_and_fallback_value_setters() -> Non
 
     result = sketch._add_sketch_dimension_impl(adapter, "Line_1", None, "linear", 25.0)
     assert result.status == AdapterResultStatus.SUCCESS
-    assert result.data.startswith("Dimension_")
+    assert result.data["id"].startswith("Dimension_")
     assert dim_obj.SystemValue == 0.025
 
 
@@ -948,75 +948,7 @@ def test_add_sketch_dimension_returns_generated_id_when_model_missing() -> None:
 
     result = sketch._add_sketch_dimension_impl(adapter, "Line_1", None, "linear", 12.0)
     assert result.is_success
-    assert result.data.startswith("Dimension_")
-
-
-def test_check_sketch_fully_defined_variants() -> None:
-    adapter = _FakeSketchAdapter()
-
-    no_model = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert no_model.status == AdapterResultStatus.ERROR
-
-    adapter.currentModel = SimpleNamespace(FeatureByName=lambda _name: None)
-    missing_named = sketch._check_sketch_fully_defined_impl(adapter, "Sketch9")
-    assert missing_named.status == AdapterResultStatus.ERROR
-    assert "Sketch not found" in (missing_named.error or "")
-
-    sketch_obj = SimpleNamespace(IsFullyDefined=lambda: True)
-    adapter.currentSketch = sketch_obj
-    fully_defined = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert fully_defined.is_success
-    assert fully_defined.data["is_fully_defined"] is True
-    assert fully_defined.data["definition_state"] == "fully_defined"
-
-    under_obj = SimpleNamespace(IsUnderDefined=lambda: True)
-    adapter.currentSketch = under_obj
-    under_defined = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert under_defined.is_success
-    assert under_defined.data["is_fully_defined"] is False
-
-    unknown_obj = SimpleNamespace(GetStatus=lambda: "not-a-number")
-    adapter.currentSketch = unknown_obj
-    unknown = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert unknown.is_success
-    assert unknown.data["definition_state"] == "unknown"
-
-
-def test_check_sketch_fully_defined_feature_fallback_and_over_defined_count() -> None:
-    adapter = _FakeSketchAdapter()
-
-    sketch_specific = SimpleNamespace(GetOverDefinedCount=lambda: 1)
-    feature_obj = SimpleNamespace(
-        Name="SketchFromFeature", GetSpecificFeature2=lambda: sketch_specific
-    )
-    adapter.currentSketch = None
-    adapter._last_sketch_name = "SketchFromFeature"
-    adapter.currentModel = SimpleNamespace(
-        GetActiveSketch2=lambda: None,
-        FeatureByName=lambda name: feature_obj if name == "SketchFromFeature" else None,
-    )
-
-    result = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert result.is_success
-    assert result.data["sketch_name"] == "SketchFromFeature"
-    assert result.data["is_fully_defined"] is False
-    assert result.data["source"].startswith("sketch.") or result.data[
-        "source"
-    ].startswith("feature.")
-
-
-def test_check_sketch_fully_defined_handles_textual_probe_values() -> None:
-    adapter = _FakeSketchAdapter()
-    adapter.currentSketch = SimpleNamespace(
-        GetFullyDefinedStatus=lambda: "fully defined"
-    )
-    adapter.currentModel = SimpleNamespace(
-        GetActiveSketch2=lambda: adapter.currentSketch
-    )
-
-    result = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert result.is_success
-    assert result.data["definition_state"] == "fully_defined"
+    assert result.data["id"].startswith("Dimension_")
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux"])
@@ -1067,66 +999,6 @@ def test_constraint_without_pythoncom(monkeypatch, platform: str) -> None:
         assert result.status == AdapterResultStatus.SUCCESS
         ents_arg, _rt = add_relation.call_args.args
         assert isinstance(ents_arg, list)
-
-
-# ---- sketch-definition probe helpers ------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (True, True),
-        (0, False),
-        (1.0, True),
-        (2, None),
-        (" Fully Defined ", True),
-        ("under_defined", False),
-        ("over defined", False),
-        ("maybe", None),
-        ([True], True),
-        ((), None),
-        (None, None),
-    ],
-)
-def test_to_bool(raw: object, expected: bool | None) -> None:
-    assert sketch._to_bool(raw) is expected
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(3, 3.0), (" 2.5 ", 2.5), ("abc", None), ([4], 4.0), ([], None), (None, None)],
-)
-def test_to_number(raw: object, expected: float | None) -> None:
-    assert sketch._to_number(raw) == expected
-
-
-@pytest.mark.parametrize(
-    ("source", "raw", "expected"),
-    [
-        ("IsUnderDefined", 0, True),  # numeric: zero under-defined entities
-        ("IsUnderDefined", 3, False),
-        ("IsUnderDefined", "yes", False),  # bool: under-defined -> not fully
-        ("IsUnderDefined", object(), None),  # neither number nor bool
-        ("GetOverDefinedCount", 2, False),
-        ("IsOverDefined", True, False),
-        ("IsOverDefined", 0, False),  # 0 -> falls through to _to_bool(0)
-        ("IsOverDefined", "yes", False),  # non-numeric over-defined flag
-        ("IsFullyDefined", "true", True),
-        ("Status", "Fully constrained", True),
-        ("Status", "under-constrained", False),
-        ("Status", 1, True),
-    ],
-)
-def test_probe_to_flag(source: str, raw: object, expected: bool | None) -> None:
-    assert sketch._probe_to_flag(source, raw) is expected
-
-
-@pytest.mark.parametrize(
-    ("flag", "state"),
-    [(True, "fully_defined"), (False, "not_fully_defined"), (None, "unknown")],
-)
-def test_state_from_bool(flag: bool | None, state: str) -> None:
-    assert sketch._state_from_bool(flag) == state
 
 
 # ---- adapter-level validation of sketch patterns / mirror / offset ----------
@@ -1513,24 +1385,6 @@ def test_bodies_are_compared_only_for_the_sketch_edit_sketch_counted(
     adapter, _insert = _edited(before, ["Strip", "Boss-Extrude5"], name)
 
     assert sketch._exit_sketch_impl(adapter).metadata is None
-
-
-def test_check_fully_defined_by_name_and_with_no_sketch_anywhere() -> None:
-    adapter = _FakeSketchAdapter()
-    fully = SimpleNamespace(GetSketchStatus=lambda: True, IsFullyDefined=True)
-    feature = SimpleNamespace(GetSpecificFeature2=lambda: fully, Name="Sketch1")
-    adapter.currentModel = SimpleNamespace(
-        FeatureByName=lambda name: feature if name == "Sketch1" else None,
-        GetActiveSketch2=lambda: None,
-    )
-
-    named = sketch._check_sketch_fully_defined_impl(adapter, "Sketch1")
-    missing = sketch._check_sketch_fully_defined_impl(adapter, None)
-
-    assert named.is_success
-    assert named.data["sketch_name"] == "Sketch1"
-    assert missing.status == AdapterResultStatus.ERROR
-    assert "No active sketch found" in (missing.error or "")
 
 
 def _build_adapter(monkeypatch) -> PyWin32Adapter:
@@ -2621,3 +2475,555 @@ def test_text_beside_line(ends, point, expected) -> None:
     text = sketch._text_beside_line(adapter, object(), point)
 
     assert text == (None if expected is None else pytest.approx(expected))
+
+
+# ---- points, the origin and checked relations (MMPLA session) --------------------
+
+
+class _Selection:
+    """What is selected, in order, as the fake model sees it."""
+
+    def __init__(self) -> None:
+        self.items: list[object] = []
+
+    def clear(self, *_a) -> bool:
+        self.items.clear()
+        return True
+
+
+class _SketchPoint:
+    def __init__(self, x: float, y: float, selection: _Selection, ok: bool = True):
+        self.X, self.Y, self.Z = x, y, 0.0
+        self._selection, self._ok = selection, ok
+
+    def Select2(self, append: bool, _mark: int) -> bool:
+        if not append:
+            self._selection.items.clear()
+        self._selection.items.append(self)
+        return self._ok
+
+
+class _SketchSegment:
+    """A line (kind 0) or arc (kind 1) whose points are ``_SketchPoint`` s."""
+
+    def __init__(
+        self, kind, selection, start=None, end=None, center=None, circle=False
+    ):
+        self._kind, self._circle, self._selection = kind, circle, selection
+        self.start = _SketchPoint(*start, selection) if start else None
+        self.end = _SketchPoint(*end, selection) if end else None
+        self.center = _SketchPoint(*center, selection) if center else None
+
+    def GetType(self) -> int:
+        return self._kind
+
+    def IsCircle(self) -> bool:
+        return self._circle
+
+    def GetStartPoint2(self):
+        return self.start
+
+    def GetEndPoint2(self):
+        return self.end
+
+    def GetCenterPoint2(self):
+        return self.center
+
+    def Select2(self, append: bool, _mark: int) -> bool:
+        if not append:
+            self._selection.items.clear()
+        self._selection.items.append(self)
+        return True
+
+
+class _RelationManager:
+    """Counts relations; ``effect`` runs on each AddRelation (to move geometry)."""
+
+    def __init__(self, adds: bool = True, effect=None, counts: bool = True) -> None:
+        self.count, self.adds, self.effect, self.counts = 3, adds, effect, counts
+        self.calls: list[tuple[list, int]] = []
+
+    def GetRelationsCount(self, _kind: int) -> int:
+        if not self.counts:
+            raise RuntimeError("unreadable")
+        return self.count
+
+    def AddRelation(self, entities, kind):
+        entities = list(getattr(entities, "value", entities))
+        self.calls.append((entities, kind))
+        if self.adds:
+            self.count += 1
+        if self.effect:
+            self.effect(entities)
+        return SimpleNamespace(kind=kind)
+
+
+def _mmpla_adapter(**manager_options):
+    """A circle at (8, 3) mm r 0.3, a centreline along x, an arc, and the origin."""
+    adapter = _FakeSketchAdapter()
+    adapter.currentSketchManager = object()
+    selection = _Selection()
+    circle = _SketchSegment(1, selection, center=(0.008, 0.003), circle=True)
+    other_circle = _SketchSegment(1, selection, center=(0.02, 0.003), circle=True)
+    centerline = _SketchSegment(0, selection, start=(0.0, 0.0), end=(0.05, 0.0))
+    arc = _SketchSegment(
+        1, selection, start=(0.01, 0.0), end=(0.0, 0.01), center=(0.0, 0.0)
+    )
+    origin = _SketchPoint(0.0, 0.0, selection)
+    origin_feature = SimpleNamespace(
+        GetTypeName2=lambda: "OriginProfileFeature",
+        GetSpecificFeature2=lambda: SimpleNamespace(GetSketchPoints2=lambda: (origin,)),
+        GetNextFeature=lambda: None,
+    )
+    adapter._sketch_entities = {
+        "Circle_1": circle,
+        "Centerline_2": centerline,
+        "Arc_3": arc,
+        "Circle_4": other_circle,
+    }
+    adapter._sketch_entity_centers = {
+        "Circle_1": (8.0, 3.0),
+        "Centerline_2": (25.0, 0.0),
+        "Circle_4": (20.0, 3.0),
+    }
+    adapter._sketch_geometry = SimpleNamespace(
+        read_segment_endpoints=lambda e: (
+            ((0.0, 0.0, 0.0), (0.05, 0.0, 0.0)) if e is centerline else None
+        )
+    )
+    adapter._single_line_dimension_placement = lambda _e: (0.025, -0.01, 0.0, 1)
+    manager = _RelationManager(**manager_options)
+    adapter.currentModel = SimpleNamespace(
+        GetActiveSketch2=lambda: SimpleNamespace(RelationManager=manager),
+        FirstFeature=lambda: origin_feature,
+        ClearSelection2=selection.clear,
+    )
+    parts = SimpleNamespace(
+        circle=circle,
+        other_circle=other_circle,
+        centerline=centerline,
+        arc=arc,
+        origin=origin,
+        selection=selection,
+        manager=manager,
+    )
+    return adapter, parts
+
+
+def test_coincident_circle_and_centerline_ties_the_centre_to_the_line() -> None:
+    adapter, parts = _mmpla_adapter()
+    parts.manager.effect = lambda _e: setattr(parts.circle.center, "Y", 0.0)
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Circle_1", "Centerline_2", "coincident"
+    )
+
+    assert result.is_success, result.error
+    assert result.data["entities"] == ["Circle_1.center", "Centerline_2"]
+    assert result.data["verified_by"] == "relation_count"
+    entities, kind = parts.manager.calls[0]
+    assert kind == 9 and entities == [parts.circle.center, parts.centerline]
+
+
+def test_coincident_line_then_circle_ties_the_centre_too() -> None:
+    adapter, parts = _mmpla_adapter()
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Centerline_2", "Circle_1", "coincident"
+    )
+
+    assert result.data["entities"] == ["Centerline_2", "Circle_1.center"]
+
+
+def test_coincident_circle_and_origin_ties_the_centre_to_the_origin() -> None:
+    adapter, parts = _mmpla_adapter()
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Circle_1", "Origin", "coincident"
+    )
+
+    assert result.is_success, result.error
+    assert result.data["entities"] == ["Circle_1.center", "Origin"]
+    assert parts.manager.calls[0][0] == [parts.circle.center, parts.origin]
+
+
+def test_an_arc_and_a_point_keep_the_point_on_the_arc() -> None:
+    adapter, parts = _mmpla_adapter()
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Arc_3", "Centerline_2.end", "coincident"
+    )
+
+    assert result.data["entities"] == ["Arc_3", "Centerline_2.end"]
+    assert parts.manager.calls[0][0] == [parts.arc, parts.centerline.end]
+
+
+def test_a_relation_that_adds_nothing_and_moves_nothing_is_an_error() -> None:
+    adapter, _parts = _mmpla_adapter(adds=False)
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Circle_1", "Circle_4", "equal"
+    )
+
+    assert result.status == AdapterResultStatus.ERROR
+    assert "added no relation and moved nothing" in (result.error or "")
+    assert "'Circle_1' and 'Circle_4'" in (result.error or "")
+
+
+def test_a_relation_seen_only_in_the_geometry_is_verified_by_it() -> None:
+    adapter, parts = _mmpla_adapter(counts=False)
+    parts.manager.effect = lambda _e: setattr(parts.circle.center, "X", 0.0)
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Circle_1.center", "Origin", "coincident"
+    )
+
+    assert result.data["verified_by"] == "geometry"
+
+
+def test_a_relation_nothing_can_check_is_reported_unverified() -> None:
+    adapter, _parts = _mmpla_adapter(counts=False)
+
+    result = sketch._add_sketch_constraint_impl(adapter, "Circle_1", None, "fix")
+
+    assert result.is_success and result.data["verified_by"] is None
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "where_before", "where_after", "verdict"),
+    [
+        (3, 4, [None], [None], "relation_count"),
+        (3, 3, [(1.0,)], [(2.0,)], "geometry"),
+        (None, None, [(1.0,)], [(2.0,)], "geometry"),
+        (3, 3, [(1.0,)], [(1.0,)], "nothing"),
+        (3, 3, [None], [None], "nothing"),
+        (None, 4, [(1.0,)], [(1.0,)], None),
+    ],
+)
+def test_relation_took(before, after, where_before, where_after, verdict) -> None:
+    assert sketch.relation_took(before, after, where_before, where_after) == verdict
+
+
+def test_a_point_reference_that_names_nothing_is_an_error() -> None:
+    adapter, parts = _mmpla_adapter()
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Circle_1.start", "Origin", "coincident"
+    )
+
+    assert "full circle" in (result.error or "")
+    assert parts.manager.calls == []
+
+
+def _dimension_model(adapter, parts, *, returns=None, read_back=None, name=None):
+    """Record which AddDimension call ran with what selected; return displays."""
+    calls: list[tuple[str, list, tuple]] = []
+    replies = iter(returns if returns is not None else [True])
+
+    def _display():
+        dimension = SimpleNamespace(SetSystemValue3=lambda *_a: True)
+        if name:
+            dimension.FullName = name
+        dimension.SetSystemValue3 = lambda value, *_a: (
+            setattr(dimension, "SystemValue", value if read_back is None else read_back)
+            or True
+        )
+        return SimpleNamespace(GetDimension2=lambda *_a: dimension)
+
+    def _call(kind):
+        def _add(*xyz):
+            calls.append((kind, list(parts.selection.items), xyz))
+            return _display() if next(replies, True) else None
+
+        return _add
+
+    model = adapter.currentModel
+    model.AddDimension2 = _call("AddDimension2")
+    model.AddHorizontalDimension2 = _call("AddHorizontalDimension2")
+    model.AddVerticalDimension2 = _call("AddVerticalDimension2")
+    model.Extension = SimpleNamespace(AddDimension=lambda *_a: None)
+    return calls
+
+
+def test_two_circles_are_dimensioned_centre_to_centre() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts, name="D2@Sketch1@MMPLA.SLDPRT")
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1", "Circle_4", "linear", 12.0
+    )
+
+    assert result.is_success, result.error
+    assert result.data["entities"] == ["Circle_1.center", "Circle_4.center"]
+    assert result.data["name"] == "D2@Sketch1"
+    assert result.data["measured"] == pytest.approx(12.0)
+    kind, selected, text = calls[0]
+    assert kind == "AddDimension2"
+    assert selected == [parts.circle.center, parts.other_circle.center]
+    # Half way between the centres, 8 mm square to the measurement.
+    assert text == pytest.approx((0.014, 0.011, 0.0))
+
+
+def test_a_circle_and_a_centerline_are_dimensioned_centre_to_line() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1", "Centerline_2", "linear", 3.0
+    )
+
+    assert result.is_success, result.error
+    assert calls[0][1] == [parts.circle.center, parts.centerline]
+    # Beside the line, past its nearer end (the start, x = 0).
+    assert calls[0][2] == pytest.approx((-0.008, 0.0015, 0.0))
+
+
+def test_a_horizontal_distance_from_the_origin() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1.center", "Origin", "horizontal", 8.0
+    )
+
+    assert result.is_success, result.error
+    kind, selected, text = calls[0]
+    assert kind == "AddHorizontalDimension2"
+    assert selected == [parts.circle.center, parts.origin]
+    assert text == pytest.approx((0.004, 0.011, 0.0))
+
+
+def test_a_vertical_distance_between_points_and_a_lines_rise() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts)
+
+    between = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1", "Origin", "vertical", 3.0
+    )
+    rise = sketch._add_sketch_dimension_impl(
+        adapter, "Centerline_2", None, "vertical", 0.0
+    )
+
+    assert between.is_success and rise.is_success, (between.error, rise.error)
+    assert calls[0][0] == "AddVerticalDimension2"
+    assert calls[0][2] == pytest.approx((0.016, 0.0015, 0.0))
+    assert calls[1][1] == [parts.centerline]
+    assert calls[1][2] == (0.025, -0.01, 0.0)
+
+
+def test_a_linear_distance_between_two_named_points() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Centerline_2.start", "Centerline_2.end", "linear", 50.0
+    )
+
+    assert result.is_success, result.error
+    assert calls[0][1] == [parts.centerline.start, parts.centerline.end]
+
+
+def test_the_circles_themselves_are_tried_when_their_centres_give_nothing() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts, returns=[None, True])
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1", "Circle_4", "linear", 12.0
+    )
+
+    assert result.is_success, result.error
+    assert [c[1] for c in calls] == [
+        [parts.circle.center, parts.other_circle.center],
+        [parts.circle, parts.other_circle],
+    ]
+
+
+def test_a_distance_nothing_creates_is_an_error() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts, returns=[None, None])
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1.center", "Origin", "linear", 8.0
+    )
+
+    assert "made no linear dimension on 'Circle_1.center' and 'Origin'" in (
+        result.error or ""
+    )
+    assert len(calls) == 1
+
+
+def test_a_distance_whose_points_cannot_be_selected_is_an_error() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts)
+    parts.origin._ok = False
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1.center", "Origin", "horizontal", 8.0
+    )
+
+    assert "made no horizontal dimension" in (result.error or "")
+    assert calls == []
+
+
+def test_a_dimension_that_reads_back_another_value_is_an_error() -> None:
+    adapter, parts = _mmpla_adapter()
+    _dimension_model(adapter, parts, read_back=0.012, name="D4@Sketch1")
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1", "Circle_4", "linear", 10.0
+    )
+
+    assert result.status == AdapterResultStatus.ERROR
+    assert "D4@Sketch1 was added but reads 12 mm, not 10 mm" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    ("entity1", "entity2", "kind", "fragment"),
+    [
+        ("Circle_1.center", None, "horizontal", "needs entity2"),
+        ("Arc_3.center", "Origin", "diameter", None),
+        (
+            "Circle_9.center",
+            "Origin",
+            "linear",
+            "Unknown sketch entity 'Circle_9.center'",
+        ),
+    ],
+)
+def test_distance_dimension_refusals(entity1, entity2, kind, fragment) -> None:
+    adapter, parts = _mmpla_adapter()
+    _dimension_model(adapter, parts)
+
+    result = sketch._add_sketch_dimension_impl(adapter, entity1, entity2, kind, 5.0)
+
+    if fragment is None:
+        # A diameter of a point is not a distance: the old path refuses it.
+        assert result.status == AdapterResultStatus.ERROR
+    else:
+        assert fragment in (result.error or "")
+
+
+def test_a_distance_to_a_spline_is_refused() -> None:
+    adapter, parts = _mmpla_adapter()
+    _dimension_model(adapter, parts)
+    adapter._sketch_entities["Spline_5"] = _SketchSegment(3, parts.selection)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Spline_5", "Origin", "horizontal", 5.0
+    )
+
+    assert "'Spline_5' is a spline" in (result.error or "")
+
+
+def test_a_distance_whose_position_cannot_be_read_is_an_error() -> None:
+    adapter, parts = _mmpla_adapter()
+    _dimension_model(adapter, parts)
+    adapter._sketch_entity_centers.clear()
+    parts.circle.center = SimpleNamespace(Select2=lambda *_a: True)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Circle_1", "Origin", "horizontal", 5.0
+    )
+
+    assert "Cannot read where 'Circle_1.center' is" in (result.error or "")
+
+
+def test_distance_text_for_one_unplaced_line_and_for_coincident_points() -> None:
+    adapter, _parts = _mmpla_adapter()
+    adapter._single_line_dimension_placement = lambda _e: None
+    line = sketch.sketch_points.Target("Line_1", "line", object(), (0.01, 0.0))
+    unread = sketch.sketch_points.Target("Line_2", "line", object())
+    here = sketch.sketch_points.Target("P", "point", object(), (0.01, 0.01))
+
+    assert sketch._distance_text(adapter, [line], "vertical") == pytest.approx(
+        (0.01, 0.008, 0.0)
+    )
+    with pytest.raises(Exception, match="Cannot read where 'Line_2' is"):
+        sketch._distance_text(adapter, [unread], "vertical")
+    assert sketch._distance_text(adapter, [here, here], "linear") == pytest.approx(
+        (0.01, 0.018, 0.0)
+    )
+
+
+def test_a_line_to_a_circle_keeps_the_line_first_path() -> None:
+    adapter, parts = _mmpla_adapter()
+    calls = _dimension_model(adapter, parts)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Centerline_2", "Circle_1", "linear", 3.0
+    )
+
+    assert result.is_success, result.error
+    assert result.data["entities"] == ["Centerline_2", "Circle_1"]
+    assert calls[0][1] == [parts.centerline, parts.circle]
+
+
+# ---- check_sketch_fully_defined reads GetConstrainedStatus -----------------------
+
+
+def _status_sketch(raw: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        GetConstrainedStatus=lambda: raw,
+        RelationManager=SimpleNamespace(GetRelationsCount=lambda kind: kind),
+    )
+
+
+def test_check_fully_defined_reads_the_constrained_status_by_name() -> None:
+    adapter = _FakeSketchAdapter()
+    feature = SimpleNamespace(GetSpecificFeature2=lambda: _status_sketch(3))
+    adapter.currentModel = SimpleNamespace(
+        FeatureByName=lambda name: feature if name == "Sketch1" else None
+    )
+
+    result = sketch._check_sketch_fully_defined_impl(adapter, "Sketch1")
+
+    assert result.is_success, result.error
+    assert result.data == {
+        "sketch_name": "Sketch1",
+        "is_fully_defined": True,
+        "definition_state": "fully_defined",
+        "source": "ISketch.GetConstrainedStatus",
+        "raw_status": 3,
+        "over_defining_relations": 2,
+        "dangling_relations": 1,
+    }
+
+
+def test_check_fully_defined_reads_the_open_sketch_then_the_last_one() -> None:
+    adapter = _FakeSketchAdapter()
+    adapter._last_sketch_name = "Sketch2"
+    last = SimpleNamespace(GetSpecificFeature2=lambda: _status_sketch(2))
+    adapter.currentModel = SimpleNamespace(
+        GetActiveSketch2=lambda: None,
+        FeatureByName=lambda name: last if name == "Sketch2" else None,
+    )
+    adapter.currentSketch = _status_sketch(4)
+
+    open_one = sketch._check_sketch_fully_defined_impl(adapter, None)
+    adapter.currentSketch = None
+    last_one = sketch._check_sketch_fully_defined_impl(adapter, None)
+
+    assert open_one.data["definition_state"] == "over_defined"
+    assert open_one.data["is_fully_defined"] is False
+    assert last_one.data["sketch_name"] == "Sketch2"
+    assert last_one.data["definition_state"] == "under_defined"
+
+
+def test_check_fully_defined_failures() -> None:
+    adapter = _FakeSketchAdapter()
+    assert sketch._check_sketch_fully_defined_impl(adapter, None).status == (
+        AdapterResultStatus.ERROR
+    )
+    empty = SimpleNamespace(GetSpecificFeature2=lambda: None)
+    adapter.currentModel = SimpleNamespace(
+        GetActiveSketch2=lambda: None,
+        FeatureByName=lambda name: empty if name == "Empty" else None,
+    )
+
+    missing = sketch._check_sketch_fully_defined_impl(adapter, "Sketch9")
+    no_sketch = sketch._check_sketch_fully_defined_impl(adapter, "Empty")
+    nothing_open = sketch._check_sketch_fully_defined_impl(adapter, None)
+
+    assert "Sketch not found: Sketch9" in (missing.error or "")
+    assert "SolidWorks gave no sketch for 'Empty'" in (no_sketch.error or "")
+    assert "No active sketch found" in (nothing_open.error or "")
