@@ -301,6 +301,12 @@ _DEFAULT_DIALOG_TIMEOUT_SECONDS = 5.0
 #: RPC_S_SERVER_UNAVAILABLE and RPC_S_CALL_FAILED.
 _SOLIDWORKS_GONE = frozenset({-2147417848, -2147023174, -2147023170})
 
+#: ``RPC_E_DISCONNECTED``: "The object invoked has disconnected from its
+#: clients." With SolidWorks still running, a proxy of an object now gone.
+_RPC_E_DISCONNECTED = -2147417848
+#: The HRESULT in a ``COM error in <op>: (-2147417848, ...)`` message.
+_HRESULT_TEXT = re.compile(r"\((-\d{9,10}),")
+
 # What _ComSessionCoordinator.reconnect found.
 _RECONNECTED = "reconnected"
 _SAME_SOLIDWORKS = "same"
@@ -873,10 +879,19 @@ class _ComSessionCoordinator:
         )
         if outcome == _RECONNECTED:
             logger.info("Reconnected to the running SolidWorks")
+            active = self.adopt_active_document()
+            working_on = (
+                f" Its active document, "
+                f"{adapter._document_label(adapter._last_active_document)}, is "
+                "the one the next call works on (give `document` to choose "
+                "another)."
+                if active is not None
+                else " No document is open in it."
+            )
             error = (
                 f"{gone}. The server has reconnected to the SolidWorks running "
                 "now; documents that were open before are open in it only if "
-                "they were reopened."
+                f"they were reopened.{working_on}"
             )
         elif outcome == _NOT_RUNNING:
             error = (
@@ -893,7 +908,11 @@ class _ComSessionCoordinator:
         )
 
     def forget_documents(self) -> None:
-        """Drop the document and sketch handles of a SolidWorks that has exited."""
+        """Drop the document and sketch handles of a SolidWorks that has exited.
+
+        Every handle into the old process goes: the documents, the sketch and
+        its entities, and the edge index (edges of a document there).
+        """
         adapter = self._adapter
         adapter.currentModel = None
         adapter.currentSketch = None
@@ -901,8 +920,46 @@ class _ComSessionCoordinator:
         adapter._last_sketch_name = None
         adapter._opened_sketch = None
         adapter._reset_sketch_entity_registry()
+        adapter._edge_index = None
         adapter._last_active_document = None
         adapter._active_document_seen = False
+
+    def adopt_active_document(self) -> Any:
+        """Take the SolidWorks' active document, read fresh, as ``currentModel``.
+
+        After a reconnect the old ``currentModel`` is a proxy into the exited
+        process. Left as ``None``, the next ``save_as`` answered "No active
+        model" although ``list_open_documents`` showed an active document
+        (MMPLA, SOLIDWORKS 2026 SP4.1). ``ActiveDoc`` read now is a dispatch
+        of the running SolidWorks; it is flagged for its type (CLAUDE.md, COM
+        threading invariant 4) and remembered as the active document, so the
+        next call isn't refused as ``active_document_changed``.
+
+        Returns:
+            Any: The document adopted, or ``None`` when none is open.
+        """
+        adapter = self._adapter
+        app = adapter.swApp
+        active = adapter._attempt(lambda: getattr(app, "ActiveDoc", None))
+        if active is None:
+            return None
+        doc_type = adapter._attempt(
+            lambda: adapter._get_attr_or_call(active, "GetType")
+        )
+        if isinstance(doc_type, (int, float)):
+            adapter._attempt(
+                lambda: sw_type_info.flag_doc(active, int(doc_type)), default=0
+            )
+        else:
+            adapter._attempt(
+                lambda: sw_type_info.flag_methods(
+                    active, *sw_type_info.DOC_TYPE_TO_INTERFACES[1]
+                ),
+                default=0,
+            )
+        adapter.currentModel = active
+        adapter._remember_active_document()
+        return active
 
     async def disconnect(self) -> None:
         """Clear session state and release the COM apartment.
@@ -2698,7 +2755,47 @@ class PyWin32Adapter(
             recovered = self._session_coordinator.recover(operation_name, ran=True)
             if recovered is not None:
                 return recovered
+        if outermost and result.is_error:
+            self._refresh_disconnected_model(result)
         return result
+
+    def _refresh_disconnected_model(self, result: AdapterResult[Any]) -> None:
+        """Replace a ``currentModel`` whose COM object has disconnected.
+
+        SolidWorks is still running (the checks above found no exit), but the
+        call failed with ``RPC_E_DISCONNECTED``: a proxy whose object is gone,
+        such as a document closed since, or one of a SolidWorks the server
+        reconnected away from. When ``currentModel`` is that proxy (reading
+        its title fails the same way), the document handles are dropped, the
+        active document is read fresh, and the error says to retry.
+
+        Args:
+            result: The failed operation's result; its ``error`` is extended.
+        """
+        match = _HRESULT_TEXT.search(str(result.error or ""))
+        if match is None or int(match.group(1)) != _RPC_E_DISCONNECTED:
+            return
+        model = self.currentModel
+        if model is None:
+            return
+        _, error = self._attempt_with_error(
+            lambda: self._get_attr_or_call(model, "GetTitle")
+        )
+        if _hresult_of(error) != _RPC_E_DISCONNECTED:
+            return
+        coordinator = self._session_coordinator
+        coordinator.forget_documents()
+        active = coordinator.adopt_active_document()
+        now = (
+            f"the active document, {self._document_label(self._last_active_document)}"
+            if active is not None
+            else "no document, none being open"
+        )
+        result.error = (
+            f"{result.error}. The document this server was working on had "
+            "disconnected (it was closed, or SolidWorks was restarted); the "
+            f"server now works on {now}. Retry the call."
+        )
 
     def _refuse_while_busy(self, operation_name: str) -> AdapterResult[Any] | None:
         """Refuse an operation while SolidWorks doesn't answer its window.

@@ -1175,7 +1175,17 @@ SolidWorks is never used until something binds to it again.
   `RevisionNumber` and sets the session up as `connect` does. It doesn't run the call,
   drops the old document handles, and returns an error that classifies as
   `solidworks_reconnected`.
+- It then reads the new SolidWorks' `ActiveDoc`, flags it and makes it `currentModel`
+  (`adopt_active_document`), and the error names it. Left as `None`, the first
+  `save_as` of the MMPLA build (SOLIDWORKS 2026 SP4.1) answered "No active model"
+  while `list_open_documents` showed an active document. `save_file` with no
+  `currentModel` also takes the active document now.
 - If the process is the same (only the window changed), the call runs as usual.
+- A call that fails with `RPC_E_DISCONNECTED` (-2147417848) while SolidWorks still
+  runs, when `currentModel` itself answers that way, drops the document handles,
+  adopts the active document and says to retry (`_refresh_disconnected_model`). The
+  MMPLA retry with `document` got that error; its source was not found without
+  SolidWorks (unit tests only, 2026-11-17).
 
 ---
 

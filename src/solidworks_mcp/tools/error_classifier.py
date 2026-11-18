@@ -121,8 +121,10 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "SolidWorks was restarted (or crashed and was started again), and "
             "the server has reconnected to it; this call did nothing. "
             "Documents and sketches from before are gone unless the user "
-            "reopened them: check with list_open_documents, reopen or recreate "
-            "what you need (open_model, create_part), then retry."
+            "reopened them. The next call works on the active document the "
+            "message names; check with list_open_documents, reopen or recreate "
+            "what you need (open_model, create_part, or `document` to pick "
+            "another), then retry."
         ),
         patterns=(r"has reconnected to the solidworks running now",),
     ),
