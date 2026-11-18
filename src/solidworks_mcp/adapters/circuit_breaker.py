@@ -551,12 +551,14 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"name": name},
         )
 
-    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def get_sketch(
+        self, name: str, detail: str = "full"
+    ) -> AdapterResult[dict[str, Any]]:
         """Read a sketch through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "get_sketch",
-            lambda: self.adapter.get_sketch(name),
-            input_dict={"name": name},
+            lambda: self.adapter.get_sketch(name, detail),
+            input_dict={"name": name, "detail": detail},
         )
 
     async def list_references(

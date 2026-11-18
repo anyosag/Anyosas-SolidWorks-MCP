@@ -538,10 +538,12 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.get_feature_definition(name),
         )
 
-    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def get_sketch(
+        self, name: str, detail: str = "full"
+    ) -> AdapterResult[dict[str, Any]]:
         """Read a sketch using pool."""
         return await self._execute_with_pool(
-            "get_sketch", lambda adapter: adapter.get_sketch(name)
+            "get_sketch", lambda adapter: adapter.get_sketch(name, detail)
         )
 
     async def list_references(

@@ -34,6 +34,7 @@ _RESPONSE_KEYS = {
     "area_m2",
     "center_mm",
     "closest_pass",
+    "definition_state",
     "direction_flipped",
     "distance_m",
     "error_type",

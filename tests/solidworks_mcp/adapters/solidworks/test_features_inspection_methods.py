@@ -40,7 +40,9 @@ async def test_each_reads_in_its_own_operation(monkeypatch) -> None:
     monkeypatch.setattr(
         inspection, "feature_definition", lambda _a, name: {"feature": name}
     )
-    monkeypatch.setattr(inspection, "read_sketch", lambda _a, name: {"sketch": name})
+    monkeypatch.setattr(
+        inspection, "read_sketch", lambda _a, name, _detail="full": {"sketch": name}
+    )
     harness = _Harness(SimpleNamespace())
 
     definition = await harness.get_feature_definition("Cut1")

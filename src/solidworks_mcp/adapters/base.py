@@ -455,11 +455,15 @@ class SolidWorksAdapter(ABC):
             error="get_feature_definition is not implemented by this adapter",
         )
 
-    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def get_sketch(
+        self, name: str, detail: str = "full"
+    ) -> AdapterResult[dict[str, Any]]:
         """Read a sketch's plane and segments without opening it for editing.
 
         Args:
             name (str): The sketch's tree name.
+            detail (str): ``"full"`` (every segment) or ``"summary"`` (counts,
+                circles, dimensions, relations and the definition state).
 
         Returns:
             AdapterResult[dict[str, Any]]: ``sketch``, ``kind``, ``plane``,

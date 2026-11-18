@@ -315,20 +315,24 @@ class SolidWorksFeaturesMixin:
             lambda: feature_definition(self, name),
         )
 
-    async def get_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def get_sketch(
+        self, name: str, detail: str = "full"
+    ) -> AdapterResult[dict[str, Any]]:
         """Read a sketch's plane and segments without opening it (``inspection``).
 
         Args:
             name: The sketch's tree name.
+            detail: ``"full"`` or ``"summary"`` (``inspection.read_sketch``).
 
         Returns:
             AdapterResult[dict[str, Any]]: ``sketch``, ``kind``, ``plane``,
-            ``references``, ``axes``, ``segments`` and ``segment_counts``.
+            ``references``, ``axes``, ``segments`` and ``segment_counts``;
+            a summary's counts, circles, dimensions, relations and state.
         """
         from .inspection import read_sketch
 
         return _feature_edit_operation(
-            self, "get_sketch", lambda: read_sketch(self, name)
+            self, "get_sketch", lambda: read_sketch(self, name, detail)
         )
 
     async def rename_feature(

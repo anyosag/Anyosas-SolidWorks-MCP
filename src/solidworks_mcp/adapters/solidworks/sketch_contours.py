@@ -85,7 +85,8 @@ def contours(segments: list[dict[str, Any]]) -> list[Contour]:
 
     Args:
         segments: ``describe_segment`` dicts (``type``, ``start_mm``,
-            ``end_mm``, ``center_mm``, ``construction``).
+            ``end_mm``, ``center_mm``, ``construction``; a ``circle`` gives
+            ``center_mm`` and ``radius_mm``).
 
     Returns:
         list[Contour]: Each full circle, then each closed loop of lines.
@@ -94,6 +95,12 @@ def contours(segments: list[dict[str, Any]]) -> list[Contour]:
     lines: list[tuple[Point, Point]] = []
     for info in segments:
         if info.get("construction"):
+            continue
+        radius = info.get("radius_mm")
+        if info.get("type") == "circle" and isinstance(radius, (int, float)):
+            centre = _point(info.get("center_mm"))
+            if centre is not None:
+                circles.append(Circle(centre, float(radius)))
             continue
         start, end = _point(info.get("start_mm")), _point(info.get("end_mm"))
         if start is None or end is None:

@@ -28,7 +28,15 @@ from typing import Any
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
-from .feature_editing import _feature, describe_segment, edge_count, feature_kind
+from .feature_editing import (
+    SEGMENT_ARC,
+    SEGMENT_PREFIXES,
+    _feature,
+    describe_circle,
+    describe_segment,
+    edge_count,
+    feature_kind,
+)
 
 #: ``swEndConditions_e``.
 END_CONDITIONS = {
@@ -502,26 +510,36 @@ def _segment_counts(segments: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def read_sketch(adapter: Any, name: str) -> dict[str, Any]:
+#: ``get_sketch``'s ``detail`` values.
+SKETCH_DETAILS = ("full", "summary")
+
+
+def read_sketch(adapter: Any, name: str, detail: str = "full") -> dict[str, Any]:
     """A sketch's plane, axes and segments, without opening it for editing.
 
     Args:
         adapter: A connected adapter with a ``currentModel``.
         name: The sketch's tree name.
+        detail: ``"full"`` (every segment's points) or ``"summary"``
+            (:func:`summarize_sketch`).
 
     Returns:
         dict[str, Any]: ``sketch``, ``kind`` (2D or 3D), ``plane`` (the
         reference plane it is on, None on a face), ``references`` (its parent
         features: name and type), ``axes`` (model coordinates; None when
         unreadable), ``segments`` (each with ``index``, ``type``, its points
-        in sketch mm, ``construction`` and, for text, the text's details)
-        and ``segment_counts``.
+        in sketch mm, ``construction`` and, for text, the text's details; a
+        full circle is ``circle`` with ``center_mm`` and ``radius_mm``) and
+        ``segment_counts``. A summary has what :func:`summarize_sketch` gives
+        in place of ``segments`` and ``axes``.
 
     Raises:
         LookupError: No such feature.
-        ValueError: It isn't a sketch.
+        ValueError: It isn't a sketch, or ``detail`` is neither value.
         RuntimeError: SolidWorks gave no sketch.
     """
+    if detail not in SKETCH_DETAILS:
+        raise ValueError(f"detail must be 'full' or 'summary', not {detail!r}.")
     feature = _feature(adapter, name)
     kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
     if kind not in SKETCH_KINDS:
@@ -531,6 +549,17 @@ def read_sketch(adapter: Any, name: str) -> dict[str, Any]:
         )
     sketch = _sketch_of(adapter, feature, name)
     references = _parents(adapter, feature)
+    if detail == "summary":
+        return {
+            "sketch": name,
+            "kind": SKETCH_KINDS[kind],
+            "plane": next(
+                (p["name"] for p in references if p["type"] == "RefPlane"), None
+            ),
+            "references": references,
+            "detail": "summary",
+            **summarize_sketch(adapter, feature, sketch),
+        }
     segments = sketch_segments(adapter, sketch)
     return {
         "sketch": name,
@@ -540,6 +569,69 @@ def read_sketch(adapter: Any, name: str) -> dict[str, Any]:
         "axes": sketch_axes(adapter, sketch),
         "segments": segments,
         "segment_counts": _segment_counts(segments),
+    }
+
+
+def _plain_dispatch(adapter: Any, item: Any) -> Any:
+    """An array item callable under late binding, its methods flagged one by one later.
+
+    ``_dispatchable`` flags the whole ``ISketchSegment`` interface on each
+    item (about 27 ms); the summary reads three or four members, so it
+    wraps the item only and flags those.
+    """
+    if type(item).__name__ != "PyIDispatch":
+        return item
+    from .io import _dynamic
+
+    return _attempt(adapter, lambda: _dynamic.Dispatch(item), item)
+
+
+def summarize_sketch(adapter: Any, feature: Any, sketch: Any) -> dict[str, Any]:
+    """What defines a sketch, read with as few calls per segment as it can.
+
+    Each segment gives its type (``GetType``) and id (``GetID``, to name it
+    in relations); a full circle also its centre and radius
+    (``feature_editing.describe_circle``). Lines, arcs and the rest are only
+    counted, with no end points read: a 174-circle sketch took 25 s and a
+    very long reply in full.
+
+    Returns:
+        dict[str, Any]: ``segment_counts`` (by type, ``circle`` apart from
+        ``arc``), ``circles`` (each ``index``, ``center_mm``,
+        ``radius_mm``), ``dimensions`` (``feature_dimensions``: name, value,
+        units), ``relations`` (each ``type`` and its ``entities``: ``kind``
+        and ``segment``, the index ``edit_sketch``'s ids follow, or a
+        point's ``at_mm``), ``relation_counts``, ``dimension_relations``
+        and ``sketch_relations.constrained_status``'s definition state.
+    """
+    from . import sketch_relations
+
+    _flag(adapter, sketch, "GetSketchSegments")
+    counts: dict[str, int] = {}
+    circles: list[dict[str, Any]] = []
+    index_of: dict[tuple[int, ...], int] = {}
+    segments = as_list(_attempt(adapter, lambda: sketch.GetSketchSegments()))
+    for index, raw in enumerate(segments):
+        segment = _plain_dispatch(adapter, raw)
+        _flag(adapter, segment, "GetType")
+        kind = _attempt(adapter, lambda s=segment: s.GetType())
+        name = SEGMENT_PREFIXES.get(kind, "Segment").lower()
+        circle = describe_circle(adapter, segment) if kind == SEGMENT_ARC else None
+        if circle is not None:
+            name = "circle"
+            circles.append(
+                {"index": index, **{k: v for k, v in circle.items() if k != "type"}}
+            )
+        counts[name] = counts.get(name, 0) + 1
+        key = sketch_relations.entity_key(adapter, segment)
+        if key is not None:
+            index_of[key] = index
+    return {
+        "segment_counts": counts,
+        "circles": circles,
+        "dimensions": feature_dimensions(adapter, feature),
+        **sketch_relations.list_relations(adapter, sketch, index_of),
+        **sketch_relations.constrained_status(adapter, sketch),
     }
 
 

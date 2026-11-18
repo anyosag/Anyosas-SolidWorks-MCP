@@ -584,9 +584,19 @@ class GetSketchInput(CompatInput):
 
     Attributes:
         name (str): The sketch's tree name.
+        detail (str): ``full`` or ``summary``.
     """
 
     name: str = Field(description="The sketch to read, e.g. 'Sketch3'")
+    detail: Literal["full", "summary"] = Field(
+        default="full",
+        description=(
+            "'full' (the default): every segment with its points. 'summary': "
+            "counts by type, circles as centre and radius, the dimensions "
+            "(name, value), the relations and whether it is fully defined; "
+            "fewer reads per segment, for large sketches"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         self.name = self.name.strip()
@@ -800,14 +810,31 @@ class AddDimensionInput(BaseModel):
         value (float): The value value.
     """
 
-    entity1: str = Field(description="First entity name or ID")
+    entity1: str = Field(
+        description=(
+            "First entity: an id from the add_* tools or edit_sketch, 'Origin', "
+            "or a point of an entity: '<id>.center', '<id>.start', '<id>.end'"
+        )
+    )
     entity2: str | None = Field(
-        default=None, description="Second entity name or ID (for distance dimensions)"
+        default=None,
+        description=(
+            "Second entity, named the same way, for a distance or an angle; a "
+            "circle stands for its centre in a distance"
+        ),
     )
-    dimension_type: str = Field(
-        default="linear", description="Dimension type (linear, radial, angular, etc.)"
+    dimension_type: Literal[
+        "linear", "horizontal", "vertical", "angular", "radial", "diameter"
+    ] = Field(
+        default="linear",
+        description=(
+            "'linear': a line's length, or the shortest distance between two "
+            "points, circles (centres) or lines; 'horizontal' / 'vertical': the "
+            "distance along sketch x / y (or a line's run / rise); 'angular': "
+            "two connected lines; 'radial' / 'diameter': an arc or circle"
+        ),
     )
-    value: float = Field(description="Dimension value in mm or degrees")
+    value: float = Field(description="Dimension value in mm, or degrees for angular")
 
 
 class AddRelationInput(BaseModel):
@@ -822,9 +849,15 @@ class AddRelationInput(BaseModel):
         relation_type (str): The relation type value.
     """
 
-    entity1: str = Field(description="First entity name or ID")
+    entity1: str = Field(
+        description=(
+            "First entity: an id from the add_* tools or edit_sketch, 'Origin', "
+            "or a point of an entity: '<id>.center', '<id>.start', '<id>.end'"
+        )
+    )
     entity2: str | None = Field(
-        default=None, description="Second entity name or ID (if required)"
+        default=None,
+        description="Second entity, named the same way, when the relation takes two",
     )
     entity3: str | None = Field(
         default=None,
@@ -1295,9 +1328,12 @@ async def register_sketching_tools(
         """Check whether a sketch is fully defined, under-defined or over-defined.
 
         Use it after adding relations and dimensions, to see if the sketch still has
-        free geometry. Needs: an open part with the sketch. Read-only. Returns: `sketch`
-        with `sketch_name`, `is_fully_defined` (null when unknown), `definition_state`
-        and where the answer came from (`source`).
+        free geometry; `get_sketch` with detail 'summary' lists the relations and
+        dimensions it has. Needs: an open part with the sketch. Read-only. Returns:
+        `sketch` with `sketch_name`, `is_fully_defined` (null when SolidWorks can't
+        tell), `definition_state` (fully_defined, under_defined, over_defined,
+        no_solution, ...), `over_defining_relations`, `dangling_relations` and
+        `source`. SolidWorks doesn't say which entities are still free.
 
         Args:
             input_data: Nothing is required: give `sketch_name`, or omit it for the
@@ -1560,16 +1596,17 @@ async def register_sketching_tools(
     async def get_sketch(input_data: GetSketchInput) -> dict[str, Any]:
         """Read a sketch's segments, plane and text without opening it for editing.
 
-        Use it to see how an existing profile is drawn before changing it, or to
-        read a sketch's lettering (string, font, height, position). To change the
-        sketch, use `edit_sketch`, which opens it and gives each segment an id.
-        Needs: an open part with the sketch. Read-only. The sketch isn't opened, so
-        the part isn't marked changed. Returns: `sketch` with `name`, `kind` (2D or
-        3D), `plane` (the reference plane it is on; null on a face), `references`,
-        `axes` (where sketch x, y and the normal point in the model, and its
-        origin), `segments` (each with `index`, `type`, `start_mm`, `end_mm` or
-        `center_mm` in sketch coordinates, `construction`, and for text `text`,
-        `font`, `height_mm`, `position_mm` and `angle_deg`) and `segment_counts`.
+        Use it to see how an existing profile is drawn before changing it, to read
+        its lettering, or with detail 'summary' to see what defines it. To change it,
+        use `edit_sketch`. Needs: an open part with the sketch. Read-only. The part
+        isn't marked changed. Returns: `sketch` with `name`, `kind`, `plane`,
+        `references`, `axes`, `segments` (each `index`, `type`, `start_mm`, `end_mm`
+        or `center_mm`, `construction`; a full circle is `circle` with `center_mm`
+        and `radius_mm`; text has `text`, `font`, `height_mm`, `position_mm`) and
+        `segment_counts`. A summary has `segment_counts`, `circles`, `dimensions`,
+        `relations` (each `type` and `entities`: a `segment` index, which
+        `edit_sketch` numbers from 1, or a point's `at_mm`), `relation_counts` and
+        `definition_state`.
 
         Args:
             input_data: The sketch. `name` is required.
@@ -1583,16 +1620,23 @@ async def register_sketching_tools(
             "get_sketch",
             "The active adapter cannot read sketches; nothing was read.",
         )
-        result = await adapter.get_sketch(input_data.name)
+        result = await adapter.get_sketch(input_data.name, input_data.detail)
         require_success(result, context=f"Failed to read {input_data.name}")
         data = result.data if isinstance(result.data, dict) else {}
         segments = data.get("segments") or []
+        count = (
+            sum((data.get("segment_counts") or {}).values())
+            if input_data.detail == "summary"
+            else len(segments)
+        )
         plane = data.get("plane")
+        state = data.get("definition_state")
         return {
             "status": "success",
             "message": (
-                f"{input_data.name}: {len(segments)} segment(s)"
+                f"{input_data.name}: {count} segment(s)"
                 + (f" on {plane}" if plane else "")
+                + (f", {state}" if state else "")
             ),
             "sketch": {
                 "name": input_data.name,
@@ -1840,9 +1884,12 @@ async def register_sketching_tools(
         """Add a geometric relation between sketch entities: horizontal, vertical, parallel, perpendicular, tangent, coincident, concentric, equal, symmetric, collinear or fix.
 
         Use it to hold design intent, then check with `check_sketch_fully_defined`.
-        Entities are the `id`s the add_* tools returned. Needs: an open sketch
-        (`create_sketch`). Changes: adds the relation. Returns: `constraint` with `id`,
-        `type` and the entities.
+        Entities are the `id`s the add_* tools or `edit_sketch` returned, 'Origin',
+        or a point: '<id>.center', '<id>.start', '<id>.end'. A circle coincident
+        with a line or point ties its centre. A relation that added nothing and
+        moved nothing is an error. Needs: an open sketch. Changes: adds the
+        relation. Returns: `constraint` with `id`, `type`, the entities as given,
+        `entities_used` and `verified_by`.
 
         Args:
             input_data: The relation. `entity1` and `relation_type` are required;
@@ -1861,30 +1908,43 @@ async def register_sketching_tools(
         )
 
         require_success(result, context="Failed to add constraint")
-        constraint_id = result.data
+        added = result.data if isinstance(result.data, dict) else {"id": result.data}
+        used = added.get("entities")
         return {
             "status": "success",
-            "message": f"Added {input_data.relation_type} constraint between {input_data.entity1} and {input_data.entity2}",
+            "message": (
+                f"Added {input_data.relation_type} constraint between "
+                f"{input_data.entity1} and {input_data.entity2}"
+                + (f" (tied {' and '.join(used)})" if used else "")
+            ),
             "constraint": {
-                "id": constraint_id,
+                "id": added.get("id"),
                 "type": input_data.relation_type,
                 "entity1": input_data.entity1,
                 "entity2": input_data.entity2,
                 "entity3": input_data.entity3,
+                **({"entities_used": used} if used else {}),
+                **(
+                    {"verified_by": added["verified_by"]}
+                    if "verified_by" in added
+                    else {}
+                ),
             },
             "execution_time": result.execution_time,
         }
 
     @mcp.tool()
     async def add_sketch_dimension(input_data: AddDimensionInput) -> dict[str, Any]:
-        """Add a driving dimension to sketch entities: linear, angular, radial or diameter.
+        """Add a driving dimension to sketch entities: linear, horizontal, vertical, angular, radial or diameter.
 
-        Use it to fix a size so the sketch is fully defined and can be changed later
-        with `set_dimension`. Entities are the `id`s the add_* tools returned; two
-        connected lines for angular, a circle or arc for radial or diameter. No dialog
-        opens. Needs: an open sketch (`create_sketch`). Changes: adds the dimension and
-        resizes the geometry to `value`. Returns: `dimension` with `id`, `type`, `value`
-        and the entities.
+        Use it to fix a size or a position so the sketch is fully defined and can be
+        changed later with `set_dimension`. Entities are the `id`s the add_* tools or
+        `edit_sketch` returned, 'Origin', or a point: '<id>.center', '<id>.start',
+        '<id>.end'. A distance can join points, circles (their centres) and lines.
+        The value is read back; one that didn't take is an error. Needs: an open
+        sketch. Changes: adds the dimension and moves the geometry to `value`.
+        Returns: `dimension` with `id`, `type`, `value`, the entities, and `name`
+        (for `set_dimension`) and `measured` when they read.
 
         Args:
             input_data: The dimension. `entity1` and `value` (mm, or degrees for
@@ -1903,16 +1963,22 @@ async def register_sketching_tools(
         )
 
         require_success(result, context="Failed to add dimension")
-        dimension_id = result.data
+        added = result.data if isinstance(result.data, dict) else {"id": result.data}
+        unit = "deg" if input_data.dimension_type == "angular" else "mm"
         return {
             "status": "success",
-            "message": f"Added {input_data.dimension_type} dimension of {input_data.value}mm to {input_data.entity1}",
+            "message": (
+                f"Added {input_data.dimension_type} dimension of "
+                f"{input_data.value:g} {unit} to {input_data.entity1}"
+                + (f" and {input_data.entity2}" if input_data.entity2 else "")
+            ),
             "dimension": {
-                "id": dimension_id,
+                "id": added.get("id"),
                 "type": input_data.dimension_type,
                 "value": input_data.value,
                 "entity1": input_data.entity1,
                 "entity2": input_data.entity2,
+                **{k: added[k] for k in ("name", "measured") if k in added},
             },
             "execution_time": result.execution_time,
         }
