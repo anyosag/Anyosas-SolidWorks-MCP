@@ -146,9 +146,12 @@ plane; the reply's `end_condition` says `MidPlane`.
 ## A ring of holes
 
 1. One sketch on the face's plane: `add_circle` for the first hole at its
-   radius from the origin.
-2. `sketch_circular_pattern` with that circle's `id` and `count: 6`. The
-   centre is always the sketch origin.
+   radius from the centre.
+2. `sketch_circular_pattern` with that circle's `id`, `count: 6`, and
+   `center_x`/`center_y` for the centre (the sketch origin by default). It
+   is a real sketch pattern: its reply's `pattern.dimensions` names the
+   radius, angle and count dimensions (e.g. "D4@Sketch3"), which
+   `set_dimension` changes later; `add_dimensions: false` makes plain copies.
 3. `exit_sketch`, then one `create_cut_extrude`.
 
 Or cut one hole and repeat the feature: `create_axis`, then
@@ -280,6 +283,21 @@ that `sketch_name`.
      builds on, add it, then `set_rollback` with no input.
 3. `rebuild_model`: an error names each failing feature and how to fix it.
 4. `verify_model` with the new expected size.
+
+### One parameter in several places (a well diameter, a depth)
+
+1. `set_global_variable` with `name` ("well_d"), `value` and `units` (mm by
+   default).
+2. For each dimension it should drive, `add_equation` with the full name as
+   `dimension` ("D1@Sketch3", from `list_model_dimensions` or a sketch
+   pattern's `pattern.dimensions`) and `expression` ("well_d", or
+   "\"well_d\" * 2"; names in double quotes). The reply reads the dimension
+   back. An expression SolidWorks can't solve changes nothing and is
+   `invalid_input`.
+3. To change the design, `set_global_variable` again with the new `value`:
+   the reply's `driven` gives every dimension it moved.
+4. `list_equations` shows them all; `delete_equation` with `name` frees a
+   dimension (a variable still in use needs `force`).
 
 To turn a feature off without deleting it, `suppress_feature`. After
 `delete_feature`, call `list_features`: dependents may have gone too.

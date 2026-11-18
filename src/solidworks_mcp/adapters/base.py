@@ -1031,6 +1031,7 @@ class SolidWorksAdapter(ABC):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Create a linear pattern of sketch entities.
 
@@ -1040,6 +1041,7 @@ class SolidWorksAdapter(ABC):
             direction_y (float): The direction y value.
             spacing (float): The spacing value.
             count (int): The count value.
+            add_dimensions (bool): Add the spacing and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1054,18 +1056,19 @@ class SolidWorksAdapter(ABC):
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
-        """Create a circular pattern of sketch entities around the sketch origin.
-
-        The rotation axis is always the sketch origin — SW's
-        ``CreateCircularSketchStepAndRepeat`` has no pattern-centre
-        parameter and derives the axis from the seed's geometry. Place
-        the seed entity at the desired radius from the origin.
+        """Create a circular pattern of sketch entities about a centre.
 
         Args:
             entities (list[str]): The entities value.
             angle (float): The angle value.
             count (int): The count value.
+            center_x (float): The centre's x, sketch mm.
+            center_y (float): The centre's y, sketch mm.
+            add_dimensions (bool): Add the radius, angle and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -2794,6 +2797,56 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="list_model_dimensions is not implemented by this adapter",
+        )
+
+    async def list_equations(self) -> AdapterResult[dict[str, Any]]:
+        """List the active model's global variables and equations.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_equations is not implemented by this adapter",
+        )
+
+    async def set_global_variable(
+        self, name: str, value: float, units: str = "mm"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add or change a global variable of the active model.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_global_variable is not implemented by this adapter",
+        )
+
+    async def add_equation(
+        self, dimension: str, expression: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Drive a dimension of the active model by an equation.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_equation is not implemented by this adapter",
+        )
+
+    async def delete_equation(
+        self, name: str | None = None, index: int | None = None, force: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete an equation or global variable of the active model.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_equation is not implemented by this adapter",
         )
 
     async def measure_entities(

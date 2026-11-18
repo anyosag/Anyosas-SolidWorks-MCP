@@ -1528,12 +1528,13 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch linear pattern through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "sketch_linear_pattern",
             lambda: self.adapter.sketch_linear_pattern(
-                entities, direction_x, direction_y, spacing, count
+                entities, direction_x, direction_y, spacing, count, add_dimensions
             ),
             input_dict={
                 "entities": entities,
@@ -1541,6 +1542,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "direction_y": direction_y,
                 "spacing": spacing,
                 "count": count,
+                "add_dimensions": add_dimensions,
             },
         )
 
@@ -1549,12 +1551,24 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch circular pattern through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "sketch_circular_pattern",
-            lambda: self.adapter.sketch_circular_pattern(entities, angle, count),
-            input_dict={"entities": entities, "angle": angle, "count": count},
+            lambda: self.adapter.sketch_circular_pattern(
+                entities, angle, count, center_x, center_y, add_dimensions
+            ),
+            input_dict={
+                "entities": entities,
+                "angle": angle,
+                "count": count,
+                "center_x": center_x,
+                "center_y": center_y,
+                "add_dimensions": add_dimensions,
+            },
         )
 
     async def sketch_mirror(
@@ -2627,6 +2641,44 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             lambda: self.adapter.list_model_dimensions(feature_name),
             input_dict={"feature_name": feature_name},
             error_results_are_failures=False,
+        )
+
+    async def list_equations(self) -> AdapterResult[dict[str, Any]]:
+        """List the global variables and equations through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "list_equations",
+            lambda: self.adapter.list_equations(),
+            error_results_are_failures=False,
+        )
+
+    async def set_global_variable(
+        self, name: str, value: float, units: str = "mm"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add or change a global variable through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_global_variable",
+            lambda: self.adapter.set_global_variable(name, value, units),
+            input_dict={"name": name, "value": value, "units": units},
+        )
+
+    async def add_equation(
+        self, dimension: str, expression: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Drive a dimension by an equation through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "add_equation",
+            lambda: self.adapter.add_equation(dimension, expression),
+            input_dict={"dimension": dimension, "expression": expression},
+        )
+
+    async def delete_equation(
+        self, name: str | None = None, index: int | None = None, force: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete an equation or global variable through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "delete_equation",
+            lambda: self.adapter.delete_equation(name, index, force),
+            input_dict={"name": name, "index": index, "force": force},
         )
 
     async def measure_entities(

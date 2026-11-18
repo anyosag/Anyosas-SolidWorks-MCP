@@ -2265,6 +2265,11 @@ class SolidWorksIOMixin:
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
+            # A session with no document of its own (a new one, or one just
+            # reconnected) saves the active document, as list_open_documents
+            # shows it, instead of answering "No active model" (MMPLA).
+            adapter._attempt(self._sync_current_model_from_active)
+        if not adapter.currentModel:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
             )

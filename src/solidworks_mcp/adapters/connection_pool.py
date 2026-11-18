@@ -1314,6 +1314,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch linear pattern using pool.
 
@@ -1323,6 +1324,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             direction_y (float): The direction y value.
             spacing (float): The spacing value.
             count (int): The count value.
+            add_dimensions (bool): Add the spacing and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1330,7 +1332,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         return await self._execute_with_pool(
             "sketch_linear_pattern",
             lambda adapter: adapter.sketch_linear_pattern(
-                entities, direction_x, direction_y, spacing, count
+                entities, direction_x, direction_y, spacing, count, add_dimensions
             ),
         )
 
@@ -1339,6 +1341,9 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch circular pattern using pool.
 
@@ -1346,13 +1351,18 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             entities (list[str]): The entities value.
             angle (float): The angle value.
             count (int): The count value.
+            center_x (float): The centre's x, sketch mm.
+            center_y (float): The centre's y, sketch mm.
+            add_dimensions (bool): Add the radius, angle and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
         """
         return await self._execute_with_pool(
             "sketch_circular_pattern",
-            lambda adapter: adapter.sketch_circular_pattern(entities, angle, count),
+            lambda adapter: adapter.sketch_circular_pattern(
+                entities, angle, count, center_x, center_y, add_dimensions
+            ),
         )
 
     async def sketch_mirror(
@@ -2213,6 +2223,39 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         return await self._execute_with_pool(
             "list_model_dimensions",
             lambda adapter: adapter.list_model_dimensions(feature_name),
+        )
+
+    async def list_equations(self) -> AdapterResult[dict[str, Any]]:
+        """List the global variables and equations using pool."""
+        return await self._execute_with_pool(
+            "list_equations", lambda adapter: adapter.list_equations()
+        )
+
+    async def set_global_variable(
+        self, name: str, value: float, units: str = "mm"
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add or change a global variable using pool."""
+        return await self._execute_with_pool(
+            "set_global_variable",
+            lambda adapter: adapter.set_global_variable(name, value, units),
+        )
+
+    async def add_equation(
+        self, dimension: str, expression: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Drive a dimension by an equation using pool."""
+        return await self._execute_with_pool(
+            "add_equation",
+            lambda adapter: adapter.add_equation(dimension, expression),
+        )
+
+    async def delete_equation(
+        self, name: str | None = None, index: int | None = None, force: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete an equation or global variable using pool."""
+        return await self._execute_with_pool(
+            "delete_equation",
+            lambda adapter: adapter.delete_equation(name, index, force),
         )
 
     async def measure_entities(
