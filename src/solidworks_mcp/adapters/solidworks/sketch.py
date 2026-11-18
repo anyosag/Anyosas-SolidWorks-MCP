@@ -12,6 +12,7 @@ from loguru import logger
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
 from . import limits, rectangle_check
+from . import sketch_pattern_dimensions as _pattern_dims
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -259,9 +260,10 @@ class SolidWorksSketchMixin:
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         return _sketch_linear_pattern_impl(
-            self, entities, direction_x, direction_y, spacing, count
+            self, entities, direction_x, direction_y, spacing, count, add_dimensions
         )
 
     async def sketch_circular_pattern(
@@ -269,8 +271,13 @@ class SolidWorksSketchMixin:
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
-        return _sketch_circular_pattern_impl(self, entities, angle, count)
+        return _sketch_circular_pattern_impl(
+            self, entities, angle, count, center_x, center_y, add_dimensions
+        )
 
     async def sketch_mirror(
         self, entities: list[str], mirror_line: str
@@ -2111,6 +2118,7 @@ def _sketch_linear_pattern_impl(
     direction_y: float,
     spacing: float,
     count: int,
+    add_dimensions: bool = True,
 ) -> AdapterResult[str]:
     """Create a linear sketch pattern from the registered seed entities.
 
@@ -2135,11 +2143,16 @@ def _sketch_linear_pattern_impl(
         spacing: Distance between instances in **millimetres**.
         count: Total number of instances (including the seed).  Must be at
             least 2.
+        add_dimensions: Show the spacing and instance-count dimensions
+            (``XSpacingDim``, ``CreateNumOfInstancesDimInXDir``), which make
+            the pattern parametric: ``set_dimension`` on them changes it.
 
     Returns:
         AdapterResult[str]: On success, ``data`` is a synthesised
         ``"LinearPattern_<count>x<spacing>_<rand>"`` ID — the COM method
-        only returns a boolean, so no usable SW handle exists.
+        only returns a boolean, so no usable SW handle exists. ``metadata``
+        has ``dimensions`` (see
+        :func:`sketch_pattern_dimensions.new_dimensions`) and ``parametric``.
 
     Raises:
         Exception: Propagated through ``_handle_com_operation`` when
@@ -2180,6 +2193,7 @@ def _sketch_linear_pattern_impl(
                     "add_line/add_arc/add_circle/add_spline/add_centerline."
                 )
 
+        before = _pattern_dims.sketch_dimensions(adapter) if add_dimensions else {}
         # Clear any pre-existing selection so SW only sees the seed entities.
         adapter.currentModel.ClearSelection2(True)
         try:
@@ -2199,10 +2213,10 @@ def _sketch_linear_pattern_impl(
                 angle_x,  # AngleX (radians)
                 angle_y,  # AngleY (radians)
                 "",  # DeleteInstances
-                False,  # XSpacingDim
+                add_dimensions,  # XSpacingDim
                 False,  # YSpacingDim
-                False,  # AngleDim
-                False,  # CreateNumOfInstancesDimInXDir
+                False,  # AngleDim (between the two directions)
+                add_dimensions,  # CreateNumOfInstancesDimInXDir
                 False,  # CreateNumOfInstancesDimInYDir
             )
             if not ok:
@@ -2210,14 +2224,22 @@ def _sketch_linear_pattern_impl(
         finally:
             adapter.currentModel.ClearSelection2(True)
 
+        if add_dimensions:
+            found["dimensions"] = _pattern_dims.new_dimensions(
+                adapter, before, _pattern_dims.LINEAR_ROLES
+            )
         return f"LinearPattern_{count}x{spacing}_{int(time.time() * 1000) % 10000}"
 
-    return cast(
+    found: dict[str, Any] = {"parametric": add_dimensions, "dimensions": []}
+    result = cast(
         AdapterResult[str],
         adapter._handle_com_operation(
             "sketch_linear_pattern", _linear_pattern_operation
         ),
     )
+    if result.is_success:
+        result.metadata = {**(result.metadata or {}), **found}
+    return result
 
 
 def _sketch_circular_pattern_impl(
@@ -2225,6 +2247,9 @@ def _sketch_circular_pattern_impl(
     entities: list[str],
     angle: float,
     count: int,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+    add_dimensions: bool = True,
 ) -> AdapterResult[str]:
     """Create a circular sketch pattern from the registered seed entities.
 
@@ -2237,13 +2262,11 @@ def _sketch_circular_pattern_impl(
     — getting it wrong puts every copy on a tight cluster around the
     seed rather than the intended ring.  We derive it from the first
     registered entity's centre (via ``ISketchArc.GetCenterPoint`` once
-    the dispatch is flagged) relative to the sketch origin.  The COM
-    API has no pattern-centre parameter — the rotation axis is implied
-    by ``(ArcRadius, ArcAngle)`` relative to the seed, so the rotation
-    axis is always the **sketch origin**.  Callers who want a different
-    pattern centre must position the seed relative to the desired
-    centre (then translate the sketch as a whole, or use a sketch
-    plane offset).
+    the dispatch is flagged) relative to the pattern centre
+    ``(center_x, center_y)``.  The COM API has no pattern-centre
+    parameter — the rotation axis is implied by ``(ArcRadius, ArcAngle)``
+    relative to the seed — so the centre is given that way: the distance
+    from the seed to it, and the direction from the seed toward it.
 
     ``PatternSpacing`` is the per-instance angle in radians.  For a
     full 360° pattern we use ``angle / count`` so the last instance
@@ -2258,11 +2281,17 @@ def _sketch_circular_pattern_impl(
             ring or ``180`` for a half-circle).  Must be > 0.
         count: Total number of instances (including the seed).  Must be
             at least 2.
+        center_x: The pattern centre's x in sketch millimetres.
+        center_y: The pattern centre's y in sketch millimetres.
+        add_dimensions: Show the radius, angle and instance-count
+            dimensions (``RadiusDim``, ``AngleDim``,
+            ``CreateNumOfInstancesDim``), which make the pattern parametric.
 
     Returns:
         AdapterResult[str]: On success, ``data`` is a synthesised
         ``"CircularPattern_<count>x<angle>deg_<rand>"`` ID — the COM
-        method only returns a boolean.
+        method only returns a boolean. ``metadata`` has ``dimensions``,
+        ``parametric``, ``center`` (mm) and ``radius`` (mm, seed to centre).
 
     Raises:
         Exception: Propagated through ``_handle_com_operation`` when
@@ -2296,6 +2325,7 @@ def _sketch_circular_pattern_impl(
                     "add_line/add_arc/add_circle/add_spline/add_centerline."
                 )
 
+        before = _pattern_dims.sketch_dimensions(adapter) if add_dimensions else {}
         adapter.currentModel.ClearSelection2(True)
         try:
             _select_sketch_entities(adapter, entities, mark=0)
@@ -2311,9 +2341,7 @@ def _sketch_circular_pattern_impl(
             # ``ISketchArc.GetCenterPoint`` (after flagging the dispatch
             # with sw_type_info — pywin32 late binding otherwise resolves
             # the method as a tuple-valued property) and computing the
-            # offset to the rotation-axis origin.  Caller-supplied
-            # ``(center_x, center_y)`` is rejected above when non-zero, so
-            # the rotation axis is always at the sketch origin here.
+            # offset to the requested ``(center_x, center_y)``.
             #
             # Without this fix, ArcAngle=0 + ArcRadius=1 mm puts every
             # instance on a tiny ring beside the seed instead of the
@@ -2383,12 +2411,14 @@ def _sketch_circular_pattern_impl(
                     f"Use a circle, arc, ellipse, or polygon seed."
                 )
 
-            # Rotation axis is always the sketch origin (0, 0) — SW's
-            # ``CreateCircularSketchStepAndRepeat`` has no pattern-centre
-            # parameter, so dx/dy from seed to axis is just ``-seed``.
-            dx_mm = -seed_xy[0]
-            dy_mm = -seed_xy[1]
+            # SW's ``CreateCircularSketchStepAndRepeat`` has no
+            # pattern-centre parameter: the centre is the point at
+            # ``ArcRadius`` from the seed in the ``ArcAngle`` direction, so
+            # dx/dy run from the seed to the requested centre.
+            dx_mm = center_x - seed_xy[0]
+            dy_mm = center_y - seed_xy[1]
             arc_radius_mm = math.hypot(dx_mm, dy_mm)
+            found["radius"] = round(arc_radius_mm, 6)
             arc_angle_rad = math.atan2(dy_mm, dx_mm) if arc_radius_mm > 0 else 0.0
 
             # ``CreateCircularSketchStepAndRepeat`` silently returns False on
@@ -2422,23 +2452,35 @@ def _sketch_circular_pattern_impl(
                 pattern_spacing,  # PatternSpacing (radians)
                 True,  # PatternRotate
                 "",  # DeleteInstances
-                False,  # RadiusDim
-                False,  # AngleDim
-                False,  # CreateNumOfInstancesDim
+                add_dimensions,  # RadiusDim
+                add_dimensions,  # AngleDim
+                add_dimensions,  # CreateNumOfInstancesDim
             )
             if not ok:
                 raise Exception("Failed to create circular sketch pattern")
         finally:
             adapter.currentModel.ClearSelection2(True)
 
+        if add_dimensions:
+            found["dimensions"] = _pattern_dims.new_dimensions(
+                adapter, before, _pattern_dims.CIRCULAR_ROLES
+            )
         return f"CircularPattern_{count}x{angle}deg_{int(time.time() * 1000) % 10000}"
 
-    return cast(
+    found: dict[str, Any] = {
+        "parametric": add_dimensions,
+        "dimensions": [],
+        "center": {"x": center_x, "y": center_y},
+    }
+    result = cast(
         AdapterResult[str],
         adapter._handle_com_operation(
             "sketch_circular_pattern", _circular_pattern_operation
         ),
     )
+    if result.is_success:
+        result.metadata = {**(result.metadata or {}), **found}
+    return result
 
 
 def _sketch_mirror_impl(

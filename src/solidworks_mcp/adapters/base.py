@@ -1027,6 +1027,7 @@ class SolidWorksAdapter(ABC):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Create a linear pattern of sketch entities.
 
@@ -1036,6 +1037,7 @@ class SolidWorksAdapter(ABC):
             direction_y (float): The direction y value.
             spacing (float): The spacing value.
             count (int): The count value.
+            add_dimensions (bool): Add the spacing and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1050,18 +1052,19 @@ class SolidWorksAdapter(ABC):
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
-        """Create a circular pattern of sketch entities around the sketch origin.
-
-        The rotation axis is always the sketch origin — SW's
-        ``CreateCircularSketchStepAndRepeat`` has no pattern-centre
-        parameter and derives the axis from the seed's geometry. Place
-        the seed entity at the desired radius from the origin.
+        """Create a circular pattern of sketch entities about a centre.
 
         Args:
             entities (list[str]): The entities value.
             angle (float): The angle value.
             count (int): The count value.
+            center_x (float): The centre's x, sketch mm.
+            center_y (float): The centre's y, sketch mm.
+            add_dimensions (bool): Add the radius, angle and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.

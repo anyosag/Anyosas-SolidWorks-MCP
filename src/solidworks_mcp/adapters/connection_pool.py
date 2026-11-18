@@ -1312,6 +1312,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch linear pattern using pool.
 
@@ -1321,6 +1322,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             direction_y (float): The direction y value.
             spacing (float): The spacing value.
             count (int): The count value.
+            add_dimensions (bool): Add the spacing and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1328,7 +1330,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         return await self._execute_with_pool(
             "sketch_linear_pattern",
             lambda adapter: adapter.sketch_linear_pattern(
-                entities, direction_x, direction_y, spacing, count
+                entities, direction_x, direction_y, spacing, count, add_dimensions
             ),
         )
 
@@ -1337,6 +1339,9 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch circular pattern using pool.
 
@@ -1344,13 +1349,18 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             entities (list[str]): The entities value.
             angle (float): The angle value.
             count (int): The count value.
+            center_x (float): The centre's x, sketch mm.
+            center_y (float): The centre's y, sketch mm.
+            add_dimensions (bool): Add the radius, angle and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
         """
         return await self._execute_with_pool(
             "sketch_circular_pattern",
-            lambda adapter: adapter.sketch_circular_pattern(entities, angle, count),
+            lambda adapter: adapter.sketch_circular_pattern(
+                entities, angle, count, center_x, center_y, add_dimensions
+            ),
         )
 
     async def sketch_mirror(

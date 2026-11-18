@@ -3314,6 +3314,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Mock creating a linear sketch pattern.
 
@@ -3327,6 +3328,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             direction_y (float): Pattern direction Y component.
             spacing (float): Distance between instances in millimetres.
             count (int): Total number of instances (including the seed).
+            add_dimensions (bool): Add the spacing and count dimensions.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -3369,24 +3371,61 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self._operation_count += 1
 
         pattern_id = f"LinearPattern_{count}x{spacing}_{random.randint(1000, 9999)}"
+        dimensions = (
+            self._mock_pattern_dimensions([("spacing", spacing), ("count", count)])
+            if add_dimensions
+            else []
+        )
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=pattern_id,
             execution_time=self._delays["sketch_operation"] / 2,
+            metadata={"parametric": add_dimensions, "dimensions": dimensions},
         )
+
+    def _mock_pattern_dimensions(
+        self, roles: list[tuple[str, float]]
+    ) -> list[dict[str, Any]]:
+        """Name a sketch pattern's dimensions as SolidWorks would and track them."""
+        units = {"count": "count", "angle": "deg"}
+        sketch = self._current_sketch or "Sketch1"
+        taken = sum(1 for name in self._dimensions if name.endswith(f"@{sketch}"))
+        out: list[dict[str, Any]] = []
+        for offset, (role, value) in enumerate(roles, start=1):
+            name = f"D{taken + offset}@{sketch}"
+            self._dimensions[name] = float(value)
+            unit = units.get(role, "mm")
+            kind = {"count": "count", "deg": "angle"}.get(unit, "length")
+            out.append(
+                {
+                    "name": name,
+                    "role": role,
+                    "value": float(value),
+                    "units": unit,
+                    "kind": kind,
+                }
+            )
+        return out
 
     async def sketch_circular_pattern(
         self,
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
-        """Mock creating a circular sketch pattern around the sketch origin.
+        """Mock creating a circular sketch pattern about a centre.
 
         Args:
             entities (list[str]): Seed entity IDs.
             angle (float): Total swept angle in degrees.
             count (int): Total number of instances (including the seed).
+            center_x (float): The centre's x, sketch mm.
+            center_y (float): The centre's y, sketch mm.
+            add_dimensions (bool): Add the angle and count dimensions (the
+                mock doesn't know the seed's radius, so it has none).
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -3424,10 +3463,20 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self._operation_count += 1
 
         pattern_id = f"CircularPattern_{count}x{angle}deg_{random.randint(1000, 9999)}"
+        dimensions = (
+            self._mock_pattern_dimensions([("angle", angle), ("count", count)])
+            if add_dimensions
+            else []
+        )
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=pattern_id,
             execution_time=self._delays["sketch_operation"] / 2,
+            metadata={
+                "parametric": add_dimensions,
+                "dimensions": dimensions,
+                "center": {"x": center_x, "y": center_y},
+            },
         )
 
     async def sketch_mirror(

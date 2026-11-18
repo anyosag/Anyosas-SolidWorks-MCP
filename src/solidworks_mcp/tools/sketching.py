@@ -888,6 +888,80 @@ class CheckSketchDefinitionInput(CompatInput):
     )
 
 
+class SketchLinearPatternInput(CompatInput):
+    """Input schema for a linear sketch pattern.
+
+    Attributes:
+        entities (list[str]): Seed entity ids.
+        direction_x (float): Direction x component.
+        direction_y (float): Direction y component.
+        spacing (float): Distance between instances, mm.
+        count (int): Instances, the seed included.
+        add_dimensions (bool): Add the spacing and count dimensions.
+    """
+
+    entities: list[str] = Field(
+        min_length=1, description="Ids of the entities to repeat (from the add_* tools)"
+    )
+    direction_x: float = Field(default=1.0, description="Direction x component")
+    direction_y: float = Field(default=0.0, description="Direction y component")
+    spacing: float = Field(
+        default=10.0, gt=0, description="Spacing between instances, mm"
+    )
+    count: int = Field(default=3, ge=2, description="Instances, the seed included")
+    add_dimensions: bool = Field(
+        default=True,
+        description=(
+            "Add the pattern's spacing and count dimensions, so set_dimension can "
+            "change it later. False makes plain copies."
+        ),
+    )
+
+
+class SketchCircularPatternInput(CompatInput):
+    """Input schema for a circular sketch pattern.
+
+    Attributes:
+        entities (list[str]): Seed entity ids.
+        count (int): Instances, the seed included.
+        angle (float): Degrees spread over.
+        center_x (float): Centre x, sketch mm.
+        center_y (float): Centre y, sketch mm.
+        add_dimensions (bool): Add the radius, angle and count dimensions.
+    """
+
+    entities: list[str] = Field(
+        min_length=1,
+        description=(
+            "Ids of the entities to repeat; the first must be a circle, arc, "
+            "ellipse, polygon or rectangle"
+        ),
+    )
+    count: int = Field(default=6, ge=2, description="Instances, the seed included")
+    angle: float = Field(
+        default=360.0, gt=0, le=360, description="Degrees the instances spread over"
+    )
+    center_x: float = Field(
+        default=0.0, description="Pattern centre x in sketch mm (default the origin)"
+    )
+    center_y: float = Field(
+        default=0.0, description="Pattern centre y in sketch mm (default the origin)"
+    )
+    add_dimensions: bool = Field(
+        default=True,
+        description=(
+            "Add the pattern's radius, angle and count dimensions, so set_dimension "
+            "can change it later. False makes plain copies."
+        ),
+    )
+
+
+def _pattern_metadata(result: Any) -> dict[str, Any]:
+    """A sketch pattern result's ``metadata`` (dimensions, centre), or ``{}``."""
+    metadata = getattr(result, "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
 async def register_sketching_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -1918,84 +1992,113 @@ async def register_sketching_tools(
         }
 
     @mcp.tool()
-    async def sketch_linear_pattern(input_data: dict[str, Any]) -> dict[str, Any]:
-        """Repeat sketch entities in a straight line at a fixed spacing.
+    async def sketch_linear_pattern(
+        input_data: SketchLinearPatternInput,
+    ) -> dict[str, Any]:
+        """Repeat sketch entities in a straight line as a parametric sketch pattern.
 
-        Use it for rows of holes or slots before one cut. Needs: an open sketch
-        (`create_sketch`). Changes: adds copies of the entities. Returns: `pattern` with
-        `id`, `entities`, `count`, `spacing` and `direction`.
+        Use it for rows of holes or slots before one cut. The pattern keeps its
+        spacing and count as dimensions (`pattern.dimensions`, names such as
+        "D3@Sketch2"): change them with `set_dimension` or drive them with
+        `add_equation`, and a change to the seed carries to the copies. For a row of
+        a feature already cut, use `pattern_linear`. Needs: an open sketch
+        (`create_sketch`). Changes: adds the pattern to the sketch. Returns:
+        `pattern` with `id`, `entities`, `count`, `spacing`, `direction`,
+        `parametric` and `dimensions` (`name`, `role`, `value`, `units`).
 
         Args:
-            input_data: A mapping: `entities` (ids to repeat), `direction_x`/
-                `direction_y` (default 1, 0), `spacing` (mm, default 10) and
-                `count` (instances, default 3).
+            input_data: The pattern. `entities` (ids to repeat) is required;
+                `direction_x`/`direction_y` (1, 0), `spacing` (mm, 10), `count`
+                (3) and `add_dimensions` (true) have defaults.
 
         Returns:
             dict[str, Any]: The pattern added.
         """
-        entities = input_data.get("entities", [])
-        direction_x = input_data.get("direction_x", 1.0)
-        direction_y = input_data.get("direction_y", 0.0)
-        spacing = input_data.get("spacing", 10.0)
-        count = input_data.get("count", 3)
-
+        input_data = normalize_input(input_data, SketchLinearPatternInput)
         result = await adapter.sketch_linear_pattern(
-            entities, direction_x, direction_y, spacing, count
+            input_data.entities,
+            input_data.direction_x,
+            input_data.direction_y,
+            input_data.spacing,
+            input_data.count,
+            input_data.add_dimensions,
         )
 
         require_success(result, context="Failed to create linear pattern")
-        pattern_id = result.data
+        metadata = _pattern_metadata(result)
         return {
             "status": "success",
-            "message": f"Created linear pattern with {count} instances, spacing {spacing}mm",
+            "message": (
+                f"Created linear pattern with {input_data.count} instances, "
+                f"spacing {input_data.spacing}mm"
+            ),
             "pattern": {
-                "id": pattern_id,
+                "id": result.data,
                 "type": "linear",
-                "entities": entities,
-                "count": count,
-                "spacing": spacing,
-                "direction": {"x": direction_x, "y": direction_y},
+                "entities": input_data.entities,
+                "count": input_data.count,
+                "spacing": input_data.spacing,
+                "direction": {"x": input_data.direction_x, "y": input_data.direction_y},
+                "parametric": metadata.get("parametric", input_data.add_dimensions),
+                "dimensions": metadata.get("dimensions", []),
             },
             "execution_time": result.execution_time,
         }
 
     @mcp.tool()
-    async def sketch_circular_pattern(input_data: dict[str, Any]) -> dict[str, Any]:
-        """Repeat sketch entities around the sketch origin, e.g. a bolt circle.
+    async def sketch_circular_pattern(
+        input_data: SketchCircularPatternInput,
+    ) -> dict[str, Any]:
+        """Repeat sketch entities about a centre as a parametric sketch pattern, e.g. a bolt circle.
 
-        The centre is always the sketch origin, so draw the first entity at the radius
-        you want from it. Then cut once with `create_cut_extrude`. Needs: an open sketch
-        (`create_sketch`). Changes: adds copies of the entities. Returns: `pattern` with
-        `id`, `entities`, `count` and `angle`.
+        The centre is `center_x`/`center_y` in sketch mm (the origin by default); the
+        seed's distance from it is the radius. The pattern keeps its radius, angle
+        and count as dimensions (`pattern.dimensions`, names such as "D4@Sketch3"):
+        change them with `set_dimension` or drive them with `add_equation`, and a
+        change to the seed carries to the copies. Then cut once with
+        `create_cut_extrude`. Or cut one seed and repeat the feature with
+        `pattern_circular`. Needs: an open sketch (`create_sketch`). Changes: adds the
+        pattern to the sketch. Returns: `pattern` with `id`, `entities`, `count`,
+        `angle`, `center`, `radius` (mm), `parametric` and `dimensions` (`name`,
+        `role`, `value`, `units`).
 
         Args:
-            input_data: A mapping: `entities` (ids to repeat), `count` (instances,
-                default 6) and `angle` (degrees spread over, default 360).
+            input_data: The pattern. `entities` (ids to repeat) is required;
+                `count` (6), `angle` (degrees, 360), `center_x`/`center_y` (mm,
+                0) and `add_dimensions` (true) have defaults.
 
         Returns:
             dict[str, Any]: The pattern added.
         """
-        entities = input_data.get("entities", [])
-        angle = input_data.get("angle", 360.0)
-        count = input_data.get("count", 6)
-
-        result = await adapter.sketch_circular_pattern(entities, angle, count)
+        input_data = normalize_input(input_data, SketchCircularPatternInput)
+        result = await adapter.sketch_circular_pattern(
+            input_data.entities,
+            input_data.angle,
+            input_data.count,
+            input_data.center_x,
+            input_data.center_y,
+            input_data.add_dimensions,
+        )
 
         require_success(result, context="Failed to create circular pattern")
-        pattern_id = result.data
+        metadata = _pattern_metadata(result)
+        center = {"x": input_data.center_x, "y": input_data.center_y}
         return {
             "status": "success",
             "message": (
-                f"Created circular pattern with {count} instances "
-                "around the sketch origin"
+                f"Created circular pattern with {input_data.count} instances "
+                f"about ({input_data.center_x:g}, {input_data.center_y:g}) mm"
             ),
             "pattern": {
-                "id": pattern_id,
+                "id": result.data,
                 "type": "circular",
-                "entities": entities,
-                "count": count,
-                "center": {"x": 0.0, "y": 0.0},
-                "angle": angle,
+                "entities": input_data.entities,
+                "count": input_data.count,
+                "center": metadata.get("center", center),
+                "radius": metadata.get("radius"),
+                "angle": input_data.angle,
+                "parametric": metadata.get("parametric", input_data.add_dimensions),
+                "dimensions": metadata.get("dimensions", []),
             },
             "execution_time": result.execution_time,
         }

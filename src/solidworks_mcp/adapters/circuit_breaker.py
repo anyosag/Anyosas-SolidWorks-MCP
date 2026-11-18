@@ -1526,12 +1526,13 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         direction_y: float,
         spacing: float,
         count: int,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch linear pattern through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "sketch_linear_pattern",
             lambda: self.adapter.sketch_linear_pattern(
-                entities, direction_x, direction_y, spacing, count
+                entities, direction_x, direction_y, spacing, count, add_dimensions
             ),
             input_dict={
                 "entities": entities,
@@ -1539,6 +1540,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "direction_y": direction_y,
                 "spacing": spacing,
                 "count": count,
+                "add_dimensions": add_dimensions,
             },
         )
 
@@ -1547,12 +1549,24 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         entities: list[str],
         angle: float,
         count: int,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        add_dimensions: bool = True,
     ) -> AdapterResult[str]:
         """Sketch circular pattern through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "sketch_circular_pattern",
-            lambda: self.adapter.sketch_circular_pattern(entities, angle, count),
-            input_dict={"entities": entities, "angle": angle, "count": count},
+            lambda: self.adapter.sketch_circular_pattern(
+                entities, angle, count, center_x, center_y, add_dimensions
+            ),
+            input_dict={
+                "entities": entities,
+                "angle": angle,
+                "count": count,
+                "center_x": center_x,
+                "center_y": center_y,
+                "add_dimensions": add_dimensions,
+            },
         )
 
     async def sketch_mirror(
