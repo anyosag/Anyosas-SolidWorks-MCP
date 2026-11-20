@@ -397,6 +397,15 @@ class SolidWorksMCPConfig(BaseModel):
             "aliases are still accepted."
         ),
     )
+    tool_groups: str = Field(
+        default="all",
+        description=(
+            "The tool groups to list, comma-separated (e.g. core,bodies); "
+            "core is always listed. 'all' (the default) lists every group. "
+            "Set with SOLIDWORKS_MCP_TOOL_GROUPS; the enable_tool_groups "
+            "tool turns more on mid-session."
+        ),
+    )
 
     # === Development & Testing ===
     debug: bool = Field(default=False, description="Enable debug mode")

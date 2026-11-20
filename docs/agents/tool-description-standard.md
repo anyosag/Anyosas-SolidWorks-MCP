@@ -84,8 +84,33 @@ reason.
 
 Don't write the level into the docstring: the server opens a beta or
 experimental tool's description with "Beta: <reason>" or "Experimental:
-<reason>" from the table, adds the same sentence to its successful results as
-`warning`, and tags every tool `level:<level>`. After changing a level, run
+<reason>" from the table, adds a beta tool's sentence to its successful
+results as `warning` (an experimental tool's is the same on every call, so it
+is said once, in the description), and tags every tool `level:<level>`.
+
+## Tool groups
+
+Every tool belongs to one group (`tools/tool_groups.py`): `core` for what a
+normal part build needs, the others by family. A new tool takes its family's
+group unless it is listed in `CORE_TOOLS` or `TOOL_GROUPS`; a new family needs
+an entry in `FAMILY_GROUPS`, or registration fails. The server lists only the
+groups in `SOLIDWORKS_MCP_TOOL_GROUPS` (all by default), and
+`enable_tool_groups` turns more on mid-session.
+
+## Field descriptions in the listing
+
+The tool list cuts each field description to the sentences that fit in 80
+characters (`input_data`'s in 120), ending a cut one with "...";
+`describe_tool_inputs` returns them whole (`tools/schema_compaction.py`). So
+put what an agent must know to fill the field in the first sentence, and
+limits, examples and how fields combine after it.
+
+## Long lists in replies
+
+A reply list that can run to hundreds of entries is paged with
+`tools/reply_limits.py`: `limit` (50) and `offset` fields, and `truncated`,
+`full_count` and `next_offset` in a cut reply. Check blocks
+(`measured_change`, `warning`, `mesh_check`, `file_check`) are never paged. After changing a level, run
 `python -m solidworks_mcp.progress.generate` so the README image and the
 [progress page](../progress.md) follow; `tests/integration/test_support_levels.py`
 and `test_progress_up_to_date.py` check both.

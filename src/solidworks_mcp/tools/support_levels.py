@@ -10,8 +10,11 @@ Every tool has exactly one support level:
 - **planned**: registered, but no adapter implements it yet (its
   description says "Not available yet").
 
-``ToolRegistrar`` adds the level to each tool's tags and, for a beta or
-experimental tool, a ``warning`` to its successful results. Fixing a fault
+``ToolRegistrar`` adds the level to each tool's tags, opens a beta or
+experimental tool's description with its level sentence, and, for a beta
+tool only, adds that sentence to its successful results as ``warning``. An
+experimental tool's sentence ("not yet checked by a live test") is the same
+on every call, so it is said once, in the description, not in every reply. Fixing a fault
 in the queue's small-faults list moves its tool up a level here.
 """
 
@@ -55,16 +58,28 @@ class Support:
                 f"{self.level.value!r} with reason {self.reason!r}"
             )
 
-    def warning(self) -> str | None:
-        """The sentence a successful beta or experimental result carries.
+    def note(self) -> str | None:
+        """The sentence a beta or experimental tool's description opens with.
 
         Returns:
             str | None: ``"Beta: <reason>"`` or ``"Experimental: <reason>"``;
-            None for stable and planned tools (a planned tool never succeeds).
+            None for stable and planned tools (a planned tool says "Not
+            available yet" in its own words).
         """
         if self.level in (SupportLevel.BETA, SupportLevel.EXPERIMENTAL):
             return f"{self.level.value.capitalize()}: {self.reason}"
         return None
+
+    def warning(self) -> str | None:
+        """The sentence a successful result carries as ``warning``.
+
+        Only a beta tool's: its reason is a known fault worth repeating with
+        the result. An experimental tool's note is in its description.
+
+        Returns:
+            str | None: ``"Beta: <reason>"``; None for every other level.
+        """
+        return self.note() if self.level is SupportLevel.BETA else None
 
 
 #: Tool families that never call SolidWorks; their tools are stable on unit
@@ -250,6 +265,8 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "suppress_feature": _STABLE,
     "undo": _STABLE,
     # server_admin
+    "describe_tool_inputs": _STABLE,
+    "enable_tool_groups": _STABLE,
     "reset_circuit_breaker": _STABLE,
     "set_solidworks_window": _STABLE,
     # sketching

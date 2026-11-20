@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 197,
+  "total": 204,
   "by_level": {
-   "stable": 107,
+   "stable": 109,
    "beta": 0,
-   "experimental": 51,
+   "experimental": 56,
    "planned": 39
   },
   "list": [
@@ -79,6 +79,13 @@
     "summary": "Draw an ellipse in the open sketch from its centre and axis lengths, in mm."
    },
    {
+    "name": "add_equation",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Drive a dimension of the active part or assembly by an equation, e.g. \"D1@Sketch3\" = \"well_d\"."
+   },
+   {
     "name": "add_fillet",
     "family": "modeling",
     "level": "stable",
@@ -146,7 +153,7 @@
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Add a driving dimension to sketch entities: linear, angular, radial or diameter."
+    "summary": "Add a driving dimension to sketch entities: linear, horizontal, vertical, angular, radial or diameter."
    },
    {
     "name": "add_sketch_text",
@@ -513,6 +520,13 @@
     "summary": "Create a part, assembly or drawing template file (.prtdot, .asmdot, .drwdot) with standard settings."
    },
    {
+    "name": "delete_equation",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Delete an equation or a global variable of the active part or assembly."
+   },
+   {
     "name": "delete_feature",
     "family": "modeling",
     "level": "stable",
@@ -532,6 +546,13 @@
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
     "summary": "Delete lines, arcs and other entities of the open sketch by id, or all of them."
+   },
+   {
+    "name": "describe_tool_inputs",
+    "family": "server_admin",
+    "level": "stable",
+    "reason": "",
+    "summary": "Give the full input schema of one or more tools, with each field's whole description."
    },
    {
     "name": "discover_solidworks_docs",
@@ -567,6 +588,13 @@
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
     "summary": "Raise a text label off the active part, or engrave it in, in one call."
+   },
+   {
+    "name": "enable_tool_groups",
+    "family": "server_admin",
+    "level": "stable",
+    "reason": "",
+    "summary": "Turn on more tool groups for this session, so their tools appear in your tool list."
    },
    {
     "name": "execute_macro",
@@ -609,6 +637,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Export the active sheet-metal part's flat pattern to DXF or DWG, for laser or waterjet cutting."
+   },
+   {
+    "name": "export_for_blender",
+    "family": "export",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Export the active part or assembly for Blender, with the code that imports it right."
    },
    {
     "name": "export_iges",
@@ -889,6 +924,13 @@
     "level": "stable",
     "reason": "",
     "summary": "List the views on the active drawing, by name."
+   },
+   {
+    "name": "list_equations",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "List the active part's or assembly's global variables and equations with their values."
    },
    {
     "name": "list_features",
@@ -1234,6 +1276,13 @@
     "summary": "Change one dimension of the active model and rebuild."
    },
    {
+    "name": "set_global_variable",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Add a global variable to the active part or assembly, or change its value, e.g. \"well_d\" = 1.2mm."
+   },
+   {
     "name": "set_material",
     "family": "engineering_data",
     "level": "stable",
@@ -1280,14 +1329,14 @@
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Repeat sketch entities around the sketch origin, e.g. a bolt circle."
+    "summary": "Repeat sketch entities about a centre as a parametric sketch pattern, e.g. a bolt circle."
    },
    {
     "name": "sketch_linear_pattern",
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Repeat sketch entities in a straight line at a fixed spacing."
+    "summary": "Repeat sketch entities in a straight line as a parametric sketch pattern."
    },
    {
     "name": "sketch_mirror",
@@ -1392,11 +1441,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 290,
+   "covered": 298,
    "total": 2838
   },
   "api": {
-   "covered": 361,
+   "covered": 381,
    "total": 5985
   },
   "interfaces": [
@@ -1407,6 +1456,7 @@
      "CloseAllDocuments",
      "CloseDoc",
      "Frame",
+     "GetConfigurationCount",
      "GetConfigurationNames",
      "GetCurrentLanguage",
      "GetDocumentDependencies2",
@@ -1443,8 +1493,10 @@
      "AddDiameterDimension2",
      "AddDimension",
      "AddDimension2",
+     "AddHorizontalDimension2",
      "AddRadialDimension2",
      "AddRelation",
+     "AddVerticalDimension2",
      "BlankRefGeom",
      "BlankSketch",
      "ClearSelection2",
@@ -1475,7 +1527,9 @@
      "ForceRebuild3",
      "GetActiveConfiguration",
      "GetActiveSketch2",
+     "GetConfigurationCount",
      "GetConfigurationNames",
+     "GetEquationMgr",
      "GetFeatureCount",
      "GetFeatureManagerWidth",
      "GetLineCount",
@@ -1698,7 +1752,9 @@
      "GetBody",
      "GetBox",
      "GetChildren",
+     "GetConfigurationCount",
      "GetConfigurationNames",
+     "GetConstrainedStatus",
      "GetCorrespondingEntity",
      "GetID",
      "GetMates",
@@ -1753,6 +1809,7 @@
     "name": "ISketch",
     "covered": [
      "AutoDimension",
+     "GetConstrainedStatus",
      "GetLineCount",
      "GetSketchContours",
      "GetSketchPoints2",

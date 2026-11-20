@@ -4,7 +4,7 @@ Convert SolidWorks models to industry-standard interchange and manufacturing for
 
 > **Prerequisite:** An active document or a valid file path to an existing model.
 
-**Total tools in this category: 8**
+**Total tools in this category: 9**
 
 ---
 

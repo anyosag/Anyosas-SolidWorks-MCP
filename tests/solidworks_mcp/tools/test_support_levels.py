@@ -29,7 +29,21 @@ def test_a_stable_tool_has_no_reason() -> None:
         (SupportLevel.PLANNED, None),
     ],
 )
-def test_the_warning_names_the_level_and_reason(
+def test_the_note_names_the_level_and_reason(
+    level: SupportLevel, expected: str | None
+) -> None:
+    assert Support(level, "one input is ignored.").note() == expected
+
+
+@pytest.mark.parametrize(
+    ("level", "expected"),
+    [
+        (SupportLevel.BETA, "Beta: one input is ignored."),
+        (SupportLevel.EXPERIMENTAL, None),
+        (SupportLevel.PLANNED, None),
+    ],
+)
+def test_only_a_beta_result_repeats_it_as_a_warning(
     level: SupportLevel, expected: str | None
 ) -> None:
     assert Support(level, "one input is ignored.").warning() == expected

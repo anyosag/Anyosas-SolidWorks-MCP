@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
 from solidworks_mcp.tools.modeling import register_modeling_tools
+from solidworks_mcp.tools.sketching import register_sketching_tools
 from solidworks_mcp.tools.tool_boundary import (
     ToolRegistrar,
     takes_input,
@@ -44,7 +45,7 @@ async def test_document_tools_advertise_document_and_choosers_do_not(
 
     document = tools["rebuild_model"].parameters["properties"]["document"]
 
-    assert document["description"].startswith("The open document to work on")
+    assert document["description"].startswith("Open document to act on")
     assert "document" not in tools["open_model"].parameters.get("properties", {})
     assert "document" not in tools["rebuild_model"].parameters.get("required", [])
 
@@ -153,10 +154,11 @@ def test_a_registrar_given_the_adapter_later_keeps_it() -> None:
 
 
 async def test_document_alone_is_not_an_input(mock_config: Any) -> None:
-    """``list_components`` takes ``document`` but no input of its own."""
+    """``exit_sketch`` takes ``document`` but no input of its own."""
     _adapter, mcp, _titles = await _two_parts(mock_config)
+    await register_sketching_tools(mcp, _adapter, mock_config)
     tools = {t.name: t.fn for t in await mcp.list_tools()}
 
-    assert "document" in inspect.signature(tools["list_components"]).parameters
-    assert takes_input(tools["list_components"]) is False
+    assert "document" in inspect.signature(tools["exit_sketch"]).parameters
+    assert takes_input(tools["exit_sketch"]) is False
     assert takes_input(tools["rebuild_model"]) is True

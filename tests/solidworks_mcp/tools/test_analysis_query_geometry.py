@@ -33,7 +33,7 @@ async def test_a_corner_of_the_mock_block(tools: Any) -> None:
     assert reply["message"] == (
         "Within 0.5 mm of [10.0, 10.0, 10.0] mm: 3 face(s) (plane) and 3 edge(s) (line)"
     )
-    assert reply["warning"].startswith("Experimental:")
+    assert "warning" not in reply  # the experimental note is in the description
 
 
 async def test_a_pick_answer_and_a_cut_list_say_so(tools: Any) -> None:

@@ -97,11 +97,16 @@ List the feature tree of the active part or assembly, in tree order (oldest firs
 | `include_standard` | `bool` | — | `True` | false drops what every tree has: the Origin, the three default planes, the Mates folder and the system folders (History, Sensors, Annotations, Solid Bodies, Equations, Material, Lights Cameras and Scene, Favorites, Selection Sets and so on). Folders you made stay. |
 | `types` | `List[str]?` | — | `None` | Keep only features of these types (the `type` each entry shows, any case), e.g. ['Extrusion', 'Cut', 'Fillet', 'ProfileFeature']; a sketch is 'ProfileFeature'. An Instant3D extrude whose kind SolidWorks doesn't say ('ICE') matches 'Extrusion' and 'Cut' |
 | `last` | `int?` | — | `None` | Keep only the newest N features: the bottom of the tree (the list stays in tree order, oldest first). In an assembly, the newest N of each document. Applied after include_standard and types |
+| `limit` | `int` | ✅ | `` |  |
+| `offset` | `int` | ✅ | `` |  |
 
 **Sample call:**
 
 ```json
-{}
+{
+  "limit": 10.0,
+  "offset": 10.0
+}
 ```
 
 ---

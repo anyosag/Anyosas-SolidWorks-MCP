@@ -51,7 +51,7 @@ async def test_list_bodies(lid: Any) -> None:
     assert result["status"] == "success", result
     assert result["message"] == "The part has 3 solid bodies: Lid, Label1, Label2"
     assert result["data"]["count"] == 3
-    assert result["warning"].startswith("Experimental:")
+    assert "warning" not in result  # the experimental note is in the description
 
 
 async def test_a_long_list_is_cut_short_in_the_message(lid: Any) -> None:
@@ -185,7 +185,7 @@ async def test_move_and_copy(lid: Any) -> None:
     )
 
     assert moved["message"] == "Moved Label1"
-    assert moved["warning"].startswith("Experimental:")
+    assert "warning" not in moved  # the experimental note is in the description
     assert copied["message"] == (
         "Copied Label2 into Body-Move/Copy2[1], Body-Move/Copy2[2]"
     )
@@ -254,7 +254,7 @@ async def test_delete_keep_body(lid: Any) -> None:
     result = await tools["delete_keep_body"]({"bodies": ["Label1", "Label2"]})
 
     assert result["message"] == "Deleted Label1, Label2"
-    assert result["warning"].startswith("Experimental:")
+    assert "warning" not in result  # the experimental note is in the description
 
 
 async def test_removing_other_bodies_than_expected_is_a_warning(lid: Any) -> None:
@@ -353,7 +353,7 @@ async def test_make_mating_negative(lid: Any) -> None:
     assert result["message"].endswith(
         "0.15 mm clearance (shifted_copies); the tool bodies are still in the part"
     )
-    assert result["warning"].startswith("Experimental:")
+    assert "warning" not in result  # the experimental note is in the description
 
 
 async def test_one_tool_by_the_name_tool(lid: Any) -> None:

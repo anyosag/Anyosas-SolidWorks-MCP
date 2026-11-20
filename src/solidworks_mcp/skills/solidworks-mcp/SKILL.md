@@ -93,6 +93,21 @@ each warning once. Read them, including each feature's
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
 
+## Save tokens
+
+- Batch known steps in one `execute_workflow` call; keep its default
+  `detail: "summary"` (and `get_sketch` `detail: "summary"` for a big sketch).
+- Find edges with `query_geometry` before `select_edges`, so the rules hit
+  the first time.
+- Call `verify_model` once, at the end, with every value you expect.
+- Long lists (`list_features`, `get_sketch` segments, `list_components`)
+  come 50 at a time with `truncated` and `next_offset`; filter (`types`,
+  `last`) before paging with `offset`.
+- Tools come in groups; the server may list only some
+  (`SOLIDWORKS_MCP_TOOL_GROUPS`, e.g. `core,bodies`). Turn a group on with
+  `enable_tool_groups` only when you need one of its tools. A field
+  description ending "..." is cut short: `describe_tool_inputs` gives it whole.
+
 ## Units
 
 Inputs are millimetres and degrees, with two exceptions that take metres:
@@ -144,9 +159,9 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
 - Every tool has a support level, in its tags (`level:stable`, `level:beta`,
   `level:experimental`, `level:planned`). A beta tool works but has a known
   gap, and an experimental one hasn't been checked on real SolidWorks: their
-  description opens with "Beta: ..." or "Experimental: ...", and a successful
-  result carries the same sentence as `warning`. Read it, and check the
-  result (`verify_model`, `list_features`) before building on it.
+  description opens with "Beta: ..." or "Experimental: ...", and a beta
+  tool's successful result repeats its sentence as `warning`. Read it, and
+  check the result (`verify_model`, `list_features`) before building on it.
 - 39 tools are planned: nothing implements them. The server leaves them
   out of its tool list unless it runs with
   `SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=true`; then their description says "Not

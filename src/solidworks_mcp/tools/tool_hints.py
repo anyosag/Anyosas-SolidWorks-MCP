@@ -130,6 +130,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "discover_solidworks_docs": _sets("Rebuild SolidWorks API Index"),
     "search_solidworks_api_help": _reads("Search SolidWorks API"),
     # server_admin
+    "describe_tool_inputs": _reads("Describe Tool Inputs"),
+    "enable_tool_groups": _sets("Enable Tool Groups"),
     "reset_circuit_breaker": _sets("Reset Circuit Breaker"),
     "set_solidworks_window": _sets("Minimize or Restore SolidWorks"),
     "lookup_api_method": _reads("Look Up API Method"),

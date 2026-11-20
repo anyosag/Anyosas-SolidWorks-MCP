@@ -30,8 +30,8 @@ def _breaker_with_open(*operations: str) -> CircuitBreakerAdapter:
 
 
 @pytest.mark.asyncio
-async def test_registers_two_tools(mcp_server, mock_adapter) -> None:
-    assert await register_server_admin_tools(mcp_server, mock_adapter, {}) == 2
+async def test_registers_four_tools(mcp_server, mock_adapter) -> None:
+    assert await register_server_admin_tools(mcp_server, mock_adapter, {}) == 4
 
 
 async def _window_tool(mcp_server: Any, adapter: Any) -> Any:

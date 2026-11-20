@@ -34,6 +34,7 @@ from .config import DeploymentMode, SolidWorksMCPConfig, load_config
 from .exceptions import SolidWorksMCPError
 from .skills import SERVER_INSTRUCTIONS, SKILL_DIR
 from .tools.schema_compaction import CompactToolSchemas
+from .tools.tool_groups import GROUPS, group_tag, hidden_groups, parse_groups
 from .version import __version__
 
 # pydantic_ai (the optional OpenAI agent) and agents.history_db (sqlmodel and
@@ -388,7 +389,7 @@ class SolidWorksMCPServer:
         logger.info(f"Server setup complete with {self.state.tool_count} tools")
 
     def _apply_tool_listing_policy(self) -> None:
-        """Hide planned tools and compact listed schemas, as the config asks.
+        """Hide planned tools and unselected groups, and compact schemas, as the config asks.
 
         Planned tools only return ``not_supported``; listing them cost about
         10.5k tokens of agent context. Compaction trims the schemas the client
@@ -397,6 +398,18 @@ class SolidWorksMCPServer:
         """
         if not getattr(self.config, "show_planned_tools", False):
             self.mcp.add_transform(Visibility(False, tags={"level:planned"}))
+        selected, unknown = parse_groups(getattr(self.config, "tool_groups", "all"))
+        if unknown:
+            logger.warning(
+                "SOLIDWORKS_MCP_TOOL_GROUPS names no group {}; the groups are {}",
+                ", ".join(unknown),
+                ", ".join(GROUPS),
+            )
+        hidden = hidden_groups(selected)
+        if hidden:
+            self.mcp.add_transform(
+                Visibility(False, tags={group_tag(group) for group in hidden})
+            )
         if getattr(self.config, "compact_tool_schemas", True):
             self.mcp.add_transform(CompactToolSchemas())
 

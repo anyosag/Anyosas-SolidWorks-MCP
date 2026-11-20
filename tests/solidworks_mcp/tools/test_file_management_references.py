@@ -77,8 +77,8 @@ async def test_a_dry_run_says_what_would_change(mock, mock_config, tmp_path) -> 
         "changed"
     )
     assert result["data"]["can_move"] is True
-    # Only the experimental level's sentence: nothing stops the move.
-    assert result["warning"].startswith("Experimental:")
+    # Nothing stops the move.
+    assert "warning" not in result  # the experimental note is in the description
 
 
 async def test_a_move_moves_and_repoints(mock, mock_config, tmp_path) -> None:

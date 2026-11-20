@@ -57,6 +57,10 @@ ADAPTER_FREE_TOOLS = {
     "generate_vba_batch_export",
     "generate_vba_drawing_views",
     "generate_vba_code",  # emits a labelled skeleton and says so
+    # The server's own tool list: which groups it lists, and the full input
+    # schemas of its tools. No SolidWorks involved.
+    "enable_tool_groups",
+    "describe_tool_inputs",
     # These refuse honestly instead of inventing a result.
     "create_section_view",
     "create_detail_view",
