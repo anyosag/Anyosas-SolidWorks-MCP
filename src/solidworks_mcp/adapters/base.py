@@ -2810,36 +2810,23 @@ class SolidWorksAdapter(ABC):
             error="list_equations is not implemented by this adapter",
         )
 
-    async def set_global_variable(
-        self, name: str, value: float, units: str = "mm"
+    async def set_equations(
+        self, equations: list[str]
     ) -> AdapterResult[dict[str, Any]]:
-        """Add or change a global variable of the active model.
+        """Add or replace equations of the active model, all or nothing.
 
         Returns:
             AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
-            error="set_global_variable is not implemented by this adapter",
-        )
-
-    async def add_equation(
-        self, dimension: str, expression: str
-    ) -> AdapterResult[dict[str, Any]]:
-        """Drive a dimension of the active model by an equation.
-
-        Returns:
-            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
-        """
-        return AdapterResult(
-            status=AdapterResultStatus.ERROR,
-            error="add_equation is not implemented by this adapter",
+            error="set_equations is not implemented by this adapter",
         )
 
     async def delete_equation(
-        self, name: str | None = None, index: int | None = None, force: bool = False
+        self, equation: str | int
     ) -> AdapterResult[dict[str, Any]]:
-        """Delete an equation or global variable of the active model.
+        """Delete one equation of the active model by its name or index.
 
         Returns:
             AdapterResult[dict[str, Any]]: Error unless the adapter implements it.

@@ -2651,34 +2651,24 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             error_results_are_failures=False,
         )
 
-    async def set_global_variable(
-        self, name: str, value: float, units: str = "mm"
+    async def set_equations(
+        self, equations: list[str]
     ) -> AdapterResult[dict[str, Any]]:
-        """Add or change a global variable through circuit breaker."""
+        """Add or replace equations through circuit breaker."""
         return await self._execute_with_circuit_breaker(
-            "set_global_variable",
-            lambda: self.adapter.set_global_variable(name, value, units),
-            input_dict={"name": name, "value": value, "units": units},
-        )
-
-    async def add_equation(
-        self, dimension: str, expression: str
-    ) -> AdapterResult[dict[str, Any]]:
-        """Drive a dimension by an equation through circuit breaker."""
-        return await self._execute_with_circuit_breaker(
-            "add_equation",
-            lambda: self.adapter.add_equation(dimension, expression),
-            input_dict={"dimension": dimension, "expression": expression},
+            "set_equations",
+            lambda: self.adapter.set_equations(equations),
+            input_dict={"equations": equations},
         )
 
     async def delete_equation(
-        self, name: str | None = None, index: int | None = None, force: bool = False
+        self, equation: str | int
     ) -> AdapterResult[dict[str, Any]]:
-        """Delete an equation or global variable through circuit breaker."""
+        """Delete an equation through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "delete_equation",
-            lambda: self.adapter.delete_equation(name, index, force),
-            input_dict={"name": name, "index": index, "force": force},
+            lambda: self.adapter.delete_equation(equation),
+            input_dict={"equation": equation},
         )
 
     async def measure_entities(

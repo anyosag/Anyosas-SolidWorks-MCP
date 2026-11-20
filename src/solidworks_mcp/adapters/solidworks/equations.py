@@ -1,111 +1,204 @@
-"""Global variables and equations, through ``IEquationMgr``.
+"""Equations and global variables, through ``IEquationMgr`` (``parametric-equations``).
 
-The MMPLA well-plate build (SOLIDWORKS 2026 SP4.1) used one well diameter,
-one well depth and one start offset in five sketches, and had to change each
-of them in five places. SolidWorks' own answer is a global variable
-(``"well_d" = 1.2mm``) and dimension equations that read it
-(``"D1@Sketch3" = "well_d"``). This module reads and writes them through
-``IModelDoc2.GetEquationMgr``.
+SolidWorks keeps design intent such as "every leg is ``L`` long" in equations
+(``"D1@Sketch1" = "L"``) and global variables (``"L" = 40``), on
+``IModelDoc2.GetEquationMgr()``. Three operations:
 
-What the API help says, and what the code does about it:
+- :func:`list_all`: every equation with its ``index``, ``equation`` text,
+  ``name`` (what it sets), ``value``, ``global`` and ``broken``.
+- :func:`set_equations`: a list of equations, all or nothing (D4). Every left
+  side is checked first; an equation whose name already has one replaces it
+  in place, any other is added at the end; a refusal undoes the journal; one
+  ``ForceRebuild3(False)`` at the end.
+- :func:`delete_equation`: one equation, by the name it sets or its index.
 
-- ``Equation``, ``Value``, ``GlobalVariable`` and ``Suppression`` are
-  *indexed properties*; late binding reads them only through
-  ``IDispatch.Invoke`` with ``DISPATCH_PROPERTYGET`` (``ref_plane_edit``'s
-  ``get_indexed``), and ``Equation(i) = text`` through ``put_indexed``.
-- Names go in double quotes: ``"D1@Sketch3" = "well_d" * 2``.
-- ``Add2`` (one configuration) and ``Add3`` (several, made in 2014 or later;
-  a global variable needs ``swAllConfiguration``) return the new index or
-  -1. ``Add2`` refuses a left side that already has an equation, so an
-  existing one is changed in place instead.
-- ``Status`` is the index of the last equation that ran, or -1 when it
-  failed: a refused expression is undone (deleted, or its old text put
-  back) and returned as an ``Invalid request`` (``invalid_input``).
-- "Do not add an equation while traversing the equations": every list is
-  read whole before anything is added or deleted.
+:func:`driven_map` gives ``list_model_dimensions`` its ``driven_by`` and
+``set_dimension`` its up-front refusal (D7).
 
-After a change the model is rebuilt and the equations read again, so the
-reply gives what each driven dimension now is.
+What the API and the gen_py wrapper say:
+
+- ``Equation``, ``Value`` and ``GlobalVariable`` are indexed properties.
+  Late binding reads them through ``IDispatch.Invoke`` with
+  ``DISPATCH_PROPERTYGET`` (``ref_plane_edit.get_indexed``); gen_py's
+  ``SetEquation`` is ``Equation``'s property put (DISPID 8), written through
+  ``put_indexed``. Probe 1.1 settles which call works.
+- ``Add3(index, text, solve, swAllConfiguration, names)`` returns the new
+  index or -1; ``Add2(index, text, solve)`` is the fallback where ``Add3``
+  is missing. Both apply to every configuration (D5).
+- A refused ``SetEquation`` keeps the old text without an error, so every
+  replace is read back.
+
+Credit: hjbaard's ``solidworks-mcp`` (MIT, (c) 2026 Henk Jan Baard),
+``session.py`` ``set_equations``, is the reference for the call order and the
+undo journal. This code is written fresh.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from .. import sw_type_info as _sw_type_info
-from .io import dimension_kind, from_system_value
 from .ref_plane_edit import get_indexed, put_indexed
 
-#: ``swInConfigurationOpts_e.swAllConfiguration`` (SolidWorks 2026 swconst).
+#: ``swInConfigurationOpts_e.swAllConfiguration``.
 ALL_CONFIGURATIONS = 2
 
-#: Units ``set_global_variable`` writes after the number, by the name given.
-UNIT_SUFFIXES = {
-    "mm": "mm",
-    "cm": "cm",
-    "m": "m",
-    "in": "in",
-    "ft": "ft",
-    "deg": "deg",
-    "rad": "rad",
-    "": "",
-    "none": "",
+#: ``swUserPreferenceIntegerValue_e.swUnitsLinear``.
+_UNITS_LINEAR = 47
+
+#: ``swLengthUnit_e`` -> the unit's short name.
+_LENGTH_UNITS = {
+    0: "mm",
+    1: "cm",
+    2: "m",
+    3: "in",
+    4: "ft",
+    5: "ft-in",
+    6: "angstrom",
+    7: "nm",
+    8: "um",
+    9: "mil",
+    10: "uin",
 }
 
-_LEFT_SIDE = re.compile(r'^\s*"([^"]+)"\s*=')
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Quoted words that are feature states, not names (``"Cut1" = "suppressed"``).
+_STATES = frozenset({"suppressed", "unsuppressed"})
+
+_EXAMPLE = '"W" = 40'
+_QUOTED = re.compile(r'"([^"]*)"')
+_LEFT = re.compile(r'^\s*"([^"]+)"\s*=')
 
 _MANAGER_METHODS = (
     "GetCount",
     "Add2",
     "Add3",
     "Delete",
-    "EvaluateAll",
     "SetEquationAndConfigurationOption",
 )
 
-_HOW_TO_WRITE = (
-    "Names go in double quotes and must exist: a dimension's full name such "
-    'as "D1@Sketch1" (list_model_dimensions) or a global variable '
-    "(list_equations); a left side carries one equation."
-)
+
+# ----------------------------------------------------------------------------
+# Pure helpers
+# ----------------------------------------------------------------------------
 
 
-def left_side(equation: Any) -> str | None:
-    """The name an equation sets: ``well_d`` from ``"well_d" = 1.2mm``."""
-    if not isinstance(equation, str):
+def equation_names(text: Any) -> list[str]:
+    """Every quoted name in ``text``, in order: ``["D1@Boss", "D1@Sketch2"]``."""
+    if not isinstance(text, str):
+        return []
+    return [name.strip() for name in _QUOTED.findall(text) if name.strip()]
+
+
+def _suggest(text: Any) -> str:
+    """``W = 40`` written the way SolidWorks takes it: ``"W" = 40``."""
+    if isinstance(text, str) and "=" in text:
+        left, right = text.split("=", 1)
+        name = left.strip().strip('"').strip()
+        if name and right.strip():
+            return f'"{name}" = {right.strip()}'
+    return _EXAMPLE
+
+
+def left_side(text: Any) -> str:
+    """The name an equation sets: ``W`` from ``"W" = 40``.
+
+    Raises:
+        ValueError: ``Invalid request``: no quoted name followed by ``=``.
+    """
+    match = _LEFT.match(text) if isinstance(text, str) else None
+    if match is None:
+        raise ValueError(
+            f"Invalid request: {text!r} has no quoted name on its left side; "
+            f"write it as {_suggest(text)} (names in double quotes)"
+        )
+    return match.group(1).strip()
+
+
+def name_of(text: Any) -> str | None:
+    """:func:`left_side`, or None for text without one."""
+    try:
+        return left_side(text)
+    except ValueError:
         return None
-    match = _LEFT_SIDE.match(equation)
-    return match.group(1).strip() if match else None
 
 
-def right_side(equation: str) -> str:
-    """What an equation sets its name to (everything after the first ``=``)."""
-    return equation.split("=", 1)[1].strip() if "=" in equation else ""
+def right_names(text: Any) -> list[str]:
+    """The quoted names an equation reads (its right side)."""
+    match = _LEFT.match(text) if isinstance(text, str) else None
+    if match is None:
+        return []
+    return equation_names(text[match.end() :])
 
 
-def unquote(name: str) -> str:
-    """A name without spaces or the double quotes around it."""
-    return (name or "").strip().strip('"').strip()
+def short_name(name: str) -> str:
+    """``D1@Sketch1`` from ``D1@Sketch1@Part1.Part`` (the document suffix off)."""
+    parts = name.split("@")
+    if len(parts) >= 3 and "." in parts[-1]:
+        return "@".join(parts[:-1])
+    return name
 
 
-def references(equation: str, name: str) -> bool:
-    """Whether ``equation``'s right side reads ``name`` (``"name"``)."""
-    return f'"{name.lower()}"' in right_side(equation).lower()
+def _key(name: str) -> str:
+    return short_name(name).casefold()
 
 
-def format_number(value: float, units: str) -> str:
-    """``1.2mm`` for 1.2 and ``mm``; a whole number keeps no decimals."""
-    return f"{value:.12g}{UNIT_SUFFIXES[units]}"
+def same_equation(a: Any, b: Any) -> bool:
+    """Whether two equation texts match, whitespace and case aside."""
+    if not isinstance(a, str) or not isinstance(b, str):
+        return False
+    return "".join(a.split()).casefold() == "".join(b.split()).casefold()
 
 
-def invalid(equation: str, how: str) -> ValueError:
-    """The error for an equation SolidWorks wouldn't take (``invalid_input``)."""
-    return ValueError(
-        f"Invalid request: SolidWorks refused the equation {equation} ({how}); "
-        f"nothing was changed. {_HOW_TO_WRITE}"
+def is_broken(
+    names: Iterable[str], variables: Iterable[str], resolves: Callable[[str], bool]
+) -> bool:
+    """Whether a name an equation reads is neither a variable nor a model parameter.
+
+    Args:
+        names: The quoted names on the equation's right side.
+        variables: The global variables the equation list sets.
+        resolves: Whether the model resolves a name (``IModelDoc2.Parameter``).
+    """
+    known = {_key(v) for v in variables}
+    return any(
+        _key(n) not in known and n.casefold() not in _STATES and not resolves(n)
+        for n in names
     )
+
+
+def check_equations(equations: Any) -> list[str]:
+    """Every equation's left-side name, before anything changes (D2, D3).
+
+    Raises:
+        ValueError: ``Invalid request``: an empty list, a missing quoted left
+            side, or two equations that set the same name.
+    """
+    if isinstance(equations, str):
+        equations = [equations]
+    if not equations:
+        raise ValueError(
+            f"Invalid request: give at least one equation, e.g. {_EXAMPLE}"
+        )
+    names: list[str] = []
+    seen: dict[str, str] = {}
+    for text in equations:
+        name = left_side(text)
+        key = _key(name)
+        if key in seen:
+            raise ValueError(
+                f'Invalid request: {seen[key]} and {text} both set "{name}"; '
+                "give one equation per name"
+            )
+        seen[key] = text
+        names.append(name)
+    return names
+
+
+# ----------------------------------------------------------------------------
+# COM side
+# ----------------------------------------------------------------------------
 
 
 def manager(adapter: Any, model: Any) -> Any:
@@ -117,348 +210,342 @@ def manager(adapter: Any, model: Any) -> Any:
     return mgr
 
 
-def read_dimension(adapter: Any, model: Any, name: str) -> dict[str, Any] | None:
-    """A dimension's value in the tools' unit, or None when it doesn't exist."""
-    dim = adapter._attempt(lambda: model.Parameter(name), default=None)
-    if not dim:
+def _count(adapter: Any, mgr: Any) -> int:
+    count = adapter._attempt(lambda: mgr.GetCount(), default=0)
+    return int(count) if isinstance(count, int | float) else 0
+
+
+def _text(adapter: Any, mgr: Any, index: int) -> str | None:
+    text = adapter._attempt(lambda: get_indexed(mgr, "Equation", index))
+    return text if isinstance(text, str) else None
+
+
+def _texts(adapter: Any, mgr: Any) -> list[str | None]:
+    return [_text(adapter, mgr, i) for i in range(_count(adapter, mgr))]
+
+
+def driven_map(adapter: Any, model: Any) -> dict[str, str]:
+    """Each dimension an equation sets (lower case, no document suffix) -> the text.
+
+    On a model without equations this is one ``GetCount()`` call.
+    """
+    mgr = adapter._attempt(lambda: manager(adapter, model))
+    if mgr is None:
+        return {}
+    out: dict[str, str] = {}
+    for text in _texts(adapter, mgr):
+        name = name_of(text)
+        if name and "@" in name and text is not None:
+            out.setdefault(_key(name), text)
+    return out
+
+
+def driven_by(driven: dict[str, str], full_name: Any) -> str | None:
+    """The equation that sets ``full_name``, from :func:`driven_map`."""
+    if not isinstance(full_name, str):
         return None
-    kind, unit, factor = dimension_kind(adapter, dim)
-    raw = adapter._attempt(lambda: dim.SystemValue, default=None)
-    value = (
-        from_system_value(float(raw), kind, factor)
-        if isinstance(raw, int | float)
-        else None
+    return driven.get(_key(full_name))
+
+
+def equation_refusal(name: str, equation: str) -> str:
+    """``set_dimension``'s refusal of a dimension an equation sets (D7)."""
+    return (
+        f"Invalid request: {name} is set by the equation `{equation}`; change it "
+        "with set_equations (nothing was written)"
     )
-    return {"name": name, "value": value, "units": unit, "kind": kind}
+
+
+def document_units(adapter: Any, model: Any) -> str | None:
+    """The document's length unit (``swUnitsLinear``): ``mm``, ``in``, ..."""
+    ext = adapter._attempt(lambda: model.Extension)
+    if ext is None:
+        return None
+    value = adapter._attempt(lambda: ext.GetUserPreferenceInteger(_UNITS_LINEAR, 0))
+    return _LENGTH_UNITS.get(int(value)) if isinstance(value, int | float) else None
+
+
+def _solve_order(adapter: Any, mgr: Any) -> bool | None:
+    value = adapter._attempt(lambda: mgr.AutomaticSolveOrder)
+    return bool(value) if isinstance(value, bool | int) else None
+
+
+def _set_solve_order(adapter: Any, mgr: Any, on: bool) -> None:
+    adapter._attempt(lambda: setattr(mgr, "AutomaticSolveOrder", on))
 
 
 def read_entries(adapter: Any, model: Any, mgr: Any) -> list[dict[str, Any]]:
-    """Every equation and global variable, in the manager's order."""
-    count = adapter._attempt(lambda: int(mgr.GetCount()), default=0) or 0
+    """Every equation in the manager's order, each marked ``broken`` or not (D6)."""
     entries: list[dict[str, Any]] = []
-    for index in range(count):
-        text = adapter._attempt(lambda i=index: get_indexed(mgr, "Equation", i))
-        if not isinstance(text, str):
-            continue
-        name = left_side(text) or ""
+    for index, text in enumerate(_texts(adapter, mgr)):
+        name = name_of(text)
         is_global = adapter._attempt(
-            lambda i=index: bool(get_indexed(mgr, "GlobalVariable", i)),
-            default=None,
+            lambda i=index: get_indexed(mgr, "GlobalVariable", i)
         )
-        if is_global is None:  # before SOLIDWORKS 2016 SP4
-            is_global = bool(name) and "@" not in name
-        kind = (
-            "global_variable"
-            if is_global
-            else ("dimension" if "@" in name else "other")
+        if not isinstance(is_global, bool | int):
+            is_global = bool(name) and "@" not in (name or "")
+        value = adapter._attempt(lambda i=index: get_indexed(mgr, "Value", i))
+        entries.append(
+            {
+                "index": index,
+                "equation": text,
+                "name": name,
+                "value": float(value) if isinstance(value, int | float) else None,
+                "global": bool(is_global),
+            }
         )
-        entry: dict[str, Any] = {
-            "index": index,
-            "name": name,
-            "equation": text,
-            "kind": kind,
-            "value": adapter._attempt(lambda i=index: get_indexed(mgr, "Value", i)),
-            "suppressed": adapter._attempt(
-                lambda i=index: bool(get_indexed(mgr, "Suppression", i)),
-                default=None,
-            ),
-        }
-        if kind == "dimension":
-            entry["dimension"] = read_dimension(adapter, model, name)
-        entries.append(entry)
+    variables = [e["name"] for e in entries if e["global"] and e["name"]]
+    resolved: dict[str, bool] = {}
+
+    def resolves(name: str) -> bool:
+        key = short_name(name)
+        if key not in resolved:
+            resolved[key] = bool(adapter._attempt(lambda: model.Parameter(key)))
+        return resolved[key]
+
+    for entry in entries:
+        entry["broken"] = is_broken(right_names(entry["equation"]), variables, resolves)
     return entries
 
 
-def summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """``global_variables``, ``equations`` (the rest) and ``count``."""
-    return {
-        "global_variables": [e for e in entries if e["kind"] == "global_variable"],
-        "equations": [e for e in entries if e["kind"] != "global_variable"],
-        "count": len(entries),
-    }
+def rebuild(adapter: Any, model: Any) -> None:
+    """One ``ForceRebuild3(False)``."""
+    adapter._attempt(lambda: model.ForceRebuild3(False))
 
 
-def find(entries: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
-    """The entry that sets ``name`` (case-insensitive), if any."""
-    wanted = name.lower()
-    return next((e for e in entries if e["name"].lower() == wanted), None)
+def failing_features(adapter: Any, model: Any) -> list[dict[str, Any]]:
+    """The features that fail after the rebuild, as ``rebuild_model`` explains them."""
+    from .rebuild_diagnostics import explain
+    from .rebuild_inspector import collect_rebuild_issues
 
-
-def _status(adapter: Any, mgr: Any) -> Any:
-    return adapter._attempt(lambda: mgr.Status, default=None)
-
-
-def _add(adapter: Any, model: Any, mgr: Any, equation: str) -> int:
-    """Add at the end with ``Add3`` (several configurations) or ``Add2``; the index."""
-    configurations = adapter._attempt(
-        lambda: int(model.GetConfigurationCount()), default=1
+    issues = adapter._attempt(
+        lambda: collect_rebuild_issues(adapter, model), default=None
     )
-
-    def add2() -> Any:
-        return mgr.Add2(-1, equation, True)
-
-    def add3() -> Any:
-        return mgr.Add3(-1, equation, True, ALL_CONFIGURATIONS, None)
-
-    tries = (add3, add2) if (configurations or 1) > 1 else (add2, add3)
-    for attempt_add in tries:
-        index = adapter._attempt(attempt_add, default=None)
-        if isinstance(index, int) and index >= 0:
-            return index
-    return -1
+    entries = [explain(issue) for issue in issues or []]
+    return [e for e in entries if e.get("severity") == "error"]
 
 
-def _set_text(adapter: Any, mgr: Any, index: int, equation: str) -> bool:
-    """Put ``equation`` at ``index``: ``Equation(i) =``, else the configured setter."""
-    _, error = adapter._attempt_with_error(
-        lambda: put_indexed(mgr, "Equation", index, equation)
+def _add(adapter: Any, mgr: Any, index: int, text: str) -> int:
+    """``Add3`` at ``index`` without solving, ``Add2`` where ``Add3`` is missing."""
+    added, error = adapter._attempt_with_error(
+        lambda: mgr.Add3(index, text, False, ALL_CONFIGURATIONS, None)
     )
     if error is not None:
-        done = adapter._attempt(
+        added = adapter._attempt(lambda: mgr.Add2(index, text, False), default=-1)
+    return int(added) if isinstance(added, int | float) else -1
+
+
+def _replace(adapter: Any, mgr: Any, index: int, text: str) -> str | None:
+    """``SetEquation`` (``Equation(i) = text``), then the text read back."""
+    _, error = adapter._attempt_with_error(
+        lambda: put_indexed(mgr, "Equation", index, text)
+    )
+    if error is not None:
+        adapter._attempt(
             lambda: mgr.SetEquationAndConfigurationOption(
-                index, equation, ALL_CONFIGURATIONS, None
-            ),
-            default=-1,
+                index, text, ALL_CONFIGURATIONS, None
+            )
         )
-        if done != index:
-            return False
-    now = adapter._attempt(lambda: get_indexed(mgr, "Equation", index))
-    return left_side(now) == left_side(equation)
+    return _text(adapter, mgr, index)
 
 
-def apply(
+def _undo(
     adapter: Any,
     model: Any,
     mgr: Any,
-    equation: str,
-    existing: dict[str, Any] | None,
-) -> int:
-    """Add ``equation``, or change ``existing`` to it; undo it if SolidWorks refuses.
-
-    Returns:
-        int: The equation's index.
-
-    Raises:
-        ValueError: ``Invalid request``: SolidWorks refused it; the model is
-            as it was.
-    """
-    if existing is not None:
-        index = int(existing["index"])
-        if not _set_text(adapter, mgr, index, equation) or _status(adapter, mgr) == -1:
-            _set_text(adapter, mgr, index, existing["equation"])
-            raise invalid(equation, f"changing equation {index}; Status -1")
-        return index
-    index = _add(adapter, model, mgr, equation)
-    if index < 0:
-        raise invalid(equation, "Add2 and Add3 returned -1")
-    if _status(adapter, mgr) == -1:
-        adapter._attempt(lambda: mgr.Delete(index))
-        raise invalid(equation, f"it was added at {index} but Status is -1")
-    return index
+    journal: list[tuple[str, int, str | None]],
+    solve_order_was: bool | None,
+) -> None:
+    """Undo the journal in reverse, put the solve order back, and rebuild."""
+    for action, index, old in reversed(journal):
+        if action == "add":
+            adapter._attempt(lambda i=index: mgr.Delete(i))
+        elif old is not None:
+            _replace(adapter, mgr, index, old)
+    if solve_order_was is not None:
+        _set_solve_order(adapter, mgr, solve_order_was)
+    rebuild(adapter, model)
 
 
-def rebuild(adapter: Any, model: Any) -> None:
-    """``EditRebuild3``, else ``ForceRebuild3``, so driven dimensions update."""
-    rebuilt = adapter._attempt(
-        lambda: adapter._get_attr_or_call(model, "EditRebuild3"), default=None
+def _refused(text: str, why: str) -> ValueError:
+    return ValueError(
+        f"Invalid request: SolidWorks refused the equation {text} ({why}); "
+        "every equation of this call was put back as it was. Names go in "
+        "double quotes and must exist: a dimension's full name "
+        "(list_model_dimensions) or a global variable (list_equations)."
     )
-    if rebuilt is None:
-        adapter._attempt(lambda: model.ForceRebuild3(False))
 
 
 def list_all(adapter: Any) -> dict[str, Any]:
-    """Every global variable and equation of the active model."""
-    model = adapter.currentModel
-    return summary(read_entries(adapter, model, manager(adapter, model)))
-
-
-def set_global_variable(
-    adapter: Any, name: str, value: float, units: str
-) -> dict[str, Any]:
-    """Add or change ``"name" = value units``, rebuild, and read what it drives."""
-    name = unquote(name)
-    units = (units or "").strip().lower()
-    if not name or "@" in name or '"' in name or "=" in name:
-        raise ValueError(
-            f"Invalid request: {name!r} can't name a global variable: give a "
-            'plain name such as "well_d", without quotes, "@" or "="'
-        )
-    if units not in UNIT_SUFFIXES:
-        raise ValueError(
-            f"Invalid request: units {units!r} isn't one of "
-            + ", ".join(sorted(u for u in UNIT_SUFFIXES if u))
-            + ' (or "" for a plain number)'
-        )
+    """Every equation of the active model, the solve order and the units."""
     model = adapter.currentModel
     mgr = manager(adapter, model)
     entries = read_entries(adapter, model, mgr)
-    existing = find(entries, name)
-    if existing is not None and existing["kind"] != "global_variable":
-        raise ValueError(
-            f"Invalid request: {existing['name']!r} is set by an equation that "
-            f"isn't a global variable ({existing['equation']})"
-        )
-    equation = f'"{existing["name"] if existing else name}" = ' + format_number(
-        value, units
+    return {
+        "equations": entries,
+        "count": len(entries),
+        "automatic_solve_order": _solve_order(adapter, mgr),
+        "document_units": document_units(adapter, model),
+    }
+
+
+def set_equations(adapter: Any, equations: list[str]) -> dict[str, Any]:
+    """Add or replace every equation, all or nothing, then rebuild once (D4).
+
+    Raises:
+        ValueError: ``Invalid request``: a left side is missing or repeated
+            (nothing was sent), or SolidWorks refused an equation (the
+            journal was undone).
+    """
+    if isinstance(equations, str):
+        equations = [equations]
+    names = check_equations(equations)
+    texts = [text.strip() for text in equations]
+    model = adapter.currentModel
+    mgr = manager(adapter, model)
+    count = _count(adapter, mgr)
+    existing: dict[str, int] = {}
+    for index in range(count):
+        name = name_of(_text(adapter, mgr, index))
+        if name:
+            existing.setdefault(_key(name), index)
+    solve_order_was = _solve_order(adapter, mgr)
+    _set_solve_order(adapter, mgr, True)
+    journal: list[tuple[str, int, str | None]] = []
+    applied: list[dict[str, Any]] = []
+    for text, name in zip(texts, names, strict=True):
+        index = existing.get(_key(name))
+        if index is not None:
+            journal.append(("replace", index, _text(adapter, mgr, index)))
+            now = _replace(adapter, mgr, index, text)
+            if not same_equation(now, text):
+                _undo(adapter, model, mgr, journal, solve_order_was)
+                raise _refused(text, f"equation {index} reads back as {now}")
+            applied.append({"equation": text, "index": index, "replaced": True})
+            continue
+        index = _add(adapter, mgr, count, text)
+        if index < 0:
+            status = adapter._attempt(lambda: mgr.Status)
+            _undo(adapter, model, mgr, journal, solve_order_was)
+            raise _refused(text, f"adding it returned {index}, Status {status}")
+        journal.append(("add", index, None))
+        count += 1
+        applied.append({"equation": text, "index": index, "replaced": False})
+    rebuild(adapter, model)
+    return {
+        "equations": applied,
+        "automatic_solve_order_was": solve_order_was,
+        "failing_features": failing_features(adapter, model),
+        "document_units": document_units(adapter, model),
+    }
+
+
+def find(entries: list[dict[str, Any]], equation: str | int) -> dict[str, Any] | None:
+    """The entry ``equation`` names: an index, or the name it sets (quotes optional)."""
+    if isinstance(equation, int) and not isinstance(equation, bool):
+        return next((e for e in entries if e["index"] == equation), None)
+    wanted = _key(str(equation).strip().strip('"').strip())
+    match = next((e for e in entries if e["name"] and _key(e["name"]) == wanted), None)
+    if match is None and wanted.isdigit():
+        return find(entries, int(wanted))
+    return match
+
+
+def not_found(entries: list[dict[str, Any]], equation: str | int) -> LookupError:
+    """``not_found``, listing the equations there are."""
+    there = "; ".join(f"{e['index']}: {e['equation']}" for e in entries)
+    label = f"at index {equation}" if isinstance(equation, int) else repr(equation)
+    return LookupError(
+        f"Equation {label} not found; the equations are: {there or 'none'}"
     )
-    apply(adapter, model, mgr, equation, existing)
-    rebuild(adapter, model)
-    after = read_entries(adapter, model, mgr)
-    variable = find(after, name)
-    return {
-        "action": "changed" if existing else "added",
-        "global_variable": variable,
-        "previous": existing["equation"] if existing else None,
-        "driven": [
-            e
-            for e in after
-            if e["kind"] != "global_variable" and references(e["equation"], name)
-        ],
-        **summary(after),
-    }
 
 
-def add_equation(adapter: Any, dimension: str, expression: str) -> dict[str, Any]:
-    """Set ``"dimension" = expression``, rebuild, and read the dimension back."""
-    target = unquote(dimension)
-    if "@" not in target:
-        raise ValueError(
-            f"Invalid request: {dimension!r} isn't a dimension's full name; give "
-            'one such as "D1@Sketch3" (list_model_dimensions lists them)'
-        )
-    text = (expression or "").strip()
-    if text.startswith("="):
-        text = text[1:].strip()
-    if not text:
-        raise ValueError("Invalid request: expression is empty")
-    model = adapter.currentModel
-    before_value = read_dimension(adapter, model, target)
-    if before_value is None:
-        raise LookupError(
-            f"Dimension {target!r} not found; list_model_dimensions gives the "
-            "full names"
-        )
-    mgr = manager(adapter, model)
-    entries = read_entries(adapter, model, mgr)
-    if _IDENTIFIER.match(text):
-        variable = find(entries, text)
-        if variable is not None and variable["kind"] == "global_variable":
-            text = f'"{variable["name"]}"'
-    existing = find(entries, target)
-    equation = f'"{existing["name"] if existing else target}" = {text}'
-    apply(adapter, model, mgr, equation, existing)
-    rebuild(adapter, model)
-    after = read_entries(adapter, model, mgr)
-    return {
-        "action": "changed" if existing else "added",
-        "equation": find(after, target),
-        "previous": existing["equation"] if existing else None,
-        "dimension": read_dimension(adapter, model, target),
-        "value_before": before_value["value"],
-        **summary(after),
-    }
-
-
-def delete_equation(
-    adapter: Any, name: str | None, index: int | None, force: bool
-) -> dict[str, Any]:
-    """Delete the equation that sets ``name`` (or the one at ``index``)."""
-    if not (name or "").strip() and index is None:
-        raise ValueError("Invalid request: give the equation's name or its index")
+def delete_equation(adapter: Any, equation: str | int) -> dict[str, Any]:
+    """Delete one equation, rebuild once, and say what is left."""
     model = adapter.currentModel
     mgr = manager(adapter, model)
     entries = read_entries(adapter, model, mgr)
-    if (name or "").strip():
-        target = find(entries, unquote(name or ""))
-        label = repr(unquote(name or ""))
-    else:
-        target = next((e for e in entries if e["index"] == index), None)
-        label = f"at index {index}"
+    target = find(entries, equation)
     if target is None:
-        raise LookupError(f"Equation {label} not found; list_equations lists them")
-    users = [
-        e
-        for e in entries
-        if e is not target and references(e["equation"], target["name"])
-    ]
-    if users and not force:
-        raise ValueError(
-            f'Invalid request: "{target["name"]}" is used by {len(users)} '
-            "equation(s): "
-            + "; ".join(e["equation"] for e in users)
-            + ". Delete those first, or pass force: true (they would then fail "
-            "to solve)."
-        )
-    done = adapter._attempt(lambda: mgr.Delete(int(target["index"])), default=None)
-    if done != 0:
+        raise not_found(entries, equation)
+    adapter._attempt(lambda: mgr.Delete(int(target["index"])))
+    if _count(adapter, mgr) != len(entries) - 1:
         raise RuntimeError(
-            f"SolidWorks did not delete {target['equation']} "
-            f"(IEquationMgr.Delete returned {done})"
+            f"SolidWorks did not delete {target['equation']} (IEquationMgr.Delete)"
         )
     rebuild(adapter, model)
     after = read_entries(adapter, model, mgr)
+    name = _key(target["name"] or "")
     return {
-        "deleted": target,
-        "left_using_it": [e["equation"] for e in users],
-        **summary(after),
+        "deleted": target["equation"],
+        "count": len(after),
+        "failing_features": failing_features(adapter, model),
+        "left_broken": [
+            e["equation"]
+            for e in after
+            if e["broken"] and name in {_key(n) for n in right_names(e["equation"])}
+        ],
     }
+
+
+def document_guard(adapter: Any, operation: str) -> str | None:
+    """Why ``operation`` can't run on the active document, or None (``invalid_input``)."""
+    from .io import _doc_type
+
+    if not adapter.currentModel:
+        return (
+            f"Invalid request: {operation} takes an open part or assembly, "
+            "and no document is open"
+        )
+    doc_type = _doc_type(adapter)
+    if doc_type not in (1, 2):
+        kind = {3: "a drawing"}.get(doc_type or 0, "of an unknown type")
+        return (
+            f"Invalid request: {operation} takes a part or an assembly; the "
+            f"active document is {kind}"
+        )
+    return None
 
 
 class SolidWorksEquationsMixin:
-    """``list_equations``, ``set_global_variable``, ``add_equation``, ``delete_equation``."""
+    """``list_equations``, ``set_equations`` and ``delete_equation`` (D8)."""
 
-    def _equation_call(self, operation: str, work: Any) -> Any:
-        guard = self._require_doc_type({1, 2}, operation)  # type: ignore[attr-defined]
-        if guard is not None:
-            return guard
+    def _equation_call(self, operation: str, work: Callable[[Any], Any]) -> Any:
+        from ..base import AdapterResult, AdapterResultStatus
+
+        refused = document_guard(self, operation)
+        if refused is not None:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=refused)
         return self._handle_com_operation(operation, lambda: work(self))  # type: ignore[attr-defined]
 
     async def list_equations(self) -> Any:
-        """Every global variable and equation of the active part or assembly.
+        """Every equation and global variable of the active part or assembly.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``global_variables``, ``equations``
-            (each ``index``, ``name``, ``equation``, ``kind``, ``value``,
-            ``suppressed``; a dimension's ``dimension`` read back) and ``count``.
+            AdapterResult[dict[str, Any]]: ``equations`` (each ``index``,
+            ``equation``, ``name``, ``value``, ``global``, ``broken``),
+            ``count``, ``automatic_solve_order`` and ``document_units``.
         """
         return self._equation_call("list_equations", list_all)
 
-    async def set_global_variable(
-        self, name: str, value: float, units: str = "mm"
-    ) -> Any:
-        """Add or change a global variable, rebuild, and report what it drives.
+    async def set_equations(self, equations: list[str]) -> Any:
+        """Add or replace equations, all or nothing, and rebuild once.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``action``, ``global_variable``,
-            ``previous``, ``driven`` and the lists of :func:`summary`.
+            AdapterResult[dict[str, Any]]: ``equations`` (each ``equation``,
+            ``index``, ``replaced``), ``automatic_solve_order_was``,
+            ``failing_features`` and ``document_units``.
         """
         return self._equation_call(
-            "set_global_variable",
-            lambda adapter: set_global_variable(adapter, name, value, units),
+            "set_equations", lambda adapter: set_equations(adapter, equations)
         )
 
-    async def add_equation(self, dimension: str, expression: str) -> Any:
-        """Drive a dimension by an equation, rebuild, and read the dimension back.
+    async def delete_equation(self, equation: str | int) -> Any:
+        """Delete an equation by the name it sets or its index, and rebuild.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``action``, ``equation``,
-            ``previous``, ``dimension``, ``value_before`` and the lists.
+            AdapterResult[dict[str, Any]]: ``deleted``, ``count``,
+            ``failing_features`` and ``left_broken``.
         """
         return self._equation_call(
-            "add_equation",
-            lambda adapter: add_equation(adapter, dimension, expression),
-        )
-
-    async def delete_equation(
-        self, name: str | None = None, index: int | None = None, force: bool = False
-    ) -> Any:
-        """Delete an equation or global variable and rebuild.
-
-        Returns:
-            AdapterResult[dict[str, Any]]: ``deleted``, ``left_using_it`` and
-            the lists.
-        """
-        return self._equation_call(
-            "delete_equation",
-            lambda adapter: delete_equation(adapter, name, index, force),
+            "delete_equation", lambda adapter: delete_equation(adapter, equation)
         )

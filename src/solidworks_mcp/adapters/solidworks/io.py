@@ -2127,6 +2127,9 @@ class SolidWorksIOMixin:
             name: Fully-qualified dimension name.
             value: The new value, in the dimension's unit.
 
+        A dimension an equation sets is refused before anything is written
+        (``equations.driven_map``): the message names the equation.
+
         Returns:
             AdapterResult[dict[str, Any]]: ``old_value``, ``new_value`` (read
             back after the rebuild), ``units`` and ``kind``.
@@ -2139,9 +2142,14 @@ class SolidWorksIOMixin:
 
         def _set() -> dict[str, Any]:
             """Set the dimension value."""
+            from .equations import driven_by, driven_map, equation_refusal
+
             dimension = adapter.currentModel.Parameter(name)
             if not dimension:
                 raise Exception(f"Dimension '{name}' not found")
+            equation = driven_by(driven_map(adapter, adapter.currentModel), name)
+            if equation is not None:
+                raise ValueError(equation_refusal(name, equation))
             kind, unit, factor = dimension_kind(adapter, dimension)
             if kind == "count" and value != round(value):
                 raise ValueError(

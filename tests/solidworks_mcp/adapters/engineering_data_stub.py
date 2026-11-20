@@ -21,9 +21,8 @@ class EngineeringDataStub:
         ("set_custom_property", ("PartNo", "P-1", "Default")),
         ("export_flat_pattern", ("flat.dxf",)),
         ("list_equations", ()),
-        ("set_global_variable", ("well_d", 1.2, "mm")),
-        ("add_equation", ("D1@Sketch3", '"well_d"')),
-        ("delete_equation", ("well_d", None, True)),
+        ("set_equations", (['"W" = 40'],)),
+        ("delete_equation", ("W",)),
     ]
 
     def __init__(self) -> None:
@@ -69,14 +68,11 @@ class EngineeringDataStub:
     async def list_equations(self):
         return self._record("list_equations")
 
-    async def set_global_variable(self, name, value, units="mm"):
-        return self._record("set_global_variable", name, value, units)
+    async def set_equations(self, equations):
+        return self._record("set_equations", equations)
 
-    async def add_equation(self, dimension, expression):
-        return self._record("add_equation", dimension, expression)
-
-    async def delete_equation(self, name=None, index=None, force=False):
-        return self._record("delete_equation", name, index, force)
+    async def delete_equation(self, equation):
+        return self._record("delete_equation", equation)
 
 
 async def exercise_engineering_data(wrapped: Any) -> None:
@@ -91,8 +87,7 @@ async def exercise_engineering_data(wrapped: Any) -> None:
         await wrapped.set_custom_property("PartNo", "P-1", "Default"),
         await wrapped.export_flat_pattern("flat.dxf"),
         await wrapped.list_equations(),
-        await wrapped.set_global_variable("well_d", 1.2, "mm"),
-        await wrapped.add_equation("D1@Sketch3", '"well_d"'),
-        await wrapped.delete_equation("well_d", None, True),
+        await wrapped.set_equations(['"W" = 40']),
+        await wrapped.delete_equation("W"),
     ]
     assert all(r.is_success for r in results), [r.error for r in results]

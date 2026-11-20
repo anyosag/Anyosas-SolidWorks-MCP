@@ -172,8 +172,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     # engineering_data
     "list_model_dimensions": _reads("List Model Dimensions"),
     "list_equations": _reads("List Equations"),
-    "set_global_variable": _sets("Set Global Variable"),
-    "add_equation": _sets("Add Equation"),
+    "set_equations": _sets("Set Equations"),
     "delete_equation": _discards("Delete Equation"),
     "measure_entities": _reads("Measure Entities"),
     "get_material": _reads("Get Material"),

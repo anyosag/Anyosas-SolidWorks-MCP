@@ -2066,8 +2066,8 @@ async def register_sketching_tools(
         Use it for rows of holes or slots before one cut. The pattern keeps its
         spacing and count as dimensions (`pattern.dimensions`, names such as
         "D3@Sketch2"): change them with `set_dimension` or drive them with
-        `add_equation`, and a change to the seed carries to the copies. For a row of
-        a feature already cut, use `pattern_linear`. Needs: an open sketch
+        `set_equations`, and a change to the seed carries to the copies. For a row
+        of a feature already cut, use `pattern_linear`. Needs: an open sketch
         (`create_sketch`). Changes: adds the pattern to the sketch. Returns:
         `pattern` with `id`, `entities`, `count`, `spacing`, `direction`,
         `parametric` and `dimensions` (`name`, `role`, `value`, `units`).
@@ -2120,8 +2120,8 @@ async def register_sketching_tools(
         The centre is `center_x`/`center_y` in sketch mm (the origin by default); the
         seed's distance from it is the radius. The pattern keeps its radius, angle
         and count as dimensions (`pattern.dimensions`, names such as "D4@Sketch3"):
-        change them with `set_dimension` or drive them with `add_equation`, and a
-        change to the seed carries to the copies. Then cut once with
+        change them with `set_dimension` or drive them with `set_equations`, and
+        a change to the seed carries to the copies. Then cut once with
         `create_cut_extrude`. Or cut one seed and repeat the feature with
         `pattern_circular`. Needs: an open sketch (`create_sketch`). Changes: adds the
         pattern to the sketch. Returns: `pattern` with `id`, `entities`, `count`,

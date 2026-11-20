@@ -232,6 +232,7 @@ _READ_ONLY_OPERATIONS = frozenset(
         "list_components",
         "list_configurations",
         "list_drawing_views",
+        "list_equations",
         "list_features",
         "list_loaded_documents",
         "list_model_dimensions",
