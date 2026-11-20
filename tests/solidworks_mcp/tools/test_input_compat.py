@@ -235,12 +235,43 @@ def test_input_data_as_json_text_is_parsed() -> None:
         _open_tool, {"input_data": '{"file_path": "C:/a.SLDPRT"}'}
     ) == {"input_data": {"file_path": "C:/a.SLDPRT"}}
     text = {"input_data": "C:/a.SLDPRT"}
-    wrapped = {"input_data": {"file_path": "C:/a.SLDPRT"}, "read_only": True}
     assert reshape_arguments(_open_tool, text) is text
     assert reshape_arguments(_open_tool, {"input_data": "[1, 2]"}) == {
         "input_data": "[1, 2]"
     }
-    assert reshape_arguments(_open_tool, wrapped) is wrapped  # mixed shapes
+
+
+def test_a_field_beside_input_data_is_moved_into_it() -> None:
+    # execute_workflow's `detail` beside its input_data failed validation.
+    wrapped = {
+        "input_data": {"file_path": "C:/a.SLDPRT"},
+        "read_only": True,
+        "document": "Lid",
+    }
+
+    assert reshape_arguments(_open_tool, wrapped) == {
+        "document": "Lid",
+        "input_data": {"file_path": "C:/a.SLDPRT", "read_only": True},
+    }
+    assert reshape_arguments(
+        _open_tool, {"input_data": '{"file_path": "C:/a.SLDPRT"}', "copy": True}
+    ) == {"input_data": {"file_path": "C:/a.SLDPRT", "copy": True}}
+    same = {"input_data": {"file_path": "a", "read_only": True}, "read_only": True}
+    assert reshape_arguments(_open_tool, same) == {
+        "input_data": {"file_path": "a", "read_only": True}
+    }
+
+
+def test_a_field_beside_input_data_that_conflicts_or_is_unknown_is_left() -> None:
+    conflict = {"input_data": {"file_path": "a", "read_only": False}, "read_only": True}
+    unknown = {"input_data": {"file_path": "a"}, "readonly": True}
+    not_a_model = {"input_data": "[1, 2]", "read_only": True}
+    any_mapping = {"input_data": {"x": 1}, "y": 2}
+
+    assert reshape_arguments(_open_tool, conflict) is conflict
+    assert reshape_arguments(_open_tool, unknown) is unknown
+    assert reshape_arguments(_open_tool, not_a_model) is not_a_model
+    assert reshape_arguments(_dict_tool, any_mapping) is any_mapping
 
 
 @pytest.mark.parametrize("empty", [{}, "{}", "", None])

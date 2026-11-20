@@ -9,7 +9,7 @@ without their ``input_data`` wrapper (:func:`reshape_arguments`).
 
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, model_validator
@@ -248,6 +248,34 @@ def _json_object(value: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _fold_fields_beside(
+    fn: Callable[..., Any],
+    arguments: dict[str, Any],
+    parameters: Mapping[str, inspect.Parameter],
+) -> dict[str, Any]:
+    """Model fields sent beside ``input_data``, moved into it (see :func:`reshape_arguments`).
+
+    ``execute_workflow`` with ``"detail"`` beside its ``input_data`` failed
+    validation ("unexpected keyword argument") although ``detail`` is one of
+    its fields; the agent had to retry with it inside.
+    """
+    from .tool_boundary import model_parameters  # tool_boundary imports this module
+
+    inner = arguments[_INPUT_DATA]
+    beside = {
+        k: v for k, v in arguments.items() if k != _INPUT_DATA and k not in parameters
+    }
+    model = model_parameters(fn).get(_INPUT_DATA)
+    if not beside or not isinstance(inner, dict) or model is None:
+        return arguments
+    if not set(beside) <= accepted_names(model):
+        return arguments
+    if any(key in inner and inner[key] != value for key, value in beside.items()):
+        return arguments
+    own = {k: v for k, v in arguments.items() if k in parameters and k != _INPUT_DATA}
+    return {**own, _INPUT_DATA: {**inner, **beside}}
+
+
 def reshape_arguments(
     fn: Callable[..., Any], arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -263,9 +291,14 @@ def reshape_arguments(
     * a missing ``input_data`` becomes ``{}`` when the model needs nothing;
     * ``input_data`` sent as the JSON text of an object is parsed.
 
+    * a model field sent beside ``input_data`` (``{"input_data": {"steps":
+      [...]}, "detail": "full"}``) is moved into it, unless ``input_data``
+      already holds a different value for it or another key beside it is
+      one the model doesn't take: those calls are left for validation.
+
     A tool that takes no ``input_data`` loses an empty one (``{}``, ``"{}"``,
     ``""`` or null). Keys the tool takes itself (``document``) stay at the
-    top level. Calls that mix the two shapes are left alone.
+    top level.
 
     Args:
         fn: The tool function.
@@ -286,8 +319,8 @@ def reshape_arguments(
                 return {k: v for k, v in arguments.items() if k != _INPUT_DATA}
             return arguments
         if isinstance(value, str) and parsed is not None:
-            return {**arguments, _INPUT_DATA: parsed}
-        return arguments
+            arguments = {**arguments, _INPUT_DATA: parsed}
+        return _fold_fields_beside(fn, arguments, parameters)
     model = model_parameters(fn).get(_INPUT_DATA)
     if model is None:
         return arguments
