@@ -189,6 +189,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"add_circle": {...}}`, and `arguments` need no `input_data` wrapper. Its
   reply has a top-level `execution_time`, and the final "all steps done"
   progress notice is gone (it raced the reply).
+- **`execute_workflow` draws runs of sketch-entity steps in one operation**:
+  consecutive `add_line`, `add_circle`, `add_rectangle`, `add_arc` and
+  `add_centerline` steps pay one settle pause, not one each (1,433 pauses in
+  the sampled sessions). A reference may name an entity's point:
+  `"$steps.c.circle.id.center"` is `"Circle_1.center"`.
 - **`measure_clearance` measures the whole components first**, in one call
   (0.4 s where the face search took 8.5 s on average), and searches face
   pairs only when that gives no distance or `faces: true` asks for the

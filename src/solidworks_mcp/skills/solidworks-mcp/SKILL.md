@@ -89,7 +89,11 @@ its own call's replies). An argument that is exactly
 `"$steps.<i>.<path>"` takes the value at that path in step i's reply, e.g.
 `"old_name": "$steps.4.fillet.name"`, so a later step needn't guess a
 feature's name. Give a step an `"id"` (`"plane_x"`) and write
-`"$steps.plane_x.plane.name"` instead of counting steps. It stops at the first failed step and reports that step's
+`"$steps.plane_x.plane.name"` instead of counting steps. After an entity's
+`id`, `.center`, `.start` or `.end` names that point, for a dimension or a
+relation: `"$steps.c.circle.id.center"` gives `"Circle_1.center"`.
+Consecutive sketch-entity steps (`add_line`, `add_circle`, `add_rectangle`,
+`add_arc`, `add_centerline`) are drawn in one SolidWorks operation. It stops at the first failed step and reports that step's
 `error_type` and `hint`; the error's `data.steps` shows what ran. With
 `rollback_on_error` it then deletes the features and sketches the earlier
 steps added. Each step's entry is a summary (status, message, its own
