@@ -194,6 +194,15 @@ new and changed tools show up in the same conversation.
 - A new server that fails to start is dropped, and the old one keeps
   running. Its error goes to the server log.
 - The `reload_mcp_server` tool does the same on demand.
+- A call with no reply or progress for 15 minutes is treated as stuck: a
+  SolidWorks call that never returns blocks the server, so it can't answer.
+  The relay answers that call, and any other call still waiting, with an
+  `operation_stuck` error, then kills the server and starts a new one, so
+  Claude gets an error instead of waiting half an hour. Documents stay open
+  in SolidWorks.
+- `SOLIDWORKS_MCP_HANG_SECONDS` in the server's `env` sets that limit (900
+  by default; `0` turns the watchdog off). Keep it above your longest silent
+  call: a large `save_assembly` has taken almost 10 minutes.
 - `SOLIDWORKS_MCP_HOT_RELOAD_WATCH=0` stops the file watching, so only the
   tool reloads.
 - The relay's own code (`relay.py`) is the only change that still needs a

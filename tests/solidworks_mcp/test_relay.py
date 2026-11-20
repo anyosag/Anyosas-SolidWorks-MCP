@@ -67,15 +67,19 @@ def send(relay: Relay, message: dict[str, Any]) -> None:
     relay.from_client(json.dumps(message).encode() + b"\n")
 
 
-def call(relay: Relay, request_id: Any, name: str, **arguments: Any) -> None:
+def call(
+    relay: Relay,
+    request_id: Any,
+    name: str,
+    progress_token: Any = None,
+    **arguments: Any,
+) -> None:
+    params: dict[str, Any] = {"name": name, "arguments": arguments}
+    if progress_token is not None:
+        params["_meta"] = {"progressToken": progress_token}
     send(
         relay,
-        {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        },
+        {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": params},
     )
 
 
@@ -87,18 +91,40 @@ def wait_until(condition, timeout: float = 20.0) -> None:
         time.sleep(0.02)
 
 
-@pytest.fixture
-def started(monkeypatch):
-    """A relay over the fake server, after the client's handshake."""
-    monkeypatch.setenv("FAKE_TOOL", "tool_a")
+def opened(**options: Any) -> tuple[Relay, Collector]:
+    """A started relay over the fake server, after the client's handshake."""
     out = Collector()
-    relay = Relay([sys.executable, FAKE], out, stop_timeout=5.0)
+    relay = Relay([sys.executable, FAKE], out, **options)
     relay.start()
     send(relay, INIT)
     out.reply(0)
     send(relay, INITIALIZED)
+    return relay, out
+
+
+@pytest.fixture
+def started(monkeypatch):
+    """A relay over the fake server, after the client's handshake."""
+    monkeypatch.setenv("FAKE_TOOL", "tool_a")
+    relay, out = opened(stop_timeout=5.0)
     yield relay, out
     relay.close()
+
+
+@pytest.fixture
+def watched(monkeypatch):
+    """Like ``started``, with a call stuck after one silent second."""
+    monkeypatch.setenv("FAKE_TOOL", "tool_a")
+    relay, out = opened(stop_timeout=5.0, hang_seconds=1.0, kill_grace=0.2)
+    yield relay, out
+    relay.close()
+
+
+def stuck_reply(out: Collector, request_id: Any) -> dict[str, Any]:
+    """The error payload of a call the watchdog answered."""
+    result = out.reply(request_id)["result"]
+    assert result["isError"] is True
+    return json.loads(result["content"][0]["text"])
 
 
 def tool_names(out: Collector, request_id: Any) -> list[str]:
@@ -229,6 +255,211 @@ def test_lines_that_are_not_json_objects_pass_through(started):
     relay.from_client(b"not json\n")
     call(relay, 18, "echo")
     assert "result" in out.reply(18)
+
+
+def test_a_call_sent_during_a_reload_gets_the_old_servers_answer(started, monkeypatch):
+    relay, out = started
+    monkeypatch.setenv("FAKE_INIT_DELAY", "0.5")
+    relay.request_reload("test")
+    wait_until(lambda: relay._handshakes)
+    call(relay, 21, "slow", seconds=3)  # goes to the old server, swapped out mid-call
+    assert "result" in out.reply(21)
+    wait_until(lambda: relay.reloads == 1)
+
+
+def test_a_replaced_server_killed_mid_call_answers_it_with_an_error(
+    started, monkeypatch
+):
+    relay, out = started
+    relay.stop_timeout = 0.3
+    monkeypatch.setenv("FAKE_INIT_DELAY", "0.5")
+    relay.request_reload("test")
+    wait_until(lambda: relay._handshakes)
+    call(relay, 22, "slow", seconds=30)
+    assert "stopped during this call" in out.reply(22)["error"]["message"]
+    wait_until(lambda: relay.reloads == 1)
+    call(relay, 23, "echo")
+    assert "result" in out.reply(23)
+
+
+# -- the watchdog for stuck calls -----------------------------------------
+
+
+def test_a_stuck_call_is_answered_and_the_server_restarted(watched):
+    relay, out = watched
+    stuck = relay._child
+    call(relay, 30, "hang")
+    payload = stuck_reply(out, 30)
+    assert list(payload) == [
+        "status",
+        "message",
+        "error_type",
+        "hint",
+        "execution_time",
+    ]
+    assert payload["status"] == "error"
+    assert payload["error_type"] == "operation_stuck"
+    assert payload["message"] == (
+        "hang had no reply or progress for 1 s, so the SolidWorks MCP server was "
+        "restarted. Documents stay open in SolidWorks; the server's session "
+        "memory (current document and sketch) starts fresh."
+    )
+    assert "list_open_documents" in payload["hint"]
+    assert payload["execution_time"] >= 1.0
+    # Inside its call it never reads EOF, so it is killed.
+    wait_until(lambda: stuck.process.poll() is not None)
+    wait_until(lambda: relay.reloads == 1)
+    out.wait_for(lambda m: m.get("method") == "notifications/tools/list_changed")
+    call(relay, 31, "echo")
+    assert "isError" not in out.reply(31)["result"]
+
+
+def test_the_new_server_gets_the_handshake_and_tool_groups(
+    watched, monkeypatch, tmp_path
+):
+    relay, out = watched
+    call(relay, 32, "enable_tool_groups", groups=["drawings"])
+    out.reply(32)
+    log = tmp_path / "log.txt"
+    monkeypatch.setenv("FAKE_LOG", str(log))  # only the new server logs
+    call(relay, 33, "hang")
+    stuck_reply(out, 33)
+    wait_until(lambda: log.exists() and "tools/call" in log.read_text())
+    assert log.read_text().split()[1::2][:3] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+    ]
+
+
+def test_every_other_request_in_flight_is_answered_too(watched):
+    relay, out = watched
+    call(relay, 34, "hang")
+    call(relay, 35, "echo")  # waits behind it in the stuck server
+    send(relay, {"jsonrpc": "2.0", "id": 36, "method": "tools/list"})
+    assert stuck_reply(out, 34)["error_type"] == "operation_stuck"
+    queued = stuck_reply(out, 35)
+    assert queued["error_type"] == "operation_stuck"
+    assert queued["message"].startswith(
+        "The SolidWorks MCP server was restarted before this call finished, "
+        "because hang had no reply or progress for 1 s."
+    )
+    assert "restarted because hang" in out.reply(36)["error"]["message"]
+    wait_until(lambda: relay.reloads == 1)
+    call(relay, 37, "echo")
+    out.reply(37)
+    ids = [m.get("id") for m in out.messages]
+    assert [ids.count(i) for i in (34, 35, 36)] == [1, 1, 1]
+
+
+def test_a_call_written_to_a_stuck_server_is_answered_once(watched):
+    relay, out = watched
+    call(relay, 38, "hang")
+    # The stuck server reads no more, so this write blocks until it is killed;
+    # the watchdog must not wait for it.
+    writer = threading.Thread(
+        target=call,
+        args=(relay, 39, "echo"),
+        kwargs={"pad": "x" * 4_000_000},
+        daemon=True,
+    )
+    writer.start()
+    assert stuck_reply(out, 38)["error_type"] == "operation_stuck"
+    assert stuck_reply(out, 39)["error_type"] == "operation_stuck"
+    writer.join(20)
+    assert not writer.is_alive()
+    wait_until(lambda: relay.reloads == 1)
+    call(relay, 40, "echo")
+    out.reply(40)
+    assert [m.get("id") for m in out.messages].count(39) == 1
+
+
+def test_progress_with_the_call_token_keeps_it_alive(watched):
+    relay, out = watched
+    call(relay, 41, "progress", progress_token="p-41", seconds=2.5)
+    assert "isError" not in out.reply(41)["result"]
+    notices = [m for m in out.messages if m.get("method") == "notifications/progress"]
+    assert len(notices) > 10  # passed on to the client as before
+    assert {m["params"]["progressToken"] for m in notices} == {"p-41"}
+    assert relay.reloads == 0
+
+
+def test_progress_for_another_token_does_not_count(watched):
+    relay, out = watched
+    call(relay, 42, "progress", progress_token="p-42", token="p-other", seconds=30)
+    assert stuck_reply(out, 42)["error_type"] == "operation_stuck"
+    wait_until(lambda: relay.reloads == 1)
+
+
+def test_a_call_waiting_on_the_client_is_not_stuck(watched):
+    relay, out = watched
+    call(relay, 43, "ask", wait=True)
+    out.wait_for(lambda m: m.get("method") == "roots/list")
+    time.sleep(2.0)  # twice the limit, the user still deciding
+    send(relay, {"jsonrpc": "2.0", "id": "srv-1", "result": {"roots": []}})
+    assert "isError" not in out.reply(43)["result"]
+    assert relay.reloads == 0
+
+
+def test_a_stuck_call_no_longer_blocks_a_reload(watched):
+    relay, out = watched
+    call(relay, 44, "hang")
+    call(relay, 45, RELOAD_TOOL)
+    assert "Reloaded" in out.reply(45)["result"]["content"][0]["text"]
+    assert stuck_reply(out, 44)["error_type"] == "operation_stuck"
+    assert relay.reloads == 1  # one restart for both reasons
+
+
+def test_a_restart_that_hangs_too_answers_with_errors(watched, monkeypatch):
+    relay, out = watched
+    relay.handshake_timeout = 0.5
+    relay.retry_seconds = 0.2
+    monkeypatch.setenv("FAKE_MUTE", "1")  # SolidWorks stuck: new servers never start
+    call(relay, 46, "hang")
+    assert stuck_reply(out, 46)["error_type"] == "operation_stuck"
+    wait_until(lambda: relay.last_error is not None)
+    assert "didn't answer initialize" in relay.last_error
+    call(relay, 47, "echo")
+    assert "restarting" in out.reply(47)["error"]["message"]
+    monkeypatch.delenv("FAKE_MUTE")
+    relay.handshake_timeout = 30.0  # a server measured by coverage starts slowly
+    wait_until(lambda: relay.reloads == 1)
+    call(relay, 48, "echo")
+    assert "isError" not in out.reply(48)["result"]
+
+
+def test_the_watchdog_is_off_with_zero(monkeypatch):
+    monkeypatch.setenv("FAKE_TOOL", "tool_a")
+    relay, out = opened(stop_timeout=0.5, hang_seconds=0)
+    try:
+        call(relay, 49, "hang")
+        time.sleep(1.5)
+        assert not any(m.get("id") == 49 for m in out.messages)
+        assert relay.reloads == 0
+    finally:
+        relay.close()
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [
+        (None, 900.0),
+        ("0", 0.0),
+        ("30.5", 30.5),
+        ("-1", 0.0),
+        ("inf", 0.0),
+        ("soon", 900.0),
+    ],
+)
+def test_hang_seconds_come_from_the_environment(monkeypatch, value, seconds):
+    seen: list[Relay] = []
+    monkeypatch.setenv("SOLIDWORKS_MCP_HOT_RELOAD_WATCH", "0")
+    if value is None:
+        monkeypatch.delenv("SOLIDWORKS_MCP_HANG_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("SOLIDWORKS_MCP_HANG_SECONDS", value)
+    relay_module.main([], run=seen.append)
+    assert seen[0].hang_seconds == seconds
 
 
 def test_file_changes_reload_after_they_settle(tmp_path, monkeypatch):
