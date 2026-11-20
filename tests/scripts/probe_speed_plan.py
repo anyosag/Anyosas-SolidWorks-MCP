@@ -758,8 +758,15 @@ class Probe:
         return [str(row.get("name")) for row in await self.feature_rows()]
 
     def _mine(self, doc: dict[str, Any]) -> bool:
+        """The probe's own: saved under the run folder, or unsaved with a title it made.
+
+        Never any other unsaved document: another session sharing SolidWorks
+        may create one during a check, and closing it would lose its work.
+        """
         path = str(doc.get("path") or "")
-        return not path or _inside(Path(path), self.run_dir)
+        if path:
+            return _inside(Path(path), self.run_dir)
+        return str(doc.get("title")) in self.created
 
     async def close_new(self, keep: Collection[str]) -> list[str]:
         """Close the probe's documents: not in ``keep``, under the run folder or unsaved.
