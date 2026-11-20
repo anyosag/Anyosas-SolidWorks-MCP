@@ -358,6 +358,12 @@ It works only with the circuit-breaker adapter wrapper (the default for real Sol
 | `SOLIDWORKS_MCP_DOCS_INDEX_AUTO_REFRESH` | `true` | Rebuild a stale index automatically. No-op without SolidWorks + win32com; a failed rebuild keeps serving the existing index. |
 | `SOLIDWORKS_MCP_DOCS_INDEX_MAX_AGE_DAYS` | `21` | Age after which the index counts as stale. |
 
+**Quiet trial features (on by default).** Some tools build a feature to see what it does and delete it again: a cut left without a direction, from a sketch inside the part, tries both sides. The side with nothing to cut is a rebuild error, and SolidWorks plays its error sound for it. While such a trial runs, the server turns off "Enable sounds for SolidWorks events" and puts your setting back afterwards, also when the call fails. Your sounds are not touched outside these trials, or when they are already off.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SOLIDWORKS_MCP_QUIET_TRIALS` | `1` | `0`, `false`, `no` or `off` leaves SolidWorks' event sounds on during trials. |
+
 </details>
 
 ## Teach your agent the workflow

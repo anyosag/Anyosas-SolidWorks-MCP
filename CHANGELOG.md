@@ -146,6 +146,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Trial features no longer play SolidWorks' error sound.** A cut left
+  without a direction built both sides of its sketch to compare them, and
+  the side with nothing to cut is a rebuild error, so SolidWorks played
+  "Rebuild Error" for every such cut although the trial was deleted. Now a
+  cut whose part lies all on one side of the sketch plane (a sketch on a
+  face, or on a plane outside the part) goes that way once, read from the
+  bodies' boxes (`direction_choice: "from_geometry"`). The trials that
+  remain (a sketch inside the part, a requested side that finds no
+  material, an Indent tried before shifted copies) run with "Enable sounds
+  for SolidWorks events" off, and the user's setting is put back after;
+  `SOLIDWORKS_MCP_QUIET_TRIALS=0` leaves the sounds alone.
+
 - **BREAKING: `pattern_circular` no longer takes `equal_spacing`.** With it
   off, SolidWorks read `angle` as the step between instances, not the total
   the description promised, so 60-degree steps needed `angle: 300`. Give

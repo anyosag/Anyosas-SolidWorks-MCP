@@ -1738,6 +1738,46 @@ From The Dipper build; `tests/scripts/probe_r2_views.py` (2026-11-17):
   inch template, while `units` says `mm`, the unit `set_dimension` takes),
   so it found none and never changed it. Match on `system_value`.
 
+## 61. Trial features play SolidWorks' error sound
+
+From a build session of `execute_workflow` batches (up to 72 steps):
+SolidWorks played its error sound over and over, though every call
+succeeded.
+
+- **The sound is a Windows sound event.** SolidWorks registers its events
+  under `HKCU\AppEvents\Schemes\Apps\SLDWORKS`; `SLDWORKS_RebuildError`
+  plays `Rebuild Error.wav` whenever a feature fails to build, while the
+  system option "Enable sounds for SolidWorks events" is on
+  (`swUserPreferenceToggle_e.swEnableSoundsForSolidWorksEvents`, toggle
+  515).
+- **The cause was a trial.** A one-way cut with no `reverse_direction`
+  built along the sketch normal, measured, deleted it and built the other
+  side. The side with no material is a failed `FeatureCut4`, so it sounded,
+  although the server deleted or never kept it (the replies showed
+  `direction_flipped: true`). A requested side that finds no material, and
+  `make_mating_negative`'s Indent tried before shifted copies, are trials
+  of the same kind.
+- **The fix, in two parts.** `cut_side.material_side` reads the sketch
+  plane (`ModelToSketchTransform`, inverted) and each solid body's
+  `IBody2.GetBodyBox`: when every box corner lies on one side of the plane
+  (within 0.001 mm), the cut goes that way once, `direction_choice:
+  "from_geometry"`. A box that straddles the plane falls back to the trial,
+  since a box is not the body. What trials remain run inside
+  `quiet.sounds_off`, which reads toggle 515, sets it off, and puts the
+  user's value back in a `finally`; it touches nothing when the toggle
+  doesn't read or is already off, so nested windows restore once.
+  `SOLIDWORKS_MCP_QUIET_TRIALS=0` turns it off.
+- **Not wrapped:** the first build of an extrude or cut whose contours
+  cross (`regions: "all"` is retried only after it failed, so the sound has
+  played), `pattern_linear` deleting an empty pattern and `set_equations`
+  undoing its journal (both report an error: the sound is right), and
+  `emboss_text`'s redo the other way (the first boss builds, it only adds
+  nothing; an engrave is a cut and gets the fix above).
+- **To confirm live** (`tests/scripts/probe_quiet_trials.py`): toggle 515
+  reads off during a trial and back after; a cut from a face takes one
+  `FeatureCut4`. Whether SolidWorks plays the sound later, in its idle
+  loop, after the toggle is back on is only heard, not read.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape
