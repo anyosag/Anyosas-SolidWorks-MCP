@@ -192,6 +192,22 @@ def classifier() -> ErrorClassifier:
             "file: no file was written there.",
             "export_invalid",
         ),
+        (
+            "Not scanned: the part has 2904 edges to read, over the edge scan limit "
+            "of 500 (SOLIDWORKS_MCP_EDGE_SCAN_LIMIT); describing them would take "
+            "about 290 s. Nothing was read or selected. Take the edges from a "
+            "feature, face_point, side or plane, or narrow the scan with "
+            "inside_box; scan_whole_part: true reads them all.",
+            "edge_scan_too_large",
+        ),
+        (
+            "Not scanned: inside_box reaches 1400 edges of body 'Body1' to read, "
+            "over the edge scan limit of 500 (SOLIDWORKS_MCP_EDGE_SCAN_LIMIT); "
+            "describing them would take about 140 s. Nothing was selected; the "
+            "face boxes read are kept. Give a tighter inside_box, or a feature, "
+            "face_point, side or plane source; scan_whole_part: true reads them all.",
+            "edge_scan_too_large",
+        ),
     ],
 )
 def test_known_messages_are_categorised(
@@ -311,3 +327,19 @@ def test_a_missing_component_stays_not_found(classifier: ErrorClassifier) -> Non
     )
 
     assert found.error_type == "not_found"
+
+
+@pytest.mark.parametrize("boxed", [False, True])
+def test_a_refused_edge_scan_says_how_to_scope_it_and_spares_the_breaker(
+    classifier: ErrorClassifier, boxed: bool
+) -> None:
+    from solidworks_mcp.adapters.solidworks.edge_rules import ScanTooLarge
+    from solidworks_mcp.tools.error_classifier import counts_toward_breaker
+
+    message = str(ScanTooLarge("the part", 2904, 500, boxed))
+    found = classifier.classify(message)
+
+    assert found.error_type == "edge_scan_too_large"
+    assert "`feature`" in found.hint and "`scan_whole_part: true`" in found.hint
+    # Nothing ran by design: five of them must not lock select_edges out.
+    assert counts_toward_breaker(message) is False

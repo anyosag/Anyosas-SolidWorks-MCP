@@ -1321,7 +1321,9 @@ class SolidWorksAdapter(ABC):
                 ``edge_type``, ``parallel_to`` (``"x"``/``"y"``/``"z"`` or a
                 direction), ``parallel_tolerance_deg``, ``inside_box`` (two
                 corners, mm), ``min_length`` and ``max_length`` (mm) and
-                ``convexity``. ``with_ids`` asks for an id per edge.
+                ``convexity``. ``with_ids`` asks for an id per edge;
+                ``scan_whole_part`` lifts the scan limit on a rule with no
+                source.
             append (bool): Add to the current selection instead of replacing it.
 
         Returns:
@@ -1329,7 +1331,9 @@ class SolidWorksAdapter(ABC):
             left after each rule), ``edges`` (up to 50 described),
             ``selected_edges``, ``selection_count``, ``read`` (what was read)
             and, with ``with_ids``, ``edge_ids``. ERROR when no edge matches,
-            naming the rule that removed them.
+            naming the rule that removed them, or when a rule with no source
+            would read more edges than the scan limit (nothing selected;
+            ``data`` has ``edges_to_read`` and ``estimated_s``).
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
@@ -2419,21 +2423,29 @@ class SolidWorksAdapter(ABC):
         component_b: str,
         coarse: bool = False,
         timeout_s: float | None = None,
+        faces: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the minimum distance between two components of the active assembly.
+
+        The components are measured whole first (``method: components``, no
+        faces); face pairs are measured when that gives no distance, or with
+        ``faces``.
 
         Args:
             component_a (str): An instance name, as ``list_components`` gives it.
             component_b (str): Another one.
             coarse (bool): Measure only the nearest few face pairs by box, and
                 give the bound the rest guarantee.
-            timeout_s (float | None): Stop measuring pairs after this many
-                seconds, with the best found so far.
+            timeout_s (float | None): Stop measuring face pairs after this
+                many seconds, with the best found so far.
+            faces (bool): Measure face pairs, naming the nearest faces,
+                without measuring the components whole first.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``clearance_mm``, ``touching``,
             ``point_a_mm``, ``point_b_mm``, ``face_a``, ``face_b``,
-            ``pairs_checked``, ``complete`` and ``at_least_mm``, or error.
+            ``pairs_checked``, ``complete``, ``at_least_mm`` and ``method``,
+            or error.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

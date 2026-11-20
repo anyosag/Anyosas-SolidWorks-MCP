@@ -3585,30 +3585,43 @@ class TestAddFilletVolumeCheck:
 
 @pytest.mark.asyncio
 async def test_delete_feature_names_every_feature_it_removed(monkeypatch) -> None:
-    """The tree is listed before and after; the names that went are reported."""
+    """The sketch and the cut built from it go; the other sketch stays."""
+    from .fake_feature_tree import FakeTree
+
     adapter = _build_adapter(monkeypatch)
-    listed = [
-        [{"name": "Sketch1"}, {"name": "Sketch2"}, {"name": "Cut-Extrude1"}],
-        [{"name": "Sketch1"}],
-    ]
-    adapter.list_features = AsyncMock(
-        side_effect=[
-            AdapterResult(status=AdapterResultStatus.SUCCESS, data=d) for d in listed
-        ]
-    )
+    tree = FakeTree()
+    tree.add("Sketch1", "ProfileFeature")
+    tree.add("Sketch2", "ProfileFeature")
+    tree.add("Cut-Extrude1", "Cut", sketch="Sketch2")
+    adapter.currentModel = tree
+    adapter.list_features = AsyncMock()
+
+    result = await adapter.delete_feature("Sketch2")
+
+    assert result.is_success, result.error
+    assert result.data["removed_features"] == ["Sketch2", "Cut-Extrude1"]
+    assert result.data["features_removed"] == 2
+    assert tree.present == ["Sketch1"]
+    # The count fell by the two names: the tree was not listed.
+    adapter.list_features.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_feature_keeps_the_delete_s_own_time(monkeypatch) -> None:
+    adapter = _build_adapter(monkeypatch)
     monkeypatch.setattr(
         features,
         "_delete_feature_impl",
-        lambda *_a: AdapterResult(
+        lambda *_a, **_k: AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"deleted": "Sketch2", "features_removed": 2},
+            data={"deleted": "Sketch2", "removed_features": ["Sketch2"]},
             execution_time=0.2,
         ),
     )
 
     result = await adapter.delete_feature("Sketch2")
 
-    assert result.data["removed_features"] == ["Sketch2", "Cut-Extrude1"]
+    assert result.data["removed_features"] == ["Sketch2"]
     assert result.execution_time == 0.2
 
 
@@ -3623,7 +3636,7 @@ async def test_delete_feature_falls_back_to_the_name_without_a_listing(
     monkeypatch.setattr(
         features,
         "_delete_feature_impl",
-        lambda *_a: AdapterResult(status=AdapterResultStatus.SUCCESS, data=None),
+        lambda *_a, **_k: AdapterResult(status=AdapterResultStatus.SUCCESS, data=None),
     )
 
     result = await adapter.delete_feature("Fillet1@Part1")
@@ -3641,10 +3654,11 @@ async def test_a_failed_delete_is_returned_unchanged(monkeypatch) -> None:
         return_value=AdapterResult(status=AdapterResultStatus.SUCCESS, data=[])
     )
     failed = AdapterResult(status=AdapterResultStatus.ERROR, error="Feature not found")
-    monkeypatch.setattr(features, "_delete_feature_impl", lambda *_a: failed)
+    monkeypatch.setattr(features, "_delete_feature_impl", lambda *_a, **_k: failed)
 
     assert await adapter.delete_feature("Nope") is failed
-    adapter.list_features.assert_awaited_once()
+    # Nothing is listed, before or after.
+    adapter.list_features.assert_not_awaited()
 
 
 def test_renaming_the_latest_sketch_keeps_it_tracked() -> None:

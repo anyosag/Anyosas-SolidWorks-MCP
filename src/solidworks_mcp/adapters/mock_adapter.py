@@ -1259,13 +1259,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         and payload as the live adapter. Any feature in the mock tree made
         the whole block; a face source keeps the edges lying on that face.
         Every edge of the block is convex, and ``with_ids`` gives ids the
-        mock's ``edge_ids`` takes back.
+        mock's ``edge_ids`` takes back. A rule with no source reads every
+        edge of the block, so the live adapter's scan limit
+        (``SOLIDWORKS_MCP_EDGE_SCAN_LIMIT``) counts them all, box or not.
         """
+        from .solidworks.edge_index import scan_limit
         from .solidworks.edge_rules import (
             MAX_DESCRIBED_EDGES,
+            ScanTooLarge,
+            describe_source,
             describe_sources,
             edge_key,
             expand_query,
+            has_source,
             match_rules,
             no_match_message_rules,
             validate_edge_query,
@@ -1287,6 +1293,21 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         await asyncio.sleep(self._delays["feature_operation"] / 4)
 
         rules = expand_query(query)
+        limit = None if query.get("scan_whole_part") else scan_limit()
+        block = len(self._mock_block_edges())
+        for rule in rules:
+            if limit and not has_source(rule) and block > limit:
+                refused = ScanTooLarge(
+                    describe_source(rule),
+                    block,
+                    limit,
+                    rule.get("inside_box") is not None,
+                )
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=str(refused),
+                    data=refused.data(),
+                )
         try:
             kept, counts = match_rules(rules, self._mock_rule_edges, _mock_convex)
         except LookupError as exc:
@@ -5687,6 +5708,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         component_b: str,
         coarse: bool = False,
         timeout_s: float | None = None,
+        faces: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock clearance between two components, each standing in for its box.
 
@@ -5696,14 +5718,16 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         it. The refusals are the real adapter's: not an assembly, the same
         component twice, one not in the assembly, one with no solid body
         (a box of ``None``). One pair, measured exactly, so the reply is
-        always complete; with ``coarse`` or ``timeout_s`` it is the real
-        adapter's one-call answer (``method: components``, no faces).
+        always complete. By default it is the real adapter's one-call answer
+        (``method: components``, no faces); with ``faces``, the boxes stand
+        in for the nearest faces (``method: face_pairs``).
 
         Args:
             component_a (str): An instance name, as ``list_components`` gives it.
             component_b (str): Another one.
-            coarse (bool): Answer as the components measured whole.
-            timeout_s (float | None): Likewise, when given.
+            coarse (bool): Ignored: one pair is all there is.
+            timeout_s (float | None): Ignored, likewise.
+            faces (bool): Answer as the face search, with the boxes as faces.
 
         Returns:
             AdapterResult[dict[str, Any]]: The real adapter's reply shape.
@@ -5778,7 +5802,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 point_b.append(middle)
         clearance = box_distance(a, b)
         touching = clearance <= TOUCHING_MM
-        whole = coarse or timeout_s is not None
+        whole = not faces
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={

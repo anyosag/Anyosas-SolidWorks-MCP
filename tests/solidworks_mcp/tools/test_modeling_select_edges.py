@@ -101,6 +101,35 @@ def test_with_ids_reaches_the_adapter_only_when_asked() -> None:
     assert "with_ids" not in SelectEdgesInput().query()
 
 
+def test_scan_whole_part_reaches_the_adapter_only_when_asked() -> None:
+    asked = SelectEdgesInput(parallel_to="x", scan_whole_part=True).query()
+
+    assert asked["scan_whole_part"] is True
+    assert "scan_whole_part" not in SelectEdgesInput(parallel_to="x").query()
+    # It is an option of the call: an any_of rule can't carry it.
+    with pytest.raises(ValueError, match="any_of\\[0\\] has unknown key"):
+        SelectEdgesInput(any_of=[{"scan_whole_part": True}])
+
+
+async def test_a_scan_too_large_says_so_with_its_cost(
+    tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SOLIDWORKS_MCP_EDGE_SCAN_LIMIT", "5")
+
+    refused = await tools["select_edges"]({"parallel_to": "z"})
+    scoped = await tools["select_edges"]({"side": "top"})
+    whole = await tools["select_edges"]({"parallel_to": "z", "scan_whole_part": True})
+
+    assert refused["status"] == "error"
+    assert refused["error_type"] == "edge_scan_too_large"
+    assert "scan_whole_part" in refused["hint"]
+    assert refused["data"]["edges_to_read"] == 12
+    assert refused["data"]["estimated_s"] == 1
+    assert scoped["status"] == "success", scoped
+    assert whole["status"] == "success", whole
+    assert whole["data"]["selected_edges"] == 4
+
+
 @pytest.mark.parametrize(
     ("arguments", "fragment"),
     [

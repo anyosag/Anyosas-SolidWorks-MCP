@@ -3835,28 +3835,51 @@ class PyWin32Adapter(
     def _save_stl_with_extension(
         self, ext: Any, stl_data: Any | None, resolved_path: str
     ) -> bool:
-        """Attempt STL export using Extension.SaveAs2 with optional ISTLExportData.
+        """Attempt STL export using Extension.SaveAs2 with optional export data.
 
-        Tries SaveAs2 with stl_data first (enables body merging); falls back to
-        SaveAs2(None) if type mismatch occurs (late-bound IDispatch can't marshal
-        ISTLExportData* through IDispatch::Invoke).
+        ``IModelDocExtension.SaveAs2`` takes, in the SOLIDWORKS 2026 type
+        library: ``Name`` (BSTR), ``Version`` and ``Options`` (long),
+        ``ExportData`` (IDispatch), ``ReferencePrefixOrSuffixText`` (BSTR),
+        ``AddTextAsPrefix`` (bool), then ``Errors`` and ``Warnings`` (by-ref
+        long). It was called with ``None`` for the export data and the text
+        and ``""`` for the flag: a Python ``None`` marshals as ``VT_NULL``,
+        and the server log holds 97 ``(-2147352571, 'Type mismatch.', None,
+        4)`` (argument 4, the export data), each followed by the ``SaveAs3``
+        fallback. So no export data is a ``VARIANT(VT_DISPATCH, None)`` (the
+        null ``SelectByID2``'s callout takes, runbook #11), the text ``""``,
+        the flag ``False`` and the out-parameters by-ref longs.
+
+        ``stl_data`` is tried first when there is one, then the null.
 
         Args:
             ext: Extension object from target document
-            stl_data: Optional ISTLExportData configuration
+            stl_data: Optional export data (``GetExportFileData``)
             resolved_path: Full path where to save STL file
 
         Returns:
             True if file was created, False otherwise.
         """
+
+        def save_as(export_data: Any) -> None:
+            ext.SaveAs2(
+                resolved_path,
+                0,  # swSaveAsVersion_e.swSaveAsCurrentVersion
+                _EXPORT_OPTIONS,
+                export_data,
+                "",  # ReferencePrefixOrSuffixText: none
+                False,  # AddTextAsPrefix
+                _byref_long(0),  # Errors (out)
+                _byref_long(0),  # Warnings (out)
+            )
+
         try:
-            # Try with stl_data first
             try:
-                # swSaveAsVersion_e.swSaveAsCurrentVersion = 0
-                ext.SaveAs2(resolved_path, 0, _EXPORT_OPTIONS, stl_data, None, "")
+                save_as(_null_callout() if stl_data is None else stl_data)
             except Exception:
-                # Fallback: try without stl_data (type mismatch on IDispatch)
-                ext.SaveAs2(resolved_path, 0, _EXPORT_OPTIONS, None, None, "")
+                if stl_data is None:
+                    raise
+                # The export data was refused: again without it.
+                save_as(_null_callout())
 
             return os.path.exists(resolved_path)
         except Exception as exc:
@@ -3941,7 +3964,10 @@ class PyWin32Adapter(
         )
         before = stl_settings.component_files(resolved_path)
         try:
-            stl_data = self._prepare_stl_export_data()
+            # No export data for an assembly: SaveAs2 never took it (every
+            # call failed on its arguments, and SaveAs3 wrote the file), so
+            # what its Merge would do to the components is unchecked.
+            stl_data = None if doc_type == 2 else self._prepare_stl_export_data()
             if not self._save_stl_with_extension(ext, stl_data, resolved_path):
                 stl_settings.refuse_split_export(resolved_path, before)
                 try:
@@ -4034,9 +4060,8 @@ class PyWin32Adapter(
             clear_selection(self, target_doc)
 
             # ----------------------------------------------------------------
-            # STL export: use Extension.SaveAs2 + ISTLExportData
-            # for both parts AND assemblies.  SaveAs3 with format=2 works for
-            # parts but is unreliable for assemblies (only exports first body).
+            # STL export: Extension.SaveAs2 for parts AND assemblies, SaveAs3
+            # when it writes nothing (_export_stl).
             # ----------------------------------------------------------------
             if format_lower == "stl":
                 # For assemblies, resolve lightweight components first so all

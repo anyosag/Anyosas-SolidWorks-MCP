@@ -63,12 +63,14 @@ async def test_it_measures_in_an_assembly(monkeypatch: pytest.MonkeyPatch) -> No
 
     result = await _Harness(_Doc(2)).measure_clearance("tongue-1", "slot-1")
     await _Harness(_Doc(2)).measure_clearance("tongue-1", "slot-1", True, 4.0)
+    await _Harness(_Doc(2)).measure_clearance("tongue-1", "slot-1", faces=True)
 
     assert result.is_success, result.error
     assert result.data == {"clearance_mm": 0.25}
     assert asked == [
-        ("tongue-1", "slot-1", {"coarse": False, "timeout_s": None}),
-        ("tongue-1", "slot-1", {"coarse": True, "timeout_s": 4.0}),
+        ("tongue-1", "slot-1", {"coarse": False, "timeout_s": None, "faces": False}),
+        ("tongue-1", "slot-1", {"coarse": True, "timeout_s": 4.0, "faces": False}),
+        ("tongue-1", "slot-1", {"coarse": False, "timeout_s": None, "faces": True}),
     ]
 
 

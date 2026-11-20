@@ -37,10 +37,10 @@ Steps (``--steps``, in order):
    ``query_geometry`` reports for each against the modelled sizes.
 
 3. ``clearance`` - an assembly of two copies of the pocket plate, 0.4 mm
-   apart face to face. Settles how long ``measure_clearance`` takes full,
-   with ``coarse`` and with ``timeout_s: 1``, and that each coarse or timed
-   reply's bounds hold the full answer (``at_least_mm`` <= full <=
-   ``clearance_mm``).
+   apart face to face. Settles how long ``measure_clearance`` takes by
+   default (the components measured whole), full (``faces: true``), with
+   ``coarse`` and with ``timeout_s: 1``, and that each other reply's bounds
+   hold the full answer (``at_least_mm`` <= full <= ``clearance_mm``).
 
 Usage (SolidWorks running, nothing else driving it, the user's OK)::
 
@@ -443,7 +443,8 @@ async def step_clearance(
     out: dict[str, Any] = {"components": names}
     runs = {}
     for label, extra in (
-        ("full", {}),
+        ("default", {}),  # the components measured whole first
+        ("full", {"faces": True}),  # the whole face search
         ("coarse", {"coarse": True}),
         ("timeout_s 1", {"timeout_s": 1}),
     ):
@@ -471,7 +472,7 @@ async def step_clearance(
             },
         }
     full = runs["full"].get("clearance_mm")
-    for label in ("coarse", "timeout_s 1"):
+    for label in ("default", "coarse", "timeout_s 1"):
         run = runs[label]
         if None not in (full, run.get("clearance_mm"), run.get("at_least_mm")):
             run["bounds_hold"] = (

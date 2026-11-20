@@ -875,25 +875,29 @@ class SolidWorksDocumentationMixin:
         component_b: str,
         coarse: bool = False,
         timeout_s: float | None = None,
+        faces: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the minimum distance between two components of the active assembly.
 
-        See ``clearance.measure_clearance``: every face pair of the two
-        components' solid bodies, nearest box first, measured with
-        ``IModelDoc2.ClosestDistance`` until no pair can be nearer, or (with
-        ``coarse`` or ``timeout_s``) sooner, with the bound that leaves.
+        See ``clearance.measure_clearance``: ``IModelDoc2.ClosestDistance``
+        on the two components whole first; when that gives no distance, or
+        with ``faces``, every face pair of their solid bodies, nearest box
+        first, until no pair can be nearer, or (with ``coarse`` or
+        ``timeout_s``) sooner, with the bound that leaves.
 
         Args:
             component_a: An instance name, as ``list_components`` reports it.
             component_b: Another one.
-            coarse: Measure only the nearest few pairs by box.
-            timeout_s: Stop measuring pairs after this many seconds.
+            coarse: Measure only the nearest few face pairs by box.
+            timeout_s: Stop measuring face pairs after this many seconds.
+            faces: Measure face pairs, for the nearest faces, without
+                measuring the components whole first.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``clearance_mm``, ``touching``,
             ``point_a_mm``, ``point_b_mm``, ``face_a``, ``face_b``,
-            ``pairs_checked``, ``pairs_total``, ``complete`` and
-            ``at_least_mm``. An error starting
+            ``pairs_checked``, ``pairs_total``, ``complete``,
+            ``at_least_mm`` and ``method``. An error starting
             ``Invalid request:`` (the same component twice, not an assembly, a
             suppressed or bodiless component) or naming a component that
             isn't there, listing those that are.
@@ -930,6 +934,7 @@ class SolidWorksDocumentationMixin:
                     component_b,
                     coarse=coarse,
                     timeout_s=timeout_s,
+                    faces=faces,
                 ),
             ),
         )

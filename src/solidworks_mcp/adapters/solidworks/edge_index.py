@@ -30,6 +30,13 @@ update stamp (``IModelDoc2.GetUpdateStamp``) changes, i.e. until the next
 rebuild, so the next rule on the same part reads nothing again. Without a
 stamp nothing is kept.
 
+How many edges a scan would still describe is known before it describes
+any (:meth:`PartIndex.edges_to_describe`): ``IBody2.GetEdgeCount``, one
+call a body, or the edges the index already holds. ``select_edges`` refuses
+a scan with no source above :func:`scan_limit` edges (``edge_rules``): in
+one session's sample its 31 queries without a ``feature`` took 33 of its
+42 minutes, at about :data:`SECONDS_PER_EDGE` an edge.
+
 Measured on SOLIDWORKS 2026 SP4.1 (``tests/scripts/probe_dipper_edges.py``,
 step ``index``), on a 172 x 108 mm plate of 2,904 edges: describing every
 edge (the old path) took 279 s; a box around one pocket took 27 s (1,206
@@ -44,9 +51,13 @@ both list it.
 from __future__ import annotations
 
 import math
+import os
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+from loguru import logger
 
 from .. import sw_type_info
 from . import limits
@@ -68,6 +79,33 @@ INSIDE_SLACK_M = 1e-6
 
 #: A point this close to a face is on it (as ``face_selection``), metres.
 ON_FACE_M = 1e-5
+
+#: Describing one edge, seconds: 2,904 edges took 279 s
+#: (``probe_dipper_edges.py``, SOLIDWORKS 2026 SP4.1).
+SECONDS_PER_EDGE = 0.1
+
+#: :func:`scan_limit` when ``SOLIDWORKS_MCP_EDGE_SCAN_LIMIT`` isn't set:
+#: about 50 s of describing.
+DEFAULT_SCAN_LIMIT = 500
+
+
+def scan_limit() -> int:
+    """``SOLIDWORKS_MCP_EDGE_SCAN_LIMIT``: the most edges a scan with no source describes.
+
+    ``0`` turns the check off; a value that isn't a whole number gives
+    :data:`DEFAULT_SCAN_LIMIT`.
+    """
+    name = "SOLIDWORKS_MCP_EDGE_SCAN_LIMIT"
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return DEFAULT_SCAN_LIMIT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            "{}={!r} is not a whole number; using {}", name, raw, DEFAULT_SCAN_LIMIT
+        )
+        return DEFAULT_SCAN_LIMIT
 
 
 # ---- boxes (pure) ------------------------------------------------------------
@@ -372,6 +410,33 @@ class PartIndex:
     def canonical(self, edge: Any) -> Any:
         """The handle this index keeps for ``edge`` (itself without the identity)."""
         return self._edges.get(edge) if self.edge_identity else edge
+
+    def undescribed(self, edges: Iterable[Any]) -> int:
+        """How many of ``edges`` :meth:`describe` would still read."""
+        return sum(1 for edge in edges if id(edge) not in self._info)
+
+    def edges_to_describe(self, bodies: list[IndexedBody]) -> int:
+        """How many edges describing all of ``bodies`` would still read.
+
+        A body whose edges the index holds counts those not described yet;
+        another its ``IBody2.GetEdgeCount`` (one call, a little more than
+        it would read when some of its edges were described through their
+        faces), or, when that doesn't read, its edges (:meth:`body_edges`).
+        """
+        total = 0
+        for body in bodies:
+            if body.edges is None:
+                self.flag_once(body.handle, "GetEdgeCount")
+                count = _attempt(self._adapter, lambda b=body: b.handle.GetEdgeCount())
+                if (
+                    isinstance(count, int)
+                    and not isinstance(count, bool)
+                    and count >= 0
+                ):
+                    total += count
+                    continue
+            total += self.undescribed(self.body_edges(body))
+        return total
 
     def describe(self, edge: Any) -> dict[str, Any]:
         """``describe_edge``, read once per handle; the same dict each time."""

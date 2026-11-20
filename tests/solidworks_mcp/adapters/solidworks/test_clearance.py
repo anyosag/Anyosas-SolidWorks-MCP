@@ -243,16 +243,28 @@ def _nearest_points(a: list[float], b: list[float]) -> tuple[list[float], ...]:
 
 
 class _Model:
+    """An assembly whose ``ClosestDistance`` measures faces only.
+
+    Asked for two components whole, it gives no distance (-1), as a failed
+    call does, so the face search runs; ``_WholeModel`` measures them.
+
+    Attributes:
+        measured: Face pairs measured.
+        whole: Calls that asked for the two components whole.
+    """
+
     def __init__(self, *components: _Component, fails: bool = False) -> None:
         self.components, self.fails = list(components), fails
         self.measured = 0
+        self.whole = 0
 
     def GetComponents(self, _top_level: bool) -> list[_Component]:  # noqa: N802
         return self.components
 
     def ClosestDistance(self, a: _Twin, b: _Twin, p1: Any, p2: Any) -> float:  # noqa: N802
-        # A component is not measured whole here (``box_m`` raises): the
-        # face search runs; ``_WholeModel`` measures components.
+        if isinstance(a, _Component):
+            self.whole += 1
+            return -1.0
         self.measured += 1
         if self.fails:
             return -1.0
@@ -293,7 +305,9 @@ def test_two_blocks_a_quarter_millimetre_apart() -> None:
         "box_mm": [9.85, -0.15, -0.15, 10.15, 10.15, 10.15],
     }
     assert reply["face_b"]["box_mm"][0] == pytest.approx(10.1)
-    # The facing pair first; the stop rule leaves most of the 36 unmeasured.
+    # The components whole gave no distance, so the faces were measured:
+    # the facing pair first; the stop rule leaves most of the 36 unmeasured.
+    assert model.whole == 1 and reply["method"] == "face_pairs"
     assert reply["pairs_total"] == 36
     assert reply["pairs_checked"] == model.measured
     assert reply["pairs_checked"] < 36
@@ -529,7 +543,8 @@ def test_coarse_measures_a_dozen_pairs_and_bounds_the_rest() -> None:
     assert full["at_least_mm"] == full["clearance_mm"]
     assert full["pairs_checked"] > cl.COARSE_PAIRS
     # One call asked for the components whole first, and gave nothing here.
-    assert coarse["pairs_checked"] == model.measured - 1 == cl.COARSE_PAIRS
+    assert model.whole == 1
+    assert coarse["pairs_checked"] == model.measured == cl.COARSE_PAIRS
     assert coarse["method"] == "face_pairs"
     assert coarse["pairs_total"] == 48 * 48
     assert coarse["complete"] is False and coarse["stopped_by"] == "coarse"
@@ -560,7 +575,7 @@ def test_a_timeout_returns_the_best_so_far() -> None:
 
     # Started at tick 0; before the 2nd, 3rd and 4th pair the clock reads
     # 1, 2 and 3: the fourth is past 2.5 s.
-    assert reply["pairs_checked"] == model.measured - 1 == 3
+    assert reply["pairs_checked"] == model.measured == 3
     assert reply["complete"] is False and reply["stopped_by"] == "timeout"
     assert reply["at_least_mm"] <= reply["clearance_mm"]
 
@@ -587,7 +602,7 @@ class _WholeModel(_Model):
 
     def ClosestDistance(self, a: Any, b: Any, p1: Any, p2: Any) -> float:  # noqa: N802
         if isinstance(a, _Component):
-            self.measured += 1
+            self.whole += 1
             boxes = [cl.transform_box(_box_of(c), c.rows, c.origin_m) for c in (a, b)]
             pa, pb = _nearest_points(*boxes)
             p1.value, p2.value = tuple(pa), tuple(pb)
@@ -602,15 +617,14 @@ def _box_of(component: _Component) -> list[float]:
     ]
 
 
-@pytest.mark.parametrize("ask", [{"coarse": True}, {"timeout_s": 5.0}])
-def test_a_fast_answer_measures_the_components_whole_in_one_call(
-    ask: dict[str, Any],
-) -> None:
+@pytest.mark.parametrize("ask", [{}, {"coarse": True}, {"timeout_s": 5.0}])
+def test_the_components_are_measured_whole_in_one_call(ask: dict[str, Any]) -> None:
     model = _WholeModel(*_latch().components)
 
     reply = cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", **ask)
 
-    assert model.measured == 1
+    # One call, and no face read or measured.
+    assert (model.whole, model.measured) == (1, 0)
     assert reply["clearance_mm"] == pytest.approx(0.25)
     assert reply["at_least_mm"] == reply["clearance_mm"]
     assert reply["complete"] is True and reply["method"] == "components"
@@ -619,13 +633,30 @@ def test_a_fast_answer_measures_the_components_whole_in_one_call(
     assert reply["point_a_mm"][0] == 10.0 and reply["point_b_mm"][0] == 10.25
 
 
-def test_the_full_search_does_not_measure_the_components_whole() -> None:
+def test_faces_ask_for_the_face_search_and_skip_the_whole_call() -> None:
     model = _WholeModel(*_latch().components)
 
-    reply = cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1")
+    reply = cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", faces=True)
 
-    assert reply["method"] == "face_pairs" and reply["face_a"] is not None
+    assert model.whole == 0
+    assert reply["method"] == "face_pairs" and reply["complete"] is True
+    assert reply["face_a"] == {
+        "kind": "plane",
+        "box_mm": [9.85, -0.15, -0.15, 10.15, 10.15, 10.15],
+    }
+    assert reply["clearance_mm"] == pytest.approx(0.25)
     assert model.measured == reply["pairs_checked"]
+
+
+def test_faces_with_coarse_bound_the_face_search() -> None:
+    model = _WholeModel(_comb("a-1", 8, 0), _comb("b-1", 8, 2.5))
+
+    reply = cl.measure_clearance(_Adapter(model), "a-1", "b-1", coarse=True, faces=True)
+
+    assert model.whole == 0
+    assert reply["method"] == "face_pairs" and reply["stopped_by"] == "coarse"
+    assert reply["pairs_checked"] == model.measured == cl.COARSE_PAIRS
+    assert reply["complete"] is False
 
 
 def test_components_touching_whole_read_zero() -> None:
@@ -634,16 +665,30 @@ def test_components_touching_whole_read_zero() -> None:
         _Component("b-1", [0, 0, 0, 10, 10, 10], origin_mm=[9, 0, 0]),
     )
 
-    reply = cl.measure_clearance(_Adapter(model), "a-1", "b-1", coarse=True)
+    reply = cl.measure_clearance(_Adapter(model), "a-1", "b-1")
 
     assert reply["touching"] is True and reply["clearance_mm"] == 0.0
+    assert reply["at_least_mm"] == 0.0
     assert reply["method"] == "components"
 
 
-def test_a_suppressed_component_is_refused_before_the_whole_call() -> None:
+@pytest.mark.parametrize("ask", [{}, {"coarse": True}])
+def test_a_suppressed_component_is_refused_before_the_whole_call(
+    ask: dict[str, Any],
+) -> None:
     model = _WholeModel(*_latch().components)
     model.components[1].suppression = cl.SUPPRESSED
 
     with pytest.raises(cl.InvalidRequest, match="component_b 'slot-1' is suppressed"):
-        cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", coarse=True)
-    assert model.measured == 0
+        cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", **ask)
+    assert (model.whole, model.measured) == (0, 0)
+
+
+def test_a_bodiless_component_is_refused_with_faces_too() -> None:
+    model = _WholeModel(
+        _Component("tongue-1", [0, 0, 0, 10, 10, 10]), _Component("slot-1", None)
+    )
+
+    with pytest.raises(cl.InvalidRequest, match="'slot-1' holds no solid body"):
+        cl.measure_clearance(_Adapter(model), "tongue-1", "slot-1", faces=True)
+    assert model.whole == 0

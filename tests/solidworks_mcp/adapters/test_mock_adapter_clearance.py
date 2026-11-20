@@ -27,6 +27,20 @@ async def test_two_cubes_a_quarter_millimetre_apart() -> None:
     assert data["touching"] is False
     assert data["point_a_mm"] == [10.0, 5.0, 5.0]
     assert data["point_b_mm"] == [10.25, 5.0, 5.0]
+    # By default the components are measured whole, as the live adapter does.
+    assert data["method"] == "components" and data["complete"] is True
+    assert (data["face_a"], data["face_b"]) == (None, None)
+    assert (data["pairs_checked"], data["pairs_total"]) == (0, None)
+
+
+async def test_faces_give_the_boxes_as_the_nearest_faces() -> None:
+    adapter = await _assembly((0, 0, 0), (10.25, 0, 0))
+
+    result = await adapter.measure_clearance("component-1", "component-2", faces=True)
+
+    data = result.data
+    assert data["method"] == "face_pairs"
+    assert data["clearance_mm"] == pytest.approx(0.25)
     assert data["face_b"] == {
         "kind": "plane",
         "box_mm": [10.25, 0.0, 0.0, 20.25, 10.0, 10.0],

@@ -69,6 +69,7 @@ SOLIDWORKS_BUSY = "solidworks_busy"
 OPERATION_STOPPED = "operation_stopped"
 API_SNIPPET_FAILED = "api_snippet_failed"
 EXPORT_INVALID = "export_invalid"
+EDGE_SCAN_TOO_LARGE = "edge_scan_too_large"
 
 DEFAULT_RULES: tuple[ErrorRule, ...] = (
     # First: a dialog's own text can contain anything ("file not found",
@@ -332,6 +333,20 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
         patterns=(r"\bis not a valid [\w.-]+ file\b",),
     ),
+    # select_edges with no source on a big part (``edge_rules.ScanTooLarge``):
+    # nothing was described or selected, by design.
+    ErrorRule(
+        error_type=EDGE_SCAN_TOO_LARGE,
+        hint=(
+            "Nothing was selected: with no source, select_edges would describe "
+            "every edge it reaches, about 0.1 s each; `data` has the count and "
+            "the estimate. Scope the query: take the edges from a `feature` (the "
+            "faces it made) or a face (`face_point`, `side`, `plane`), or give a "
+            "tighter `inside_box` around the edges you want. If the whole part "
+            "is what you need, call again with `scan_whole_part: true`."
+        ),
+        patterns=(r"\bover the edge scan limit\b",),
+    ),
 )
 
 _FALLBACK_HINTS = {
@@ -371,6 +386,7 @@ NOT_BREAKER_FAILURES = frozenset(
         "no_active_document",
         INVALID_INPUT,
         "not_found",
+        EDGE_SCAN_TOO_LARGE,
     }
 )
 

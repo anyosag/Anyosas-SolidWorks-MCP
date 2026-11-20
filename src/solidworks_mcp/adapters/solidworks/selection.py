@@ -208,12 +208,16 @@ class SolidWorksSelectionMixin:
         See ``SolidWorksAdapter.select_edges`` for the contract; the rules
         live in ``edge_rules``, the reading in ``edge_index``. The part's
         index is kept until its next rebuild; when a kept index's edges
-        won't select, it is dropped and the part read again, once.
+        won't select, it is dropped and the part read again, once. A rule
+        with no source over the scan limit (``edge_index.scan_limit``) is
+        refused unless the query sets ``scan_whole_part``: the error's
+        ``data`` gives the count and the estimate.
         """
-        from .edge_index import forget
+        from .edge_index import forget, scan_limit
         from .edge_rules import (
             MAX_DESCRIBED_EDGES,
             EdgeRuleSelector,
+            ScanTooLarge,
             describe_sources,
             expand_query,
             match_rules,
@@ -243,9 +247,10 @@ class SolidWorksSelectionMixin:
 
         rules = expand_query(query)
         with_ids = bool(query.get("with_ids"))
+        limit = None if query.get("scan_whole_part") else scan_limit()
 
         def _match() -> tuple[Any, list[Any], list[dict[str, int]]]:
-            selector = EdgeRuleSelector(self)
+            selector = EdgeRuleSelector(self, scan_limit=limit)
             kept, counts = match_rules(
                 rules, selector.candidates, selector.convexity, selector.arc_middle
             )
@@ -259,7 +264,14 @@ class SolidWorksSelectionMixin:
                 )
             return selector, kept, counts
 
-        def _select() -> dict[str, Any]:
+        def _select() -> dict[str, Any] | ScanTooLarge:
+            try:
+                return _select_matched()
+            except ScanTooLarge as refused:
+                # Nothing was selected; the round trip itself worked.
+                return refused
+
+        def _select_matched() -> dict[str, Any]:
             selector, kept, counts = _match()
             try:
                 count = selector.select(kept, append)
@@ -289,7 +301,15 @@ class SolidWorksSelectionMixin:
                 )
             return data
 
-        return self._run_clean("select_edges", _select)
+        result = self._run_clean("select_edges", _select)
+        if result.is_success and isinstance(result.data, ScanTooLarge):
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=str(result.data),
+                data=result.data.data(),
+                execution_time=result.execution_time,
+            )
+        return result
 
     async def set_visibility(
         self,

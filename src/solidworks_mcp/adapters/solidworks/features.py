@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 from contextlib import nullcontext
 from datetime import datetime
@@ -198,9 +199,14 @@ class SolidWorksFeaturesMixin:
     ) -> AdapterResult[dict[str, Any]]:
         """Delete a feature and report every feature that went with it.
 
-        The tree is listed before and after with ``list_features``, the read
-        path that works on SolidWorks, and the names that disappeared become
-        ``removed_features``: the named feature and its dependents.
+        Before the delete, the features it can take are read: the feature's
+        dependents (``IFeature.GetChildren``, followed down) and the sketches
+        they absorbed; after it, each is looked up with ``FeatureByName``,
+        and those gone become ``removed_features``
+        (:func:`_delete_feature_impl` with ``name_removed``). Listing the
+        tree before and after cost about 6 s a delete; the tree is listed
+        (once, after the delete) only when ``GetFeatureCount`` changed by a
+        different number (:func:`_removed_against_tree`).
 
         Args:
             name: The feature or sketch to delete.
@@ -208,19 +214,24 @@ class SolidWorksFeaturesMixin:
 
         Returns:
             AdapterResult[dict[str, Any]]: The delete's data plus
-            ``removed_features`` in tree order (just ``name`` when the tree
-            can't be listed), ``absorbed_sketches`` and
-            ``absorbed_sketches_left`` (those still in the tree).
+            ``removed_features`` in tree order (just ``name`` when none could
+            be read), ``removed_unnamed`` when more went than could be named,
+            ``absorbed_sketches`` and ``absorbed_sketches_left`` (those still
+            in the tree).
         """
-        before = await self.list_features(include_suppressed=True)
-        result = _delete_feature_impl(self, name, delete_absorbed)
+        result = _delete_feature_impl(self, name, delete_absorbed, name_removed=True)
         if not result.is_success:
             return result
-        after = await self.list_features(include_suppressed=True)
         data = dict(result.data or {})
-        data["removed_features"] = _removed_names(before, after) or [
-            name.split("@", 1)[0]
-        ]
+        removed, unnamed = await _removed_against_tree(
+            self,
+            list(data.get("removed_features") or []),
+            data.get("features_removed"),
+            name.split("@", 1)[0],
+        )
+        data["removed_features"] = removed
+        if unnamed:
+            data["removed_unnamed"] = unnamed
         data["absorbed_sketches_left"] = [
             sketch
             for sketch in data.get("absorbed_sketches") or []
@@ -3733,6 +3744,13 @@ def _select_feature_by_name(adapter: Any, name: str, append: bool = False) -> An
     return feature if selected else None
 
 
+def _found_by_name(adapter: Any, name: str) -> bool:
+    """Whether ``IModelDoc2.FeatureByName`` finds a feature called ``name``."""
+    return bool(
+        adapter._attempt(lambda: adapter.currentModel.FeatureByName(name), default=None)
+    )
+
+
 def _feature_count(adapter: Any) -> int | None:
     """Return how many features the active model has, or ``None``.
 
@@ -3788,28 +3806,41 @@ def _is_suppressed(adapter: Any, feature: Any) -> bool | None:
     return None
 
 
-def _removed_names(
-    before: AdapterResult[list[dict[str, Any]]],
-    after: AdapterResult[list[dict[str, Any]]],
-) -> list[str]:
-    """The feature names listed before a delete and missing after it.
+async def _removed_against_tree(
+    adapter: Any, removed: list[str], went: Any, name: str
+) -> tuple[list[str], int]:
+    """The features a delete took, checked against how many went.
+
+    ``removed`` are the features the delete read beforehand and found gone
+    by name. When ``GetFeatureCount`` fell by another number (``went``), the
+    tree is listed once (``list_features``) and a name still in it is
+    dropped; what went beyond the names is counted, since nothing is left
+    to read their names from.
 
     Args:
-        before: ``list_features`` before the delete.
-        after: ``list_features`` after it.
+        adapter: The adapter (its ``list_features``).
+        removed: The names found gone, in tree order.
+        went: ``features_removed``: how far the count fell; None when it
+            couldn't be read, which checks nothing.
+        name: The feature asked for, without ``@document``: the names when
+            none could be read.
 
     Returns:
-        list[str]: The names that went, in tree order; empty when either
-        listing failed.
+        tuple[list[str], int]: The names, and how many more features went
+        than they name.
     """
-    if not (before.is_success and after.is_success):
-        return []
-    remaining = {str(f.get("name")) for f in after.data or []}
-    return [
-        str(f.get("name"))
-        for f in before.data or []
-        if f.get("name") and str(f.get("name")) not in remaining
-    ]
+    counted = isinstance(went, int) and not isinstance(went, bool)
+    if counted and went != len(removed):
+        listing = await adapter.list_features(include_suppressed=True)
+        if listing.is_success:
+            remaining = {
+                str(f.get("name"))
+                for f in listing.data or []
+                if isinstance(f, dict) and not f.get("component")
+            }
+            removed = [n for n in removed if n not in remaining]
+    named = removed or [name]
+    return named, max(went - len(named), 0) if counted else 0
 
 
 #: ``swDeleteSelectionOptions_e`` (read from swconst.tlb, 2026):
@@ -3865,7 +3896,12 @@ def _absorbed_sketches(adapter: Any, feature: Any) -> list[str]:
         list[str]: The sketch names, in tree order; empty for a sketch or a
         feature without one.
     """
-    names: list[str] = []
+    return [name for name, _sketch in _absorbed_sketch_features(adapter, feature)]
+
+
+def _absorbed_sketch_features(adapter: Any, feature: Any) -> list[tuple[str, Any]]:
+    """:func:`_absorbed_sketches` with each sketch's ``IFeature``."""
+    found: list[tuple[str, Any]] = []
     adapter._attempt(
         lambda: sw_type_info.flag_members(feature, *_SUB_FEATURE_MEMBERS), default=0
     )
@@ -3879,9 +3915,98 @@ def _absorbed_sketches(adapter: Any, feature: Any) -> list[str]:
         kind = adapter._attempt(lambda s=sub: s.GetTypeName2(), default=None)
         name = adapter._attempt(lambda s=sub: s.Name, default=None)
         if kind in _SKETCH_TYPE_NAMES and name:
-            names.append(str(name))
+            found.append((str(name), sub))
         sub = adapter._attempt(lambda s=sub: s.GetNextSubFeature(), default=None)
-    return names
+    return found
+
+
+#: The most features :func:`_removal_candidates` reads: a guard against a
+#: tree that loops. What it leaves out shows in the count check.
+_MAX_REMOVAL_CANDIDATES = 1000
+
+
+def _children_of(adapter: Any, feature: Any) -> list[tuple[str, Any]]:
+    """The features built on ``feature`` (``IFeature.GetChildren``), by name."""
+    children = adapter._attempt(
+        lambda: adapter._get_attr_or_call(feature, "GetChildren"), default=None
+    )
+    found = []
+    for child in as_list(children):
+        name = adapter._attempt(lambda c=child: c.Name, default=None)
+        if name:
+            found.append((str(name), child))
+    return found
+
+
+def _removal_candidates(
+    adapter: Any, feature: Any, name: str, absorbed: list[tuple[str, Any]]
+) -> list[str]:
+    """The features a delete of ``feature`` can take, in the order the tree lists them.
+
+    ``swDelete_Children`` takes the features built on it
+    (``IFeature.GetChildren``), and theirs in turn; ``swDelete_Absorbed``
+    the sketches each of them absorbed (sub-features), with what is built
+    on those. Each is read here before the delete, which leaves nothing of
+    them to read: the delete's caller looks each up by name afterwards. A
+    feature comes after the features it is built on and a sketch just
+    before the feature that absorbed it, as the tree lists them; features
+    that don't depend on each other keep the order they were found in.
+
+    Args:
+        adapter: A connected adapter.
+        feature: The ``IFeature`` about to be deleted.
+        name: Its tree name.
+        absorbed: Its absorbed sketches (:func:`_absorbed_sketch_features`).
+
+    Returns:
+        list[str]: ``name`` and every feature the delete may take.
+    """
+    found: dict[str, int] = {}
+    edges: set[tuple[str, str]] = set()  # (above, below) in the tree
+    pending: list[tuple[str, Any, list[tuple[str, Any]] | None]] = [
+        (name, feature, absorbed)
+    ]
+    while pending and len(found) < _MAX_REMOVAL_CANDIDATES:
+        current, handle, sketches = pending.pop()
+        if current in found:
+            continue
+        found[current] = len(found)
+        if sketches is None:
+            sketches = _absorbed_sketch_features(adapter, handle)
+        children = _children_of(adapter, handle)
+        edges.update((sketch, current) for sketch, _handle in sketches)
+        edges.update((current, child) for child, _handle in children)
+        # Popped in this order: its sketches, then its children.
+        for later in reversed([*sketches, *children]):
+            if later[0] not in found:
+                pending.append((later[0], later[1], None))
+    return _tree_order(found, edges)
+
+
+def _tree_order(found: dict[str, int], edges: set[tuple[str, str]]) -> list[str]:
+    """``found`` with each name after those ``edges`` put above it.
+
+    Names free to go either way keep the order they were found in; a loop
+    (no real tree has one) leaves its names last, in that order.
+    """
+    below: dict[str, list[str]] = {n: [] for n in found}
+    above = dict.fromkeys(found, 0)
+    for upper, lower in edges:
+        if upper in found and lower in found and upper != lower:
+            below[upper].append(lower)
+            above[lower] += 1
+    ready = [(index, n) for n, index in found.items() if above[n] == 0]
+    heapq.heapify(ready)
+    ordered: list[str] = []
+    while ready:
+        _index, current = heapq.heappop(ready)
+        ordered.append(current)
+        for lower in below[current]:
+            above[lower] -= 1
+            if above[lower] == 0:
+                heapq.heappush(ready, (found[lower], lower))
+    placed = set(ordered)
+    return ordered + [n for n in found if n not in placed]
 
 
 def _delete_users_of(adapter: Any, feature: Any) -> tuple[Any, Exception | None]:
@@ -3924,7 +4049,11 @@ def _delete_users_of(adapter: Any, feature: Any) -> tuple[Any, Exception | None]
 
 
 def _delete_feature_impl(
-    adapter: Any, name: str, delete_absorbed: bool = False
+    adapter: Any,
+    name: str,
+    delete_absorbed: bool = False,
+    *,
+    name_removed: bool = False,
 ) -> AdapterResult[dict[str, Any]]:
     """Delete a named feature or sketch from the active model.
 
@@ -3947,6 +4076,9 @@ def _delete_feature_impl(
         adapter: A connected adapter with a valid ``currentModel``.
         name: Name of the feature or sketch to delete.
         delete_absorbed: Delete the feature's own sketch with it.
+        name_removed: Also read what the delete can take beforehand
+            (:func:`_removal_candidates`, those ``FeatureByName`` finds) and
+            report, as ``removed_features``, those no longer found after it.
 
     Returns:
         AdapterResult[dict[str, Any]]: What was deleted and how the tree
@@ -3957,6 +4089,7 @@ def _delete_feature_impl(
     """
     if not adapter.currentModel:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
+    bare = name.split("@", 1)[0]
 
     def _delete_operation() -> dict[str, Any]:
         before = _feature_count(adapter)
@@ -3964,7 +4097,19 @@ def _delete_feature_impl(
         if feature is None:
             raise Exception(f"Feature not found: {name}")
 
-        absorbed = _absorbed_sketches(adapter, feature)
+        sketches = _absorbed_sketch_features(adapter, feature)
+        absorbed = [sketch for sketch, _handle in sketches]
+        own, candidates = bare, None
+        if name_removed:
+            # The tree's spelling ("Boss-Extrude1" for "boss-extrude1@Part1").
+            own = str(adapter._attempt(lambda: feature.Name, default=None) or bare)
+            candidates = [
+                candidate
+                for candidate in _removal_candidates(adapter, feature, own, sketches)
+                # Found by name now, so "not found" afterwards means gone (a
+                # child in another document, say, is never found).
+                if candidate == own or _found_by_name(adapter, candidate)
+            ]
         selected = adapter._attempt(
             lambda: adapter.currentModel.SelectionManager.GetSelectedObjectCount2(-1),
             default=None,
@@ -3978,7 +4123,6 @@ def _delete_feature_impl(
         adapter._attempt(lambda: adapter.currentModel.EditRebuild3(), default=None)
 
         # Confirm by lookup: the feature must no longer resolve by name.
-        bare = name.split("@", 1)[0]
         still_there = adapter._attempt(
             lambda: adapter.currentModel.FeatureByName(bare), default=None
         )
@@ -3992,7 +4136,7 @@ def _delete_feature_impl(
             )
 
         after = _feature_count(adapter)
-        return {
+        data: dict[str, Any] = {
             "deleted": name,
             "features_before": before,
             "features_after": after,
@@ -4003,6 +4147,13 @@ def _delete_feature_impl(
             ),
             "absorbed_sketches": absorbed,
         }
+        if candidates is not None:
+            data["removed_features"] = [
+                candidate
+                for candidate in candidates
+                if candidate == own or not _found_by_name(adapter, candidate)
+            ]
+        return data
 
     return cast(
         AdapterResult[dict[str, Any]],
