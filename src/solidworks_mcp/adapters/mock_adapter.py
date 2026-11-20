@@ -7438,6 +7438,258 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         return await self._mock_equation_call("delete_equation", _delete)
 
+    # ---- holes and threads (hole-wizard-and-threads, D13) -------------------
+
+    #: Mock data, not SolidWorks' tables: the M3 values the specs mark "to
+    #: confirm" (hjbaard's guide, read from SOLIDWORKS 2026). Probe 1.4 has not
+    #: run; it replaces these with what the installed SolidWorks reports.
+    _MOCK_HOLE_SIZES: dict[str, dict[str, Any]] = {
+        "M3": {
+            "clearance": {"close": 3.2, "normal": 3.4, "loose": 3.6},
+            "cbore_diameter_mm": 6.5,
+            "cbore_depth_mm": 3.4,
+            "csink_diameter_mm": 6.72,
+            "csink_angle_deg": 90.0,
+            "tap_drill_diameter_mm": 2.5,
+            "thread_depth_mm": 6.0,
+            "coarse_pitch_mm": 0.5,
+        },
+    }
+
+    def mock_add_round_edge(
+        self,
+        center_mm: list[float],
+        diameter_mm: float,
+        axis: list[float] | None = None,
+    ) -> None:
+        """Give the mock a circular edge, as a rod end or a hole's mouth would be.
+
+        The mock has no geometry; ``create_thread`` looks for its edge among
+        these (``create_hole_wizard_hole`` adds each hole's mouth).
+        """
+        self.__dict__.setdefault("_mock_round_edges", []).append(
+            {
+                "center_mm": [float(c) for c in center_mm],
+                "diameter_mm": float(diameter_mm),
+                "axis": list(axis or [0.0, 0.0, 1.0]),
+            }
+        )
+
+    def _mock_round_edge_at(self, point_mm: list[float]) -> dict[str, Any] | None:
+        """The registered circular edge passing within 0.01 mm of ``point_mm``."""
+        from .solidworks.threads import EDGE_TOLERANCE_MM
+
+        for edge in self.__dict__.get("_mock_round_edges", []):
+            offset = [p - c for p, c in zip(point_mm, edge["center_mm"], strict=True)]
+            axis = edge["axis"]
+            norm = math.sqrt(sum(a * a for a in axis)) or 1.0
+            along = sum(o * a for o, a in zip(offset, axis, strict=True)) / norm
+            radial = math.sqrt(max(sum(o * o for o in offset) - along * along, 0.0))
+            gap = math.hypot(along, radial - edge["diameter_mm"] / 2.0)
+            if gap <= EDGE_TOLERANCE_MM:
+                return edge
+        return None
+
+    def _mock_add_named_feature(self, name: str, kind: str, **parameters: Any) -> str:
+        feature = SolidWorksFeature(
+            name=name,
+            type=kind,
+            id=f"{kind.lower()}_{uuid.uuid4().hex[:8]}",
+            parameters=parameters,
+            properties={"created": datetime.now().isoformat(), "mock": True},
+        )
+        self._features[feature.id or feature.name] = feature
+        return name
+
+    def _mock_remove_feature(self, name: str) -> None:
+        for key, feature in list(self._features.items()):
+            if feature.name == name:
+                del self._features[key]
+
+    def _mock_thread(
+        self, size: str, edge_point: list[float], length_mm: float, internal: bool
+    ) -> dict[str, Any]:
+        """The live adapter's checks and payload, on the mock's own edges.
+
+        Raises:
+            ValueError: ``Invalid request``: size, length, turns or diameter.
+        """
+        from .solidworks import threads
+
+        diameter, pitch = threads.check_request(size, length_mm)
+        edge = self._mock_round_edge_at(list(edge_point))
+        needed = threads.needed_diameter(diameter, pitch, internal)
+        note = None
+        if edge is None:
+            note = (
+                "mock: no edge registered at edge_point, so it is taken as an "
+                f"edge of the Ø{needed:g} the thread needs"
+            )
+            edge = {"center_mm": list(edge_point), "diameter_mm": needed}
+        threads.check_diameter(diameter, pitch, internal, edge["diameter_mm"])
+        count = sum(1 for f in self._features.values() if f.type == "Thread") + 1
+        name = self._mock_add_named_feature(
+            f"Thread{count}", "Thread", size=size, length_mm=length_mm
+        )
+        reply: dict[str, Any] = {
+            "feature": name,
+            "thread": threads.thread_block(diameter, pitch, length_mm, internal),
+            "edge": {
+                "center_mm": edge["center_mm"],
+                "diameter_mm": edge["diameter_mm"],
+            },
+            "library": threads.INTERNAL_LIBRARY
+            if internal
+            else threads.EXTERNAL_LIBRARY,
+            "failing_features": [],
+        }
+        if note:
+            reply["note"] = note
+        return reply
+
+    async def create_thread(
+        self,
+        size: str,
+        edge_point: list[float],
+        length_mm: float,
+        internal: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a modeled thread: the live checks and payload, no geometry (D13)."""
+        guard = self._mock_doc_error({"Part"}, "create_thread")
+        if guard is not None:
+            return guard
+        await asyncio.sleep(self._delays["feature_operation"] / 4)
+        self._operation_count += 1
+        try:
+            data = self._mock_thread(size, edge_point, length_mm, internal)
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        return AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)
+
+    async def create_hole_wizard_hole(
+        self,
+        kind: str,
+        size: str,
+        face_point: list[float],
+        side: str | None = None,
+        depth_mm: float | None = None,
+        fit: str | None = None,
+        thread: str = "cosmetic",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock a Hole Wizard hole from the mock size table (D13).
+
+        ``__refuse_thread__`` in ``size`` refuses the modeled thread after the
+        hole is made, so the cleanup path runs.
+        """
+        from .solidworks import holes, threads
+
+        guard = self._mock_doc_error({"Part"}, "create_hole_wizard_hole")
+        if guard is not None:
+            return guard
+        refuse_thread = "__refuse_thread__" in str(size)
+        size = str(size).replace("__refuse_thread__", "")
+        try:
+            request = holes.check_hole_input(kind, size, depth_mm, fit, thread, side)
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        await asyncio.sleep(self._delays["feature_operation"] / 4)
+        self._operation_count += 1
+        table = self._MOCK_HOLE_SIZES.get(request["size"])
+        if table is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Invalid request: SolidWorks made no {request['kind']} hole "
+                    f"of size {request['size']!r}: the size isn't in its ISO "
+                    "table for that kind (mock table: "
+                    f"{', '.join(self._MOCK_HOLE_SIZES)})."
+                ),
+            )
+        block: dict[str, Any] = {
+            "standard": "ISO",
+            "kind": request["kind"],
+            "size": request["size"],
+        }
+        modeled = request["thread"] == "modeled"
+        pitch = table["coarse_pitch_mm"]
+        if request["kind"] == "tapped":
+            block.update(
+                {
+                    "tap_drill_diameter_mm": table["tap_drill_diameter_mm"],
+                    "thread_diameter_mm": request["diameter"],
+                    "thread_depth_mm": table["thread_depth_mm"],
+                    "cosmetic_thread": True,
+                    "thread": request["thread"],
+                }
+            )
+            bore = (
+                threads.minor_diameter(request["diameter"], pitch)
+                if modeled
+                else table["tap_drill_diameter_mm"]
+            )
+        else:
+            block.update(
+                {
+                    "fit": request["fit"],
+                    "diameter_mm": table["clearance"][request["fit"]],
+                }
+            )
+            bore = block["diameter_mm"]
+            if request["kind"] == "counterbore":
+                block["cbore_diameter_mm"] = table["cbore_diameter_mm"]
+                block["cbore_depth_mm"] = table["cbore_depth_mm"]
+            if request["kind"] == "countersink":
+                block["csink_diameter_mm"] = table["csink_diameter_mm"]
+                block["csink_angle_deg"] = table["csink_angle_deg"]
+        title = {
+            "clearance": "Clearance Hole",
+            "counterbore": "CBORE for Socket Head Cap Screw",
+            "countersink": "CSK for Flat Head Screw",
+            "tapped": "Tapped Hole",
+        }[request["kind"]]
+        count = sum(1 for f in self._features.values() if f.type == "HoleWzd") + 1
+        name = self._mock_add_named_feature(
+            f"{request['size']} {title}{count}", "HoleWzd", size=request["size"]
+        )
+        reply: dict[str, Any] = {
+            "feature": name,
+            "hole": block,
+            "position": {
+                "sketch": f"{name} position",
+                "dimensions": {"x": f"D1@Sketch{count}", "y": f"D2@Sketch{count}"},
+                "fully_defined": True,
+            },
+            "face": {"center_mm": list(face_point), "normal": None},
+            "failing_features": [],
+            "note": "mock: sizes from a mock table, not SolidWorks' ISO tables",
+        }
+        if modeled:
+            length = (
+                table["thread_depth_mm"]
+                if request["depth_mm"] is not None
+                else request["depth_mm"]
+            )
+            if refuse_thread or not length:
+                self._mock_remove_feature(name)
+                reason = (
+                    "the mock refuses the thread (__refuse_thread__)"
+                    if refuse_thread
+                    else "the mock can't tell how long a through hole is"
+                )
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        f"SolidWorks made no thread for the hole: {reason}. The "
+                        "hole was removed; the model is as it was."
+                    ),
+                )
+            size_name = threads.size_name(request["diameter"], pitch)
+            made = self._mock_thread(size_name, list(face_point), length, True)
+            reply["thread"] = made["thread"]
+            reply["thread_feature"] = made["feature"]
+        self.mock_add_round_edge(list(face_point), bore)
+        return AdapterResult(status=AdapterResultStatus.SUCCESS, data=reply)
+
     async def measure_entities(
         self, entities: list[str]
     ) -> AdapterResult[dict[str, Any]]:

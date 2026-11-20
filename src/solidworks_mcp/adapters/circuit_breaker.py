@@ -2671,6 +2671,39 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"equation": equation},
         )
 
+    async def create_thread(
+        self,
+        size: str,
+        edge_point: list[float],
+        length_mm: float,
+        internal: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make a modeled thread through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_thread",
+            lambda: self.adapter.create_thread(size, edge_point, length_mm, internal),
+            input_dict={"size": size, "edge_point": edge_point, "length_mm": length_mm},
+        )
+
+    async def create_hole_wizard_hole(
+        self,
+        kind: str,
+        size: str,
+        face_point: list[float],
+        side: str | None = None,
+        depth_mm: float | None = None,
+        fit: str | None = None,
+        thread: str = "cosmetic",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make a Hole Wizard hole through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_hole_wizard_hole",
+            lambda: self.adapter.create_hole_wizard_hole(
+                kind, size, face_point, side, depth_mm, fit, thread
+            ),
+            input_dict={"kind": kind, "size": size, "face_point": face_point},
+        )
+
     async def measure_entities(
         self,
         entities: list[str],

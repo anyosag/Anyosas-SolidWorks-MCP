@@ -2248,6 +2248,39 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.delete_equation(equation),
         )
 
+    async def create_thread(
+        self,
+        size: str,
+        edge_point: list[float],
+        length_mm: float,
+        internal: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make a modeled thread using pool."""
+        return await self._execute_with_pool(
+            "create_thread",
+            lambda adapter: adapter.create_thread(
+                size, edge_point, length_mm, internal
+            ),
+        )
+
+    async def create_hole_wizard_hole(
+        self,
+        kind: str,
+        size: str,
+        face_point: list[float],
+        side: str | None = None,
+        depth_mm: float | None = None,
+        fit: str | None = None,
+        thread: str = "cosmetic",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make a Hole Wizard hole using pool."""
+        return await self._execute_with_pool(
+            "create_hole_wizard_hole",
+            lambda adapter: adapter.create_hole_wizard_hole(
+                kind, size, face_point, side, depth_mm, fit, thread
+            ),
+        )
+
     async def measure_entities(
         self,
         entities: list[str],

@@ -915,6 +915,21 @@ class TestConnectionPoolAdapterExtras:
             async def get_selected_entities(self):
                 return _ok("selection")
 
+            async def create_thread(self, size, edge_point, length_mm, internal=False):
+                return _ok({"size": size, "length_mm": length_mm, "internal": internal})
+
+            async def create_hole_wizard_hole(
+                self,
+                kind,
+                size,
+                face_point,
+                side=None,
+                depth_mm=None,
+                fit=None,
+                thread="cosmetic",
+            ):
+                return _ok({"kind": kind, "depth_mm": depth_mm, "thread": thread})
+
         async def _exercise_every_passthrough(wrapped) -> None:
             assert (await wrapped.create_reference_plane("Top")).is_success
             assert (await wrapped.create_axis("Top")).is_success
@@ -948,6 +963,20 @@ class TestConnectionPoolAdapterExtras:
             assert shown.data == {"components": ["cover-1"], "visible": False}
             assert (await wrapped.add_chamfer(1.0, ["Edge1"])).is_success
             assert (await wrapped.get_selected_entities()).is_success
+            threaded = await wrapped.create_thread("M30x1", [14.85, 1.77, 0], 5.5, True)
+            assert threaded.data == {
+                "size": "M30x1",
+                "length_mm": 5.5,
+                "internal": True,
+            }
+            holed = await wrapped.create_hole_wizard_hole(
+                "tapped", "M3", [20, 10, 10], "+Z", 8.0, None, "modeled"
+            )
+            assert holed.data == {
+                "kind": "tapped",
+                "depth_mm": 8.0,
+                "thread": "modeled",
+            }
 
         await _exercise_every_passthrough(
             CircuitBreakerAdapter(adapter=_FullStubAdapter())
