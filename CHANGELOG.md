@@ -194,6 +194,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `add_centerline` steps pay one settle pause, not one each (1,433 pauses in
   the sampled sessions). A reference may name an entity's point:
   `"$steps.c.circle.id.center"` is `"Circle_1.center"`.
+- **Features in one workflow share geometry reads.** A feature's "after"
+  volume and box are the next feature's "before" while only steps that
+  can't change solids ran between them (sketches, planes, selections,
+  renames, reads): one read and one settle pause fewer per feature. Only
+  within one `execute_workflow` call; anything else reads afresh.
 - **`measure_clearance` measures the whole components first**, in one call
   (0.4 s where the face search took 8.5 s on average), and searches face
   pairs only when that gives no distance or `faces: true` asks for the
