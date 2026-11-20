@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 197,
+  "total": 201,
   "by_level": {
    "stable": 107,
    "beta": 0,
-   "experimental": 51,
+   "experimental": 55,
    "planned": 39
   },
   "list": [
@@ -79,6 +79,13 @@
     "summary": "Draw an ellipse in the open sketch from its centre and axis lengths, in mm."
    },
    {
+    "name": "add_equation",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Drive a dimension of the active part or assembly by an equation, e.g. \"D1@Sketch3\" = \"well_d\"."
+   },
+   {
     "name": "add_fillet",
     "family": "modeling",
     "level": "stable",
@@ -146,7 +153,7 @@
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Add a driving dimension to sketch entities: linear, angular, radial or diameter."
+    "summary": "Add a driving dimension to sketch entities: linear, horizontal, vertical, angular, radial or diameter."
    },
    {
     "name": "add_sketch_text",
@@ -511,6 +518,13 @@
     "level": "planned",
     "reason": "no adapter implements it yet.",
     "summary": "Create a part, assembly or drawing template file (.prtdot, .asmdot, .drwdot) with standard settings."
+   },
+   {
+    "name": "delete_equation",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Delete an equation or a global variable of the active part or assembly."
    },
    {
     "name": "delete_feature",
@@ -891,6 +905,13 @@
     "summary": "List the views on the active drawing, by name."
    },
    {
+    "name": "list_equations",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "List the active part's or assembly's global variables and equations with their values."
+   },
+   {
     "name": "list_features",
     "family": "file_management",
     "level": "stable",
@@ -1234,6 +1255,13 @@
     "summary": "Change one dimension of the active model and rebuild."
    },
    {
+    "name": "set_global_variable",
+    "family": "engineering_data",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Add a global variable to the active part or assembly, or change its value, e.g. \"well_d\" = 1.2mm."
+   },
+   {
     "name": "set_material",
     "family": "engineering_data",
     "level": "stable",
@@ -1280,14 +1308,14 @@
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Repeat sketch entities around the sketch origin, e.g. a bolt circle."
+    "summary": "Repeat sketch entities about a centre as a parametric sketch pattern, e.g. a bolt circle."
    },
    {
     "name": "sketch_linear_pattern",
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Repeat sketch entities in a straight line at a fixed spacing."
+    "summary": "Repeat sketch entities in a straight line as a parametric sketch pattern."
    },
    {
     "name": "sketch_mirror",
@@ -1392,11 +1420,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 290,
+   "covered": 298,
    "total": 2838
   },
   "api": {
-   "covered": 361,
+   "covered": 381,
    "total": 5985
   },
   "interfaces": [
@@ -1407,6 +1435,7 @@
      "CloseAllDocuments",
      "CloseDoc",
      "Frame",
+     "GetConfigurationCount",
      "GetConfigurationNames",
      "GetCurrentLanguage",
      "GetDocumentDependencies2",
@@ -1443,8 +1472,10 @@
      "AddDiameterDimension2",
      "AddDimension",
      "AddDimension2",
+     "AddHorizontalDimension2",
      "AddRadialDimension2",
      "AddRelation",
+     "AddVerticalDimension2",
      "BlankRefGeom",
      "BlankSketch",
      "ClearSelection2",
@@ -1475,7 +1506,9 @@
      "ForceRebuild3",
      "GetActiveConfiguration",
      "GetActiveSketch2",
+     "GetConfigurationCount",
      "GetConfigurationNames",
+     "GetEquationMgr",
      "GetFeatureCount",
      "GetFeatureManagerWidth",
      "GetLineCount",
@@ -1698,7 +1731,9 @@
      "GetBody",
      "GetBox",
      "GetChildren",
+     "GetConfigurationCount",
      "GetConfigurationNames",
+     "GetConstrainedStatus",
      "GetCorrespondingEntity",
      "GetID",
      "GetMates",
@@ -1753,6 +1788,7 @@
     "name": "ISketch",
     "covered": [
      "AutoDimension",
+     "GetConstrainedStatus",
      "GetLineCount",
      "GetSketchContours",
      "GetSketchPoints2",
