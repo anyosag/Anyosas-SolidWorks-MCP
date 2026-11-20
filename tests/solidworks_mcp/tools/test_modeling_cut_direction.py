@@ -93,6 +93,11 @@ _REQUESTED_FLIPPED = (
         ({}, ""),
         ({"direction_flipped": False, "direction_choice": "more_material"}, ""),
         ({"direction_flipped": False, "direction_choice": "requested"}, ""),
+        ({"direction_flipped": False, "direction_choice": "from_geometry"}, ""),
+        (
+            {"direction_flipped": True, "direction_choice": "from_geometry"},
+            " (all the material lies against the sketch normal, so it cut that way)",
+        ),
         (
             {"direction_flipped": True, "direction_choice": "only_side_with_material"},
             " (the side along the sketch normal had no material, so it cut the "

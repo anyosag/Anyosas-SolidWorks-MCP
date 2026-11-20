@@ -329,6 +329,8 @@ def _cut_direction_note(applied: Any) -> str:
             f"{removed.get('against_normal', 0.0):.4g} mm3 against "
             f"{removed.get('along_normal', 0.0):.4g} mm3 along it)"
         )
+    if flipped and choice == "from_geometry":
+        return " (all the material lies against the sketch normal, so it cut that way)"
     if flipped and choice == "only_side_with_material":
         return (
             " (the side along the sketch normal had no material, so it cut the "
@@ -840,8 +842,9 @@ class CreateCutExtrudeInput(CompatInput):
     reverse_direction: bool | None = Field(
         default=None,
         description=(
-            "Usually leave unset: a one-way cut then tries both sides of the "
-            "sketch and keeps the one that removes more material (on a tie, "
+            "Usually leave unset: a one-way cut then goes toward the part when "
+            "it lies all on one side of the sketch plane, and otherwise tries "
+            "both sides and keeps the one that removes more material (on a tie, "
             "the side along the sketch normal, where create_extrusion grows). "
             "true cuts along the sketch normal, the side create_extrusion grows "
             "into by default; false cuts against it (from a sketch on a face, "
@@ -2990,9 +2993,9 @@ async def register_modeling_tools(
 
         Use it after `exit_sketch`. Pass `sketch_name` unless the sketch you just closed
         is the one: with no name only that sketch is used, and any doubt is an error
-        naming the sketches found. With `reverse_direction` unset, a one-way cut tries
-        both sides of the sketch and keeps the one that removes more material (a tie
-        keeps the side along the sketch normal, where `create_extrusion` grows). Set,
+        naming the sketches found. With `reverse_direction` unset, a one-way cut goes
+        toward the part when it is all on one side of the sketch plane, else keeps
+        the side that removes more (a tie: along the sketch normal). Set,
         true cuts along the sketch normal and false against it, and the other side is
         tried only when that one has no material. `direction_flipped` says the cut
         went the other way. For a sketch inside the body, use MidPlane (blind) or

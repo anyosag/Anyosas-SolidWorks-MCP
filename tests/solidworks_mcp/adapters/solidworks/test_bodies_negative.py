@@ -339,3 +339,26 @@ def test_an_uncopyable_body_is_an_error(lid: World) -> None:
 
     with pytest.raises(RuntimeError, match="the overlap can't be read"):
         bd.body_clearance(Harness(lid), "Label1", "Lid")
+
+
+def test_the_indent_trials_run_with_the_event_sounds_off(lid: World) -> None:
+    """An Indent that cuts nothing is deleted again: no error sound for it."""
+    from solidworks_mcp.adapters.solidworks import quiet
+
+    sounds = {quiet.EVENT_SOUNDS: True}
+    heard: list[bool] = []
+    lid.app.GetUserPreferenceToggle = sounds.get
+    lid.app.SetUserPreferenceToggle = sounds.__setitem__
+    indent = lid.indent
+
+    def _indent(*args: Any) -> Any:
+        heard.append(sounds[quiet.EVENT_SOUNDS])
+        return indent(*args)
+
+    lid.indent = _indent
+
+    out = _negative(lid)
+
+    assert out["method"] == "shifted_copies"
+    assert heard == [False, False]
+    assert sounds[quiet.EVENT_SOUNDS] is True

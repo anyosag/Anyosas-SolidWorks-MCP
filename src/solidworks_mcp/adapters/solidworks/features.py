@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,8 +20,10 @@ from ..base import (
 )
 from . import (
     cut_check,
+    cut_side,
     edge_feature_check,
     limits,
+    quiet,
     sketch_contours,
     sketch_regions,
 )
@@ -2071,48 +2074,51 @@ def _create_cut_extrude_impl(
         optimize_geometry = sw_major == 33
         first_call = True
         used_reverse = wanted
+        # A side that may be flipped from is a trial: no error sound for it.
+        trial = quiet.sounds_off(adapter) if len(forms) > 1 else nullcontext()
         try:
-            for label, sd, t1, t2, form_reverse in forms:
-                used_reverse = form_reverse
-                args = _cut_args(sd, t1, t2, _cut_dir(form_reverse))
-                calls = (
-                    (
-                        "FeatureCut4",
-                        lambda a=args: feature_manager.FeatureCut4(
-                            *a, optimize_geometry
-                        ),
-                    ),
-                    ("FeatureCut3", lambda a=args: feature_manager.FeatureCut3(*a)),
-                )
-                for api_name, call in calls:
-                    if not first_call and regions:
-                        sketch_regions.select_all(adapter, target_sketch)
-                    elif not first_call:
-                        # The sketch is already explicitly selected (above) — no
-                        # guessing here. A failed FeatureCut can drop it, so
-                        # reselect the same sketch before the next variant.
-                        adapter._attempt(
-                            lambda: adapter.currentModel.Extension.SelectByID2(
-                                target_sketch,
-                                "SKETCH",
-                                0.0,
-                                0.0,
-                                0.0,
-                                False,
-                                0,
-                                _null_callout(),
-                                0,
+            with trial:
+                for label, sd, t1, t2, form_reverse in forms:
+                    used_reverse = form_reverse
+                    args = _cut_args(sd, t1, t2, _cut_dir(form_reverse))
+                    calls = (
+                        (
+                            "FeatureCut4",
+                            lambda a=args: feature_manager.FeatureCut4(
+                                *a, optimize_geometry
                             ),
-                            default=False,
-                        )
-                    first_call = False
-                    feature, cut_error = adapter._attempt_with_error(call)
-                    if cut_error is not None:
-                        fallback_errors.append(f"{api_name}{label}: {cut_error}")
+                        ),
+                        ("FeatureCut3", lambda a=args: feature_manager.FeatureCut3(*a)),
+                    )
+                    for api_name, call in calls:
+                        if not first_call and regions:
+                            sketch_regions.select_all(adapter, target_sketch)
+                        elif not first_call:
+                            # The sketch is already explicitly selected (above) — no
+                            # guessing here. A failed FeatureCut can drop it, so
+                            # reselect the same sketch before the next variant.
+                            adapter._attempt(
+                                lambda: adapter.currentModel.Extension.SelectByID2(
+                                    target_sketch,
+                                    "SKETCH",
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    False,
+                                    0,
+                                    _null_callout(),
+                                    0,
+                                ),
+                                default=False,
+                            )
+                        first_call = False
+                        feature, cut_error = adapter._attempt_with_error(call)
+                        if cut_error is not None:
+                            fallback_errors.append(f"{api_name}{label}: {cut_error}")
+                        if feature:
+                            break
                     if feature:
                         break
-                if feature:
-                    break
 
         finally:
             if regions:
@@ -2494,6 +2500,14 @@ async def _create_cut_extrude_choosing_side(
     side that built stays as it is (``not_compared``, with a
     ``direction_note``).
 
+    Before any trial, the bodies' boxes are read (:func:`_side_from_geometry`):
+    when all the material lies on one side of the sketch plane, the cut goes
+    that way once (``from_geometry``), with no trial. The side without
+    material is a rebuild error, and SolidWorks played its error sound for
+    every trial although the trial was deleted. The trial that remains, for a
+    sketch inside the part, runs with the event sounds off
+    (:func:`quiet.sounds_off`).
+
     Args:
         adapter: A connected adapter.
         params: The cut; see :func:`_create_cut_extrude_impl`.
@@ -2513,6 +2527,54 @@ async def _create_cut_extrude_choosing_side(
     ):
         return _create_cut_extrude_impl(adapter, params)
 
+    side = _side_from_geometry(adapter, params)
+    if side is not None:
+        cut = _create_cut_extrude_impl(adapter, params, reverse=side)
+        return _with_choice(cut, "from_geometry") if cut.is_success else cut
+
+    with quiet.sounds_off(adapter, own_operation=True):
+        return await _cut_by_trial(adapter, params)
+
+
+def _side_from_geometry(adapter: Any, params: Any) -> bool | None:
+    """The ``reverse`` that cuts toward all the material, when it is on one side.
+
+    Only for a cut that starts on its sketch plane: one started off it
+    (``start_offset``) can have material on both sides of where it starts.
+
+    Args:
+        adapter: A connected adapter with a ``currentModel``.
+        params: The cut.
+
+    Returns:
+        bool | None: :data:`_ALONG_NORMAL` or its opposite; None when the part
+        straddles the plane, the sketch is unnamed, or anything can't be read
+        (:func:`cut_side.material_side`).
+    """
+    if float(getattr(params, "start_offset", 0.0) or 0.0):
+        return None
+    name = getattr(params, "sketch_name", None) or getattr(
+        adapter, "_last_sketch_name", None
+    )
+    if not isinstance(name, str) or not name:
+        return None
+    read = adapter._handle_com_operation(
+        "read_cut_side", lambda: cut_side.material_side(adapter, name)
+    )
+    along = read.data if read.is_success else None
+    if along is None:
+        return None
+    return _ALONG_NORMAL if along else not _ALONG_NORMAL
+
+
+async def _cut_by_trial(
+    adapter: Any, params: ExtrusionParameters
+) -> AdapterResult[SolidWorksFeature]:
+    """Cut both sides in turn and keep the one that removes more.
+
+    See :func:`_create_cut_extrude_choosing_side`; its caller mutes the
+    event sounds around it.
+    """
     before = await _part_volume(adapter)
     first = _create_cut_extrude_impl(adapter, params)
     if not first.is_success or first.data is None:

@@ -45,7 +45,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ..base import AdapterResult, AdapterResultStatus
-from . import limits
+from . import limits, quiet
 from .clearance import (
     TOUCHING_MM,
     InvalidRequest,
@@ -1474,9 +1474,18 @@ def make_mating_negative(
     folder: str | None = None
     used = None
     if method in ("auto", "indent"):
-        features = _try_indent(
-            adapter, model, target, list(tools), clearance_m, volume_before, attempts
-        )
+        # Each Indent that cuts nothing is deleted again: a trial, so no
+        # error sound for it.
+        with quiet.sounds_off(adapter):
+            features = _try_indent(
+                adapter,
+                model,
+                target,
+                list(tools),
+                clearance_m,
+                volume_before,
+                attempts,
+            )
         used = "indent" if features is not None else None
     if features is None and method in ("auto", "shifted_copies"):
         features, folder = _shifted_copies(

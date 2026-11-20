@@ -22,7 +22,9 @@ from solidworks_mcp.adapters.base import (
     ExtrusionParameters,
 )
 from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
-from solidworks_mcp.adapters.solidworks import features
+from solidworks_mcp.adapters.solidworks import features, quiet
+
+from .test_cut_side import FakeBody, FakeSketchFeature, plane_data
 
 _VOLUME = 1000.0
 
@@ -71,6 +73,13 @@ class _Part:
         self.refuse_rename = False
         self.refuse_delete: set[int] = set()
         self.refuse_cut_from = 0
+        # The sketch plane's ArrayData and the bodies' boxes (mm); without a
+        # plane the side can't be told from geometry and the cut is tried.
+        self.plane: list[float] | None = None
+        self.boxes: list[list[float]] = []
+        # Whether the event sounds were on at each FeatureCut call.
+        self.app: _App | None = None
+        self.sounds_at_cut: list[Any] = []
         self._number = 0
         self._deletes = 0
         sketch = SimpleNamespace(
@@ -98,11 +107,17 @@ class _Part:
     def EditRebuild3(self) -> bool:  # noqa: N802
         return True
 
-    def FeatureByName(self, name: str) -> _Cut | None:  # noqa: N802
+    def FeatureByName(self, name: str) -> Any:  # noqa: N802
+        if name == "Sketch3" and self.plane is not None:
+            return FakeSketchFeature(self.plane)
         return self.cuts.get(name)
+
+    def GetBodies2(self, _kind: int, _visible_only: bool) -> Any:  # noqa: N802
+        return tuple(FakeBody(box) for box in self.boxes)
 
     def _cut(self, api: str, args: tuple[Any, ...]) -> _Cut | None:
         self.calls.append((api, args[2]))
+        self.sounds_at_cut.append(self.app.sounds if self.app else None)
         removed = self.material[args[2]]
         if removed is None or 0 < self.refuse_cut_from <= len(self.calls):
             return None
@@ -124,6 +139,23 @@ class _Part:
         return True
 
 
+class _App:
+    """``ISldWorks``: its revision and the event-sounds toggle."""
+
+    RevisionNumber = "34.1.0"
+
+    def __init__(self) -> None:
+        self.sounds = True
+
+    def GetUserPreferenceToggle(self, pref: int) -> bool:  # noqa: N802
+        assert pref == quiet.EVENT_SOUNDS
+        return self.sounds
+
+    def SetUserPreferenceToggle(self, pref: int, value: bool) -> None:  # noqa: N802
+        assert pref == quiet.EVENT_SOUNDS
+        self.sounds = value
+
+
 class _Adapter:
     """Just enough adapter for the cut, the delete and the volume read."""
 
@@ -135,7 +167,9 @@ class _Adapter:
             "swEndCondThroughAllBoth": 9,
             "swStartSketchPlane": 0,
         }
-        self.swApp = SimpleNamespace(RevisionNumber="34.1.0")
+        self.swApp = _App()
+        if part is not None:
+            part.app = self.swApp
         self._last_sketch_name = "Sketch3"
         self.unreadable = unreadable
         self.volume_reads = 0
@@ -577,3 +611,170 @@ async def test_the_adapter_method_picks_the_side(monkeypatch) -> None:
 
     assert await adapter.create_cut_extrude(params) is sentinel
     assert seen == [(adapter, params)]
+
+
+# ---- the side from geometry, and quiet trials -------------------------------------
+
+#: A block from y = 0 to y = 10 (mm); sketches on planes normal to +Y.
+_BLOCK = [-20.0, 0.0, -20.0, 20.0, 10.0, 20.0]
+
+
+@pytest.mark.asyncio
+async def test_a_sketch_on_the_top_face_cuts_into_the_part_with_no_trial() -> None:
+    """All the material is below the face: one cut, against the normal."""
+    part = _Part(along=None, against=50.0)
+    part.plane = plane_data([0, 1, 0], [0, 10, 0])
+    part.boxes = [_BLOCK]
+
+    adapter, result = await _cut(part)
+
+    assert result.is_success, result.error
+    parameters = result.data.parameters
+    assert parameters["direction_choice"] == "from_geometry"
+    assert parameters["direction_flipped"] is True
+    assert parameters["reverse_direction"] is False
+    assert parameters["cut_toward"] == "-Y"
+    assert "volume_removed_mm3" not in parameters
+    # One FeatureCut4, no delete, no volume read, the sounds never touched.
+    assert _dirs(part) == [False]
+    assert part.deleted == []
+    assert adapter.volume_reads == 0
+    assert part.sounds_at_cut == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_plane_under_the_part_cuts_along_its_normal_with_no_trial() -> None:
+    part = _Part(along=142.55, against=None)
+    part.plane = plane_data([0, 1, 0], [0, -5, 0])
+    part.boxes = [_BLOCK]
+
+    adapter, result = await _cut(part, depth=6.0)
+
+    assert result.is_success, result.error
+    parameters = result.data.parameters
+    assert parameters["direction_choice"] == "from_geometry"
+    assert parameters["direction_flipped"] is False
+    assert parameters["cut_toward"] == "+Y"
+    assert _dirs(part) == [True]
+    assert adapter.volume_reads == 0
+
+
+@pytest.mark.asyncio
+async def test_a_side_from_geometry_that_cuts_nothing_is_not_flipped() -> None:
+    """The other side has no material either: a plain error, no trial."""
+    part = _Part(along=None, against=None)
+    part.plane = plane_data([0, 1, 0], [0, 10, 0])
+    part.boxes = [_BLOCK]
+
+    _adapter, result = await _cut(part)
+
+    assert result.is_error
+    assert "tried: against the sketch normal" in (result.error or "")
+    assert _dirs(part) == [False, False]
+    assert part.sounds_at_cut == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_sketch_inside_the_part_is_still_tried_with_the_sounds_off() -> None:
+    part = _Part(along=9.05, against=1.13)
+    part.plane = plane_data([0, 1, 0], [0, 5, 0])
+    part.boxes = [_BLOCK]
+
+    adapter, result = await _cut(part)
+
+    assert result.is_success, result.error
+    assert result.data.parameters["direction_choice"] == "more_material"
+    assert _dirs(part) == [True, False, True]
+    assert part.sounds_at_cut == [False, False, False]
+    assert adapter.swApp.sounds is True
+
+
+@pytest.mark.asyncio
+async def test_the_trial_puts_the_sounds_back_when_it_fails() -> None:
+    part = _Part(along=9.05, against=1.13)
+    part.refuse_cut_from = 3
+
+    adapter, result = await _cut(part)
+
+    assert result.is_error
+    assert part.sounds_at_cut == [False, False, False, False]
+    assert adapter.swApp.sounds is True
+
+
+@pytest.mark.asyncio
+async def test_a_user_with_the_sounds_off_keeps_them_off() -> None:
+    part = _Part(along=9.05, against=1.13)
+    adapter = _Adapter(part)
+    adapter.swApp.sounds = False
+
+    result = await features._create_cut_extrude_choosing_side(
+        adapter, ExtrusionParameters(depth=2.0)
+    )
+
+    assert result.is_success, result.error
+    assert part.sounds_at_cut == [False, False, False]
+    assert adapter.swApp.sounds is False
+
+
+@pytest.mark.asyncio
+async def test_the_env_var_leaves_the_sounds_on_during_the_trial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(quiet.QUIET_TRIALS_ENV, "0")
+    part = _Part(along=9.05, against=1.13)
+
+    _adapter, result = await _cut(part)
+
+    assert result.is_success, result.error
+    assert part.sounds_at_cut == [True, True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_started_off_its_plane_is_tried() -> None:
+    """Material on one side of the sketch plane can be on both of the start."""
+    part = _Part(along=9.05, against=1.13)
+    part.plane = plane_data([0, 1, 0], [0, 10, 0])
+    part.boxes = [_BLOCK]
+
+    _adapter, result = await _cut(part, start_offset=2.0)
+
+    assert result.is_success, result.error
+    assert result.data.parameters["direction_choice"] == "more_material"
+    assert _dirs(part) == [True, False, True]
+
+
+def test_an_unnamed_sketch_is_tried() -> None:
+    part = _Part(along=9.05, against=1.13)
+    part.plane = plane_data([0, 1, 0], [0, 10, 0])
+    part.boxes = [_BLOCK]
+    adapter = _Adapter(part)
+    adapter._last_sketch_name = None
+
+    assert features._side_from_geometry(adapter, ExtrusionParameters(depth=1)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [True, False])
+async def test_a_requested_side_that_flips_flips_with_the_sounds_off(
+    reverse: bool,
+) -> None:
+    """The first side finding nothing is a trial too; a forced side is not."""
+    part = _Part(along=None, against=None)
+    part.material[not reverse] = 9.05
+
+    adapter, result = await _cut(part, reverse_direction=reverse)
+
+    assert result.is_success, result.error
+    assert part.sounds_at_cut == [False, False, False]
+    assert adapter.swApp.sounds is True
+
+
+def test_a_forced_side_keeps_the_sounds_on() -> None:
+    part = _Part(along=None, against=None)
+
+    result = features._create_cut_extrude_impl(
+        _Adapter(part), ExtrusionParameters(depth=1.0), reverse=True
+    )
+
+    assert result.is_error
+    assert part.sounds_at_cut == [True, True]
