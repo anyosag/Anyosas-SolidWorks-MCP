@@ -32,23 +32,36 @@ _NAME = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 _RESPONSE_KEYS = {
     "absorbed_sketches_left",
     "area_m2",
+    "blender_code",
+    "blender_matrix",
     "center_mm",
     "closest_pass",
     "definition_state",
     "direction_flipped",
     "distance_m",
     "error_type",
+    "expected_size_mm",
+    "global_scale",
     "length_m",
     "length_mm",
     "measured_change",
     "normal_distance_m",
     "rotate_to_z",
+    "size_matches",
+    "size_mm",
     "system_value",
     "thin_spots",
     "top_pairs",
+    "units_check",
     "usage_instructions",
     "vba_code",
     "view_axes",
+}
+#: The Blender MCP's tools, which the Blender hand-off sends agents to.
+_BLENDER_MCP_TOOLS = {
+    "execute_blender_code",
+    "render_thumbnail_to_path",
+    "render_viewport_to_path",
 }
 
 _SKILL_FILES = sorted(
@@ -97,7 +110,9 @@ def known_names(tools_by_name: dict[str, Any]) -> set[str]:
         NOT_SUPPORTED,
         OPERATION_FAILED,
     }
-    return set(tools_by_name) | fields | error_types | _RESPONSE_KEYS
+    return (
+        set(tools_by_name) | fields | error_types | _RESPONSE_KEYS | _BLENDER_MCP_TOOLS
+    )
 
 
 def _unknown(text: str, known: set[str]) -> list[str]:
