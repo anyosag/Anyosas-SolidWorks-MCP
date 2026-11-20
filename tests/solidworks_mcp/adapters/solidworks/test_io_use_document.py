@@ -23,8 +23,11 @@ class _Doc:
 
 
 class _Harness(SolidWorksIOMixin):
-    def __init__(self, active: Any, current: Any, last: Any) -> None:
-        self.swApp = SimpleNamespace(ActiveDoc=active)
+    def __init__(
+        self, active: Any, current: Any, last: Any, others: tuple[Any, ...] = ()
+    ) -> None:
+        documents = (active, *others) if active is not None else others
+        self.swApp = SimpleNamespace(ActiveDoc=active, GetDocuments=lambda: documents)
         self.currentModel = current
         self._last_active_document = last
         self.operations: list[str] = []
@@ -32,6 +35,12 @@ class _Harness(SolidWorksIOMixin):
 
     def is_connected(self) -> bool:
         return self.swApp is not None
+
+    def _attempt(self, callback: Any, default: Any = None) -> Any:
+        try:
+            return callback()
+        except Exception:
+            return default
 
     def _get_attr_or_call(self, obj: Any, name: str) -> Any:
         value = getattr(obj, name)

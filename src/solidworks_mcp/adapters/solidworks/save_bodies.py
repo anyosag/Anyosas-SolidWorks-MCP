@@ -201,8 +201,7 @@ def file_check(
         if document is not None:
             volume = document_volume_m3(adapter, document)
         if opened:
-            title = _loaded.describe(adapter, document).title
-            adapter._attempt(lambda: adapter.swApp.CloseDoc(title))
+            _close(adapter, _loaded.describe(adapter, document))
     check["volume_mm3"] = _mm3(volume)
     check["body_volume_mm3"] = _mm3(expected_m3)
     check["holds_body"] = holds(volume, expected_m3)
@@ -246,10 +245,15 @@ def close_stray_assemblies(
         )
         if not (stray or derived):
             continue
-        title = document.title
-        adapter._attempt(lambda t=title: adapter.swApp.CloseDoc(t))
-        closed.append(title)
+        _close(adapter, document)
+        closed.append(document.title)
     return closed
+
+
+def _close(adapter: Any, document: _loaded.LoadedDocument) -> None:
+    """Close one document this call opened, and no other of the same title."""
+    name = _loaded.close_name(adapter, document.title, document.path)
+    adapter._attempt(lambda: adapter.swApp.CloseDoc(name))
 
 
 def reactivate(adapter: Any, model: Any, title: str) -> None:
@@ -258,8 +262,9 @@ def reactivate(adapter: Any, model: Any, title: str) -> None:
 
     app = adapter.swApp
     active = adapter._attempt(lambda: app.ActiveDoc)
-    if active is None or _loaded.describe(adapter, active).title != title:
-        activated = activate_doc(adapter, app, title)
+    own = _loaded.describe(adapter, model).key
+    if active is None or _loaded.describe(adapter, active).key != own:
+        activated = activate_doc(adapter, app, title, document=model)
         if activated is not None:
             model = activated
     adapter._attempt(lambda: _sw_type_info.flag_doc(model, _loaded.DOC_PART), 0)
@@ -509,8 +514,7 @@ def update_file(adapter: Any, body: Any, name: str, path: str) -> dict[str, Any]
         return {**reply, "status": "failed", "error": str(exc)}
     finally:
         if not had_window:
-            title = _loaded.describe(adapter, document).title
-            adapter._attempt(lambda: adapter.swApp.CloseDoc(title))
+            _close(adapter, _loaded.describe(adapter, document))
     return {
         **reply,
         "status": "updated",

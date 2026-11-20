@@ -15,6 +15,7 @@ from typing import Any, cast
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
+from . import loaded_documents as _loaded
 from . import placement as _placement
 from . import saving
 from .face_selection import mate_entity_label
@@ -130,6 +131,27 @@ def document_names(title: Any, path: Any) -> set[str]:
     }
     names.discard("")
     return names
+
+
+def document_label(title: Any, path: Any) -> str:
+    """How a message names an open document: its file name, else its title."""
+    if path:
+        return Path(str(path)).name
+    return f"{title} (not saved)" if title else "a document with no name"
+
+
+def ambiguous_document(target: str, labels: list[str]) -> str:
+    """The refusal for a name that more than one open document answers to.
+
+    A part and an assembly of one name have one title when Windows hides file
+    extensions (``Tray``); a file name with its extension, or a full path,
+    names one document.
+    """
+    return (
+        f"Invalid request: {target!r} matches {len(labels)} open documents: "
+        f"{', '.join(labels)}. Pass one of those file names, with its "
+        "extension, or the document's full path."
+    )
 
 
 def from_system_value(system_value: float, kind: str, factor: float) -> float:
@@ -469,7 +491,7 @@ def _byref_int() -> Any:
 _DONT_REBUILD_ACTIVE_DOC = 1
 
 
-def activate_doc(adapter: Any, app: Any, title: str) -> Any:
+def activate_doc(adapter: Any, app: Any, title: str, *, document: Any = None) -> Any:
     """``ISldWorks.ActivateDoc3(title)``, then rebuild, with no SolidWorks window.
 
     ``ActivateDoc3(Name, UseUserPreferences, Option, Errors)``: with
@@ -492,18 +514,42 @@ def activate_doc(adapter: Any, app: Any, title: str) -> Any:
     date. The user's own preference (``swRebuildOnActivation``) is neither
     read nor changed.
 
+    A name without its extension may activate either of two documents of
+    that name (API help, Remarks: ``12345.sldprt`` and ``12345.sldasm``), and
+    with Windows hiding extensions both are titled ``12345``. So when another
+    loaded document has ``document``'s title, its file name with the
+    extension is given instead, then its full path (whether SolidWorks takes
+    one is to be checked live), and the result counts only if it is that
+    document (same path).
+
     Args:
         adapter: The connected adapter.
         app: The ``SldWorks.Application`` dispatch.
         title: The document's title-bar name.
+        document: The document itself, to tell it from another of its title.
 
     Returns:
-        Any: What ``ActivateDoc3`` returned, or ``None`` when it failed.
+        Any: What ``ActivateDoc3`` returned, or ``None`` when it failed (or
+        activated another document of the same title).
     """
-    activated = adapter._attempt(
-        lambda: app.ActivateDoc3(title, False, _DONT_REBUILD_ACTIVE_DOC, _byref_int()),
-        default=None,
+    path = (
+        _loaded._text(adapter, document, "GetPathName") if document is not None else ""
     )
+    shared = _loaded.title_shared(adapter, str(title), path)
+    names = [os.path.basename(path), path] if shared else [title]
+    activated = None
+    for name in names:
+        candidate = adapter._attempt(
+            lambda n=name: app.ActivateDoc3(
+                n, False, _DONT_REBUILD_ACTIVE_DOC, _byref_int()
+            ),
+            default=None,
+        )
+        if candidate is not None and (
+            not shared or _loaded.same_path(adapter, candidate, path)
+        ):
+            activated = candidate
+            break
     if activated is not None:
         # swModelRebuildStatus_e: 0 = fully rebuilt.
         status = adapter._attempt(lambda: activated.Extension.NeedsRebuild2)
@@ -512,6 +558,36 @@ def activate_doc(adapter: Any, app: Any, title: str) -> Any:
                 lambda: adapter._get_attr_or_call(activated, "EditRebuild3")
             )
     return activated
+
+
+def _is_document(
+    adapter: Any, doc: Any, title: Any, path: Any
+) -> tuple[Any, Any, bool | None]:
+    """Whether ``doc``, read back as the active document, is the one asked for.
+
+    By path when the one asked for has one, so another document of its title
+    can't pass for it; by title for a document never saved.
+
+    Returns:
+        tuple[Any, Any, bool | None]: ``doc``'s title and path as read, and
+        the answer (None when ``doc`` or what to compare can't be read).
+    """
+    if doc is None:
+        return None, None, None
+    now_title = adapter._attempt(
+        lambda: adapter._get_attr_or_call(doc, "GetTitle"), default=None
+    )
+    now_path = adapter._attempt(
+        lambda: adapter._get_attr_or_call(doc, "GetPathName"), default=None
+    )
+    if path:
+        if not isinstance(now_path, str):
+            return now_title, now_path, None
+        same = os.path.normcase(now_path.strip()) == os.path.normcase(str(path).strip())
+        return now_title, now_path, same
+    if now_title is None:
+        return now_title, now_path, None
+    return now_title, now_path, str(now_title) == str(title)
 
 
 def _open_window(adapter: Any, app: Any, doc: Any, title: str) -> bool:
@@ -1152,6 +1228,54 @@ def open_documents(adapter: Any) -> list[dict[str, Any]]:
             }
         )
     return listed
+
+
+def window_documents(adapter: Any) -> dict[str, str] | None:
+    """The documents open in a window of their own, each by key, with its label.
+
+    Keys are as ``loaded_documents`` makes them (the path, or ``<title>`` for
+    a document never saved); labels name the document (:func:`document_label`).
+    The active document counts even without a window, as in
+    :func:`open_documents`.
+
+    Returns:
+        dict[str, str] | None: None when ``GetDocuments`` gives nothing:
+        before a close, the documents can't be read; after one, none is open.
+    """
+    app = adapter.swApp
+    raw = adapter._attempt(lambda: app.GetDocuments(), default=None)
+    if raw is None:
+        return None
+    active = adapter._attempt(lambda: getattr(app, "ActiveDoc", None), default=None)
+    found: dict[str, str] = {}
+    for doc in _coerce_dispatch_sequence(raw):
+        is_active = _sw_type_info.same_com_object(doc, active)
+        if not is_active and adapter._attempt(lambda d=doc: d.Visible) is False:
+            continue
+        title = _loaded._text(adapter, doc, "GetTitle")
+        path = _loaded._text(adapter, doc, "GetPathName")
+        found[_loaded.normalize(path) if path else f"<{title}>"] = document_label(
+            title, path
+        )
+    return found
+
+
+def _close_alone(adapter: Any, app: Any, path: str) -> bool:
+    """Close the document at ``path`` and no other of its title; whether it went.
+
+    ``CloseDoc`` closes every document of the name it is given, so it gets
+    the full path (whether SolidWorks takes one there is to be checked live).
+    If the document still has a window and is the active one,
+    ``CloseDoc("")``, which the API help says closes the active document.
+    """
+    adapter._attempt(lambda: app.CloseDoc(path))
+    key = _loaded.normalize(path)
+    if key not in (window_documents(adapter) or {}):
+        return True
+    active = adapter._attempt(lambda: getattr(app, "ActiveDoc", None), default=None)
+    if active is not None and _loaded.same_path(adapter, active, path):
+        adapter._attempt(lambda: app.CloseDoc(""))
+    return key not in (window_documents(adapter) or {})
 
 
 def model_contents(adapter: Any, model: Any) -> dict[str, Any] | None:
@@ -1815,7 +1939,7 @@ class SolidWorksIOMixin:
             # later tool call (exports especially) target the wrong document
             # (issue #91). ActivateDoc3 takes the titlebar name, not the path.
             if title:
-                activated = activate_doc(adapter, app, title)
+                activated = activate_doc(adapter, app, title, document=model)
                 if activated is not None:
                     adapter._attempt(
                         lambda: _sw_type_info.flag_doc(activated, int(doc_type)),
@@ -1953,7 +2077,22 @@ class SolidWorksIOMixin:
                 if isinstance(outcome, saving.NeedsConfirmation):
                     return outcome
             title = adapter._get_attr_or_call(model, "GetTitle")
-            app.CloseDoc(title)
+            path = _loaded._text(adapter, model, "GetPathName")
+            own = _loaded.normalize(path) if path else f"<{title}>"
+            before = window_documents(adapter)
+            if _loaded.title_shared(adapter, str(title), path):
+                if not _close_alone(adapter, app, path):
+                    raise Exception(
+                        f"SolidWorks did not close {document_label(title, path)}: "
+                        f"another open document is titled {title!r} too, and "
+                        "CloseDoc would close both. Close it in SolidWorks."
+                    )
+            else:
+                app.CloseDoc(title)
+            if before is not None:
+                after = window_documents(adapter) or {}
+                gone = sorted((k for k in before if k not in after), key=own.__ne__)
+                extra["closed"] = [before[k] for k in gone]
             adapter.currentModel = None
             if list_documents:
                 extra["open_documents"] = open_documents(adapter)
@@ -2658,8 +2797,11 @@ class SolidWorksIOMixin:
         Matches ``title_or_path`` against the open documents by exact title,
         by full path, or by file name (all case-insensitive), then calls
         ``ISldWorks::ActivateDoc3`` and updates the adapter's tracked
-        ``currentModel``. The resulting ``ActiveDoc`` is read back and a
-        mismatch is reported as an error.
+        ``currentModel``. The resulting ``ActiveDoc`` is read back and
+        compared by path, and a mismatch is reported as an error. A name
+        that more than one open document answers to (a part and an assembly
+        both titled ``Tray`` when Windows hides extensions) is refused,
+        listing each by file name; nothing is activated.
 
         Args:
             title_or_path: A window title (``"bracket.SLDPRT"``), a full path,
@@ -2692,8 +2834,7 @@ class SolidWorksIOMixin:
                 adapter._attempt(lambda: app.GetDocuments(), default=None)
             )
             needle = target.lower()
-            match: Any = None
-            match_title: str | None = None
+            matches: list[tuple[Any, Any, Any]] = []
             open_titles: list[str] = []
             for doc in docs:
                 title = adapter._attempt(
@@ -2707,15 +2848,21 @@ class SolidWorksIOMixin:
                 if title:
                     open_titles.append(str(title))
                 if needle in document_names(title, path):
-                    match = doc
-                    match_title = str(title) if title else None
-                    break
+                    matches.append((doc, title, path))
 
-            if match is None:
+            if not matches:
                 raise Exception(
                     f"No open document matches {target!r}. Open: "
                     + (", ".join(open_titles) or "none")
                 )
+            if len(matches) > 1:
+                raise Exception(
+                    ambiguous_document(
+                        target, [document_label(t, p) for _d, t, p in matches]
+                    )
+                )
+            match, title, match_path = matches[0]
+            match_title = str(title) if title else None
             if not match_title:
                 match_title = adapter._attempt(
                     lambda: adapter._get_attr_or_call(match, "GetTitle"), default=None
@@ -2727,7 +2874,7 @@ class SolidWorksIOMixin:
                 )
 
             opened = _open_window(adapter, app, match, str(match_title))
-            activated = activate_doc(adapter, app, match_title)
+            activated = activate_doc(adapter, app, match_title, document=match)
             model = activated or adapter._attempt(
                 lambda: getattr(app, "ActiveDoc", None), default=None
             )
@@ -2747,25 +2894,17 @@ class SolidWorksIOMixin:
             active_after = adapter._attempt(
                 lambda: getattr(app, "ActiveDoc", None), default=None
             )
-            now_title = (
-                adapter._attempt(
-                    lambda: adapter._get_attr_or_call(active_after, "GetTitle"),
-                    default=None,
-                )
-                if active_after is not None
-                else None
+            now_title, now_path, verified = _is_document(
+                adapter, active_after, match_title, match_path
             )
-            if now_title is None:
-                verified: bool | None = None
-            else:
-                verified = str(now_title) == str(match_title)
-                if not verified:
-                    raise Exception(
-                        f"Requested {match_title!r} but ActiveDoc is "
-                        f"{now_title!r} after ActivateDoc3; activation did not "
-                        "take. A document loaded only inside an assembly has no "
-                        "window to activate: open its file with open_model."
-                    )
+            if verified is False:
+                raise Exception(
+                    f"Requested {document_label(match_title, match_path)!r} but "
+                    f"ActiveDoc is {document_label(now_title, now_path)!r} after "
+                    "ActivateDoc3; activation did not take. A document loaded "
+                    "only inside an assembly has no window to activate: open its "
+                    "file with open_model."
+                )
             if list_documents:
                 extra["open_documents"] = open_documents(adapter)
             return {
@@ -2787,7 +2926,10 @@ class SolidWorksIOMixin:
         For a tool's ``document`` argument. When that document is already
         active and this session's own, nothing is activated (a quick check,
         not ``ActivateDoc3`` and its longer settle pause); otherwise it is
-        activated as ``activate_document`` does.
+        activated as ``activate_document`` does. A name that matches the
+        active document only by its title is checked against the other open
+        documents first: when one has that title too, ``activate_document``
+        refuses the name.
 
         Args:
             title_or_path: A window title, a full path, or a file name of a
@@ -2809,6 +2951,11 @@ class SolidWorksIOMixin:
             path = adapter._get_attr_or_call(active, "GetPathName")
             if target not in document_names(title, path):
                 return None
+            by_file = target in document_names(None, path)
+            if not by_file and _loaded.title_shared(
+                adapter, str(title), str(path or "")
+            ):
+                return None  # activate_document names the documents of that title
             key = adapter._document_key(active)
             if key != adapter._last_active_document or key != adapter._document_key(
                 adapter.currentModel
@@ -3368,7 +3515,7 @@ class SolidWorksIOMixin:
                 default=None,
             )
             if title:
-                activate_doc(adapter, app, title)
+                activate_doc(adapter, app, title, document=adapter.currentModel)
 
             component = adapter._attempt(
                 lambda: assembly.AddComponent4(
@@ -3953,7 +4100,7 @@ class SolidWorksIOMixin:
                 default=None,
             )
             if drawing_title:
-                activate_doc(adapter, app, drawing_title)
+                activate_doc(adapter, app, drawing_title, document=adapter.currentModel)
 
             view = adapter._attempt(
                 lambda: drawing.CreateDrawViewFromModelView3(

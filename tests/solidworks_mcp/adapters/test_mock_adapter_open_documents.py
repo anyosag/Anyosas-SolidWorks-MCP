@@ -57,7 +57,9 @@ async def test_nothing_is_listed_unless_asked(mock: MockSolidWorksAdapter) -> No
         await mock.close_model(),
     ]
 
-    assert all(r.metadata is None for r in results)
+    assert all(r.metadata is None for r in results[:-1])
+    # A close always says what it closed, as live.
+    assert results[-1].metadata == {"closed": ["Bracket.sldprt"]}
 
 
 async def test_a_closed_document_leaves_the_list(mock: MockSolidWorksAdapter) -> None:

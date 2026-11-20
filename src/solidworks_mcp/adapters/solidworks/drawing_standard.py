@@ -1165,7 +1165,7 @@ class SolidWorksDrawingStandardMixin:
             return False
         title = self._attempt(lambda: doc.GetTitle(), default=None)
         if title:
-            activate_doc(self, app, title)
+            activate_doc(self, app, title, document=doc)
         self.currentModel = doc
         return True
 

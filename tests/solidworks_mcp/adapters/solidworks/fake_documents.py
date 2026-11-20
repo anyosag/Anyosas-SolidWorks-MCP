@@ -4,7 +4,9 @@ Enough of ``ISldWorks`` and ``IModelDoc2`` for the Save Bodies and loaded
 document code: ``GetDocuments`` / ``GetFirstDocument`` / ``GetNext``,
 ``ActiveDoc``, ``CloseDoc``, ``OpenDoc6``, ``ActivateDoc3`` and
 ``GetDocumentDependencies2``; documents with bodies, components, features and
-``Save3``.
+``Save3``. ``CloseDoc`` and ``ActivateDoc3`` read a name as
+:meth:`FakeApp.named` does: every document of a title, as SolidWorks 2026
+closed a part and an assembly both titled ``Tray``.
 """
 
 from __future__ import annotations
@@ -148,6 +150,30 @@ class FakeApp:
         self.sticky: set[str] = set()
         #: What OpenDoc6 makes of a path that isn't loaded.
         self.on_open: dict[str, FakeDocument] = {}
+        #: Whether CloseDoc and ActivateDoc3 take a full path as a name.
+        self.takes_paths = True
+
+    def named(self, name: str) -> list[FakeDocument]:
+        """The documents ``name`` names, as SolidWorks reads a name.
+
+        Every document of that title (``CloseDoc("Tray")`` closed a part and an
+        assembly both titled ``Tray``); else the one whose file name, with its
+        extension, it is; else, with :attr:`takes_paths`, the one at that path.
+        """
+        titled = [d for d in self.documents if d.title == name]
+        by_file = [
+            d
+            for d in self.documents
+            if d.path and os.path.basename(d.path).lower() == name.lower()
+        ]
+        at_path = [
+            d
+            for d in self.documents
+            if self.takes_paths
+            and d.path
+            and os.path.normcase(d.path) == os.path.normcase(name)
+        ]
+        return titled or by_file or at_path
 
     def add(self, *args: Any, **kwargs: Any) -> FakeDocument:
         document = FakeDocument(self, *args, **kwargs)
@@ -174,8 +200,10 @@ class FakeApp:
                 if document.title == title:
                     document.Visible = False
             return
-        self.documents = [d for d in self.documents if d.title != title]
-        if self.active is not None and self.active.title == title:
+        # "" closes the active document (API help).
+        gone = [self.active] if title == "" else self.named(title)
+        self.documents = [d for d in self.documents if d not in gone]
+        if self.active is not None and self.active in gone:
             self.active = self.documents[0] if self.documents else None
 
     def OpenDoc6(
@@ -192,10 +220,10 @@ class FakeApp:
         return document
 
     def ActivateDoc3(self, title: str, _prefs: bool, _option: int, _e: Any) -> Any:
-        for document in self.documents:
-            if document.title == title:
-                self.active = document
-                return document
+        found = self.named(title)
+        if found:
+            self.active = found[0]
+            return found[0]
         return None
 
     def GetDocumentDependencies2(

@@ -1851,7 +1851,8 @@ async def register_file_management_tools(
         with `activated` (the title), `verified` (read back from SolidWorks; null when
         it couldn't be read) and `opened_window`, and `open_documents` (`title`,
         `type`, `active`, `modified`). No match is an error that lists the open
-        documents.
+        documents; a name that two match (a part and an assembly with one title)
+        is refused, naming each by file name.
 
         Args:
             input_data: The document. `title_or_path` is required.

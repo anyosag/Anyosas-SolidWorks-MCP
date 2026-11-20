@@ -3894,7 +3894,7 @@ class PyWin32Adapter(
             # correct target_doc COM object. See com-api-pitfalls.md #21.
             _, target_title = self._document_identity(target_doc)
             if target_title:
-                activate_doc(self, self.swApp, target_title)
+                activate_doc(self, self.swApp, target_title, document=target_doc)
 
             # Focus a visible SolidWorks so the viewport is current. Not a
             # minimized one: SetFocus would take the user's keyboard focus, and

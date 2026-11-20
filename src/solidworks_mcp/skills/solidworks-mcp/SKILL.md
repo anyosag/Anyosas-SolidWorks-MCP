@@ -21,6 +21,9 @@ checking the result, and what doesn't work yet.
 - Every tool that works on a document takes `document`: the title, file name
   or path of an open one. Give it when more than one document is open, or
   when someone else may be using SolidWorks; the server activates it first.
+  When Windows hides file extensions, a part and an assembly of one name
+  share a title, and that title is refused (`invalid_input`, naming both
+  files): give the file name with its extension, or the path.
   A `warning` saying another MCP server is on the same document means two
   clients are editing it: tell the user.
 - Calls that don't depend on each other can share one message: Claude Code
@@ -221,7 +224,8 @@ import. The round trip, renders and what each format keeps:
 ## Long sessions
 
 SolidWorks slows down as documents pile up. Close a part with `close_model`
-once it is saved and you are done with it. Closing an assembly can leave its
+once it is saved and you are done with it; its reply's `closed` names what
+went, and warns if that was more than the one. Closing an assembly can leave its
 parts loaded with no window (their `~$` lock files stay):
 `list_open_documents` with `check_hidden` lists them, and `close_model` with
 `close_leftovers` closes the ones without unsaved changes.

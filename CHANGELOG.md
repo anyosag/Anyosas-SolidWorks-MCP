@@ -290,6 +290,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bounding_box_method` says `component_extreme_points`; a lightweight
   component, or anything else that can't be read, falls back to `GetBox(0)`
   (`assembly_box`). Not yet run live.
+- **A part and an assembly of one name are no longer taken for each
+  other.** With Windows hiding file extensions, the Aggrewell enclosure's
+  `Enclosure_v2_Tray_with_Stamps.SLDPRT` and `.SLDASM` were both titled
+  `Enclosure_v2_Tray_with_Stamps`; `close_model` with that `document` closed
+  both (`CloseDoc` closes every document of the name it is given), and the
+  next call with `.SLDASM` was `not_found`. Now a name that more than one
+  open document answers to is refused (`invalid_input`), naming each by its
+  file name: a file name with its extension, or a full path, picks one. The
+  activation check compares the document's path, not its title, and
+  `ActivateDoc3` gets the file name with its extension (then the path) when
+  another document has the title, as its help advises. `close_model` closes
+  such a document by its full path, or if that leaves it open and it is the
+  active one, with `CloseDoc("")`; failing both it closes nothing and says
+  so. Its reply's `closed` lists the documents the close took, read before
+  and after, with a `warning` when there was more than the one, or none.
+  Closing leftovers and the Save Bodies clean-up close by path the same way
+  when a title is shared. Whether `CloseDoc` and `ActivateDoc3` take a path
+  is not yet checked live.
 - **STL export no longer fails before it works.** `Extension.SaveAs2` was
   called with six arguments and Python `None` where it takes an interface
   pointer, so every export logged a type mismatch and fell back to

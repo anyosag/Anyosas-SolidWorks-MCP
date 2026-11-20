@@ -276,6 +276,32 @@ def _add_warnings(reply: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     return reply
 
 
+def _with_closed(reply: dict[str, Any], result: Any) -> dict[str, Any]:
+    """Add ``closed``, the documents a close took, warning when not just one.
+
+    Args:
+        reply: The close tool's reply.
+        result: The adapter's close result; ``metadata["closed"]`` lists the
+            documents that had a window before and have none after, the one
+            asked for first. Absent when the documents couldn't be read.
+
+    Returns:
+        dict[str, Any]: ``reply``.
+    """
+    metadata = getattr(result, "metadata", None)
+    closed = metadata.get("closed") if isinstance(metadata, dict) else None
+    if not isinstance(closed, list):
+        return reply
+    reply["closed"] = closed
+    if not closed:
+        warning = "SolidWorks closed no document: check list_open_documents."
+    elif len(closed) > 1:
+        warning = f"Closing {closed[0]} also closed {', '.join(closed[1:])}."
+    else:
+        return reply
+    return _add_warnings(reply, [warning])
+
+
 def _left_out_warning(data: dict[str, Any]) -> str:
     """The warning for the features a pattern or mirror left out, or ``""``.
 
@@ -3026,9 +3052,9 @@ async def register_modeling_tools(
         `save` writes it first, without SolidWorks dialogs; a save that fails, or that
         would overwrite the user's own modified part files (`confirmation_required`),
         leaves the document open. Returns: `saved`, whether a save was asked for,
-        `open_documents` (those left: `title`, `type`, `active`, `modified`), and
-        with `close_leftovers` `leftovers` (`closed`, `still_loaded`,
-        `kept_modified`).
+        `closed` (the documents it closed, by file name), `open_documents` (those
+        left: `title`, `type`, `active`, `modified`), and with `close_leftovers`
+        `leftovers` (`closed`, `still_loaded`, `kept_modified`).
 
         Args:
             input_data: The close. Nothing is required: `save`,
@@ -3063,6 +3089,7 @@ async def register_modeling_tools(
             "execution_time": execution_time,
         }
         with_open_documents(reply, result)
+        _with_closed(reply, result)
         if not input_data.close_leftovers:
             return reply
         require_capability(

@@ -38,6 +38,7 @@ from .solidworks.equations import equation_refusal
 from .solidworks.feature_editing import missing_ids_message
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
+from .solidworks.io import ambiguous_document, document_label
 from .solidworks.plane_frame import Frame, sub, two_points, unit, vector
 from .solidworks.saving import confirmation_result
 from .solidworks.sketch import (
@@ -479,6 +480,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # Documents loaded without a window (path -> title, modified, used_by);
         # tests put leftovers of a closed assembly here.
         self._hidden_documents: dict[str, dict[str, Any]] = {}
+        # Test hook: open_model titles documents without their extension, as
+        # SolidWorks does when Windows hides known file extensions, so a part
+        # and an assembly of one name share a title.
+        self.hide_extensions = False
         # Mates added via add_mate, in order, so the geometry summary can
         # report a mate count without real geometry.
         self._mates: list[dict[str, Any]] = []
@@ -710,6 +715,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         # Create mock model
         model_name = file_path.split("/")[-1].split("\\")[-1]
+        if self.hide_extensions:
+            model_name = os.path.splitext(model_name)[0]
         model = SolidWorksModel(
             path=file_path,
             name=model_name,
@@ -831,7 +838,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     ) -> AdapterResult[Any]:
         """Mock closing the current model.
 
-        The closed document leaves the mock's open documents.
+        The closed document leaves the mock's open documents, and alone:
+        ``metadata["closed"]`` names it, as the live adapter reports what a
+        close took.
 
         Args:
             save (bool): The save value. Defaults to False.
@@ -857,13 +866,16 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             await asyncio.sleep(self._delays["model_operation"])
             self._saved_references()
 
-        self._models.pop(self._current_model.path, None)
+        closing = self._current_model
+        self._models.pop(closing.path, None)
         self._current_model = None
 
         result: AdapterResult[Any] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=None,
             execution_time=self._delays["model_operation"],
+            # Only that document goes, as live when another shares its title.
+            metadata={"closed": [document_label(closing.name, closing.path)]},
         )
         if list_documents:
             _with_open_documents(result, self._models, self._current_model)
@@ -4453,6 +4465,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     ) -> AdapterResult[dict[str, Any]]:
         """Mock making an already-open document active.
 
+        A name that more than one open document answers to is refused as
+        the live adapter refuses it (``io.ambiguous_document``): two
+        documents of one name share a title with ``hide_extensions``.
+
         Args:
             title_or_path (str): Title, full path, or file name of an open
                 document.
@@ -4473,22 +4489,29 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
 
         needle = target.lower()
-        match = None
-        for model in self._models.values():
-            names = {
+        matches = [
+            model
+            for model in self._models.values()
+            if needle
+            in {
                 model.name.lower(),
                 model.path.lower(),
                 model.path.rsplit("/", 1)[-1].lower(),
             }
-            if needle in names:
-                match = model
-                break
-        if match is None:
+        ]
+        if not matches:
             open_titles = ", ".join(m.name for m in self._models.values()) or "none"
             return AdapterResult(
                 status=AdapterResultStatus.ERROR,
                 error=f"No open document matches {target!r}. Open: {open_titles}",
             )
+        if len(matches) > 1:
+            labels = [document_label(m.name, m.path) for m in matches]
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=ambiguous_document(target, labels),
+            )
+        match = matches[0]
 
         self._current_model = match
         self._operation_count += 1

@@ -113,6 +113,20 @@ async def test_close_leftovers_keeps_modified_ones(tmp_path: Path) -> None:
     assert result.data["still_loaded"] == []
 
 
+async def test_a_leftover_sharing_a_title_is_closed_by_its_path() -> None:
+    # Windows hides the extensions: the leftover part and the open assembly
+    # are both "Tray", and CloseDoc("Tray") would close the assembly too.
+    app = FakeApp()
+    app.active = app.add("Tray", "C:/work/Tray.SLDASM", 2)
+    app.add("Tray", "C:/work/Tray.SLDPRT", visible=False)
+
+    result = await _Adapter(app).close_leftover_documents()
+
+    assert app.closed == ["C:/work/Tray.SLDPRT"]
+    assert [d.path for d in app.documents] == ["C:/work/Tray.SLDASM"]
+    assert [d["path"] for d in result.data["closed"]] == ["C:/work/Tray.SLDPRT"]
+
+
 async def test_a_leftover_solidworks_keeps_is_reported(tmp_path: Path) -> None:
     app, _docs = _dipper(tmp_path)
     app.sticky = {"TheDipper_LoadingComb.SLDPRT"}

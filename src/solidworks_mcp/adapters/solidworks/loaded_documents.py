@@ -59,6 +59,56 @@ def lock_file(path: str) -> str | None:
     return candidate if os.path.exists(candidate) else None
 
 
+#: The files SolidWorks opens: a title ending in one of these names one file.
+DOCUMENT_EXTENSIONS = (".sldprt", ".sldasm", ".slddrw")
+
+
+def title_shared(adapter: Any, title: str, path: str) -> bool:
+    """Whether another loaded document has the title ``title`` too.
+
+    ``ISldWorks.CloseDoc`` and ``ActivateDoc3`` take a name. When Windows
+    hides file extensions, a part and an assembly of one name are both titled
+    ``Tray``, and ``CloseDoc("Tray")`` closed both (Aggrewell enclosure v2,
+    SOLIDWORKS 2026). Nothing is read for a title with its extension, which
+    names one file, or for a document never saved, which has no path to be
+    told apart by.
+
+    Args:
+        adapter: A connected adapter, on the COM thread.
+        title: The document's title.
+        path: Its full path ("" when never saved).
+
+    Returns:
+        bool: True when a document with another path has the same title.
+    """
+    if not path or os.path.splitext(title)[1].lower() in DOCUMENT_EXTENSIONS:
+        return False
+    own = normalize(path)
+    app = adapter.swApp
+    for document in as_list(adapter._attempt(lambda: app.GetDocuments())):
+        other = _text(adapter, document, "GetPathName")
+        same_title = _text(adapter, document, "GetTitle").lower() == title.lower()
+        if same_title and (not other or normalize(other) != own):
+            return True
+    return False
+
+
+def same_path(adapter: Any, document: Any, path: str) -> bool:
+    """Whether ``document`` is the file at ``path`` (its ``GetPathName``)."""
+    own = _text(adapter, document, "GetPathName")
+    return bool(own) and bool(path) and normalize(own) == normalize(path)
+
+
+def close_name(adapter: Any, title: str, path: str) -> str:
+    """What to give ``ISldWorks.CloseDoc`` to close one document.
+
+    Its title, or its full path when another loaded document has the same
+    title (:func:`title_shared`): ``CloseDoc`` closes every document of a
+    title. Whether SolidWorks takes a path there is to be checked live.
+    """
+    return path if title_shared(adapter, title, path) else title
+
+
 @dataclass
 class LoadedDocument:
     """One document SolidWorks has loaded."""
@@ -240,7 +290,8 @@ def close_leftovers(adapter: Any) -> dict[str, Any]:
     tried = [d for d in leftovers if d.modified is False]
     app = adapter.swApp
     for document in tried:
-        adapter._attempt(lambda title=document.title: app.CloseDoc(title))
+        name = close_name(adapter, document.title, document.path)
+        adapter._attempt(lambda n=name: app.CloseDoc(n))
     after = {d.key for d in loaded_documents(adapter)}
     closed = [d for d in tried if d.key not in after]
     remaining = [d for d in tried if d.key in after]

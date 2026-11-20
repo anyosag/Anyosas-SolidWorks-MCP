@@ -92,7 +92,7 @@ def _adapter(
         pywin32_adapter, "pywintypes", SimpleNamespace(com_error=RuntimeError)
     )
     monkeypatch.setenv("SOLIDWORKS_MCP_KEEP_MINIMIZED", "0")
-    monkeypatch.setattr(io, "activate_doc", lambda *_args: None)
+    monkeypatch.setattr(io, "activate_doc", lambda *_args, **_kwargs: None)
     adapter = PyWin32Adapter({})
     adapter.swApp = _App(returned, open_now)
     adapter.constants = {"swDocPART": 1, "swDocASSEMBLY": 2, "swDocDRAWING": 3}
