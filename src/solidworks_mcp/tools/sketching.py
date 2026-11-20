@@ -5,7 +5,8 @@ lines, circles, rectangles, arcs, and constraints.
 """
 
 import math
-from typing import Annotated, Any, Literal, Self, TypeVar
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, Literal, NamedTuple, Self, TypeVar
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -17,12 +18,15 @@ from ..adapters.solidworks.plane_frame import (
     project,
 )
 from ..adapters.solidworks.rebuild_diagnostics import body_count_warning
+from ..adapters.solidworks.sketch import MAX_OUTLINE_SEGMENTS, SKETCH_ENTITY_FIELDS
+from .error_classifier import ErrorClassifier
 from .input_compat import CompatInput
 from .reply_limits import limit_field, offset_field, page
 from .tool_boundary import (
     InvalidInputError,
     ToolOperationError,
     describe_validation_error,
+    error_payload,
     normalize_input,
     require_capability,
     require_success,
@@ -698,6 +702,100 @@ class AddOutlinesInput(CompatInput):
         return self
 
 
+#: A circle row, ``[x, y, r]`` in sketch mm.
+CircleRow = Annotated[list[float], Field(min_length=3, max_length=3)]
+#: A line, rectangle or centreline row, ``[x1, y1, x2, y2]`` in sketch mm.
+TwoPointRow = Annotated[list[float], Field(min_length=4, max_length=4)]
+
+#: Each row field of ``add_sketch_geometry`` and the single tool that draws
+#: one of its rows, in drawing order.
+_GEOMETRY_ROWS: dict[str, str] = {
+    "circles": "add_circle",
+    "lines": "add_line",
+    "rectangles": "add_rectangle",
+    "centerlines": "add_centerline",
+}
+
+
+class AddSketchGeometryInput(BaseModel):
+    """Input schema for drawing many sketch entities, given as rows, in one call.
+
+    Attributes:
+        circles (list[list[float]]): ``[x, y, r]`` rows.
+        lines (list[list[float]]): ``[x1, y1, x2, y2]`` rows.
+        rectangles (list[list[float]]): Two opposite corners per row.
+        centerlines (list[list[float]]): ``[x1, y1, x2, y2]`` rows.
+        construction (bool): Draw the circles, lines and rectangles as
+            construction geometry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    circles: list[CircleRow] = Field(
+        default_factory=list, description="Circles as [x, y, r]: centre and radius, mm"
+    )
+    lines: list[TwoPointRow] = Field(
+        default_factory=list, description="Lines as [x1, y1, x2, y2]: start and end, mm"
+    )
+    rectangles: list[TwoPointRow] = Field(
+        default_factory=list,
+        description="Rectangles as [x1, y1, x2, y2]: two opposite corners, mm",
+    )
+    centerlines: list[TwoPointRow] = Field(
+        default_factory=list,
+        description="Centrelines as [x1, y1, x2, y2]: start and end, mm",
+    )
+    construction: bool = Field(
+        default=False,
+        description="Draw the circles, lines and rectangles as construction geometry",
+    )
+
+    @model_validator(mode="after")
+    def _drawable(self) -> Self:
+        """Refuse what the single tools refuse, before anything is drawn."""
+        if not (self.circles or self.lines or self.rectangles or self.centerlines):
+            raise ValueError(
+                "give at least one row: circles, lines, rectangles or centerlines"
+            )
+        segments = (
+            len(self.circles)
+            + len(self.lines)
+            + 4 * len(self.rectangles)
+            + len(self.centerlines)
+        )
+        if segments > MAX_OUTLINE_SEGMENTS:
+            raise ValueError(
+                f"{segments} segments in one call (a rectangle is four); the most "
+                f"is {MAX_OUTLINE_SEGMENTS}. Split the rows over several calls"
+            )
+        for index, (_x, _y, radius) in enumerate(self.circles):
+            if radius <= 0:
+                raise ValueError(f"circles[{index}]: radius must be positive")
+        for index, (x1, y1, x2, y2) in enumerate(self.rectangles):
+            if x1 == x2 and y1 == y2:
+                raise ValueError(f"rectangles[{index}]: rectangle corners must differ")
+        return self
+
+    def entity_items(self) -> list[dict[str, Any]]:
+        """The rows as ``add_sketch_entities`` items, in drawing order.
+
+        Returns:
+            list[dict[str, Any]]: Circles, then lines, rectangles and
+            centrelines, each labelled with its row (``circles[2]``).
+        """
+        items: list[dict[str, Any]] = []
+        for field, tool in _GEOMETRY_ROWS.items():
+            for index, row in enumerate(getattr(self, field)):
+                item: dict[str, Any] = dict(
+                    zip(SKETCH_ENTITY_FIELDS[tool], row, strict=True)
+                )
+                item.update(tool=tool, label=f"{field}[{index}]")
+                if tool != "add_centerline":  # a centreline already is one
+                    item["construction"] = self.construction
+                items.append(item)
+        return items
+
+
 class AddSketchTextInput(CompatInput):
     """Input schema for writing text in the open sketch.
 
@@ -1000,6 +1098,318 @@ def _pattern_metadata(result: Any) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
+# The replies of the single-entity tools, shared with draw_entity_steps so a
+# step drawn in a batch replies exactly as its own tool does.
+
+
+def _line_reply(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    line_id: Any,
+    construction: bool,
+    execution_time: float | None,
+) -> dict[str, Any]:
+    """``add_line``'s reply for a line from (x1, y1) to (x2, y2), sketch mm."""
+    return {
+        "status": "success",
+        "message": f"Added line from ({x1}, {y1}) to ({x2}, {y2})",
+        "line": {
+            "id": line_id,
+            "start": {"x": x1, "y": y1},
+            "end": {"x": x2, "y": y2},
+            "construction": construction,
+            "length": ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5,
+        },
+        "execution_time": execution_time,
+    }
+
+
+def _circle_reply(
+    cx: float,
+    cy: float,
+    radius: float,
+    circle_id: Any,
+    construction: bool,
+    execution_time: float | None,
+) -> dict[str, Any]:
+    """``add_circle``'s reply for a circle about (cx, cy), sketch mm."""
+    return {
+        "status": "success",
+        "message": f"Added circle at ({cx}, {cy}) with radius {radius}mm",
+        "circle": {
+            "id": circle_id,
+            "center": {"x": cx, "y": cy},
+            "radius": radius,
+            "construction": construction,
+            "diameter": radius * 2,
+        },
+        "execution_time": execution_time,
+    }
+
+
+def _rectangle_reply(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    rect_id: Any,
+    construction: bool,
+    execution_time: float | None,
+) -> dict[str, Any]:
+    """``add_rectangle``'s reply for corners (x1, y1) and (x2, y2), sketch mm."""
+    width = abs(x2 - x1)
+    height = abs(y2 - y1)
+    return {
+        "status": "success",
+        "message": f"Added rectangle from ({x1}, {y1}) to ({x2}, {y2})",
+        "rectangle": {
+            "id": rect_id,
+            "corner1": {"x": x1, "y": y1},
+            "corner2": {"x": x2, "y": y2},
+            "construction": construction,
+            "width": width,
+            "height": height,
+            "area": width * height,
+        },
+        "execution_time": execution_time,
+    }
+
+
+def _arc_reply(
+    center: list[float],
+    start: list[float],
+    end: list[float],
+    direction: str,
+    arc_id: Any,
+    execution_time: float | None,
+) -> dict[str, Any]:
+    """``add_arc``'s reply for an arc about ``center``, sketch mm."""
+    return {
+        "status": "success",
+        "message": f"Added {direction} arc centered at ({center[0]}, {center[1]})",
+        "arc": {
+            "id": arc_id,
+            "center": {"x": center[0], "y": center[1]},
+            "start_point": {"x": start[0], "y": start[1]},
+            "end_point": {"x": end[0], "y": end[1]},
+            "direction": direction,
+            "radius": round(_distance(center, start), 6),
+            "sweep_deg": round(arc_sweep_deg(center, start, end, direction), 6),
+        },
+        "execution_time": execution_time,
+    }
+
+
+def _centerline_reply(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    centerline_id: Any,
+    execution_time: float | None,
+) -> dict[str, Any]:
+    """``add_centerline``'s reply for a centreline from (x1, y1) to (x2, y2)."""
+    return {
+        "status": "success",
+        "message": f"Added centerline from ({x1}, {y1}) to ({x2}, {y2})",
+        "centerline": {
+            "id": centerline_id,
+            "start_point": {"x": x1, "y": y1},
+            "end_point": {"x": x2, "y": y2},
+            "type": "construction",
+        },
+        "execution_time": execution_time,
+    }
+
+
+class _EntityStep(NamedTuple):
+    """A single-entity tool, as ``draw_entity_steps`` runs its steps.
+
+    Attributes:
+        model: The tool's input model.
+        context: What its error starts with (its ``require_success`` context).
+        noun: How its construction error names the entity.
+    """
+
+    model: type[BaseModel]
+    context: str
+    noun: str
+
+
+_ENTITY_STEPS: dict[str, _EntityStep] = {
+    "add_line": _EntityStep(AddLineInput, "Failed to add line", "line"),
+    "add_circle": _EntityStep(AddCircleInput, "Failed to add circle", "circle"),
+    "add_rectangle": _EntityStep(
+        AddRectangleInput, "Failed to add rectangle", "rectangle"
+    ),
+    "add_arc": _EntityStep(AddArcInput, "Failed to add arc", "arc"),
+    "add_centerline": _EntityStep(
+        AddLineInput, "Failed to add centerline", "centerline"
+    ),
+}
+
+#: The tools whose consecutive workflow steps ``draw_entity_steps`` draws in
+#: one SolidWorks operation.
+ENTITY_STEP_TOOLS = frozenset(_ENTITY_STEPS)
+
+_CLASSIFIER = ErrorClassifier()
+
+
+def _entity_step_input(tool: str, arguments: Any) -> Any:
+    """A step's arguments as its tool's input, or None to run it on its own.
+
+    A step runs on its own when its tool would refuse the input (its own call
+    gives that error) or it gives model coordinates (its own call projects
+    them onto the sketch).
+    """
+    step = _ENTITY_STEPS.get(tool)
+    if step is None or not isinstance(arguments, Mapping):
+        return None
+    try:
+        parsed = step.model.model_validate(dict(arguments))
+    except ValidationError:
+        return None
+    return None if getattr(parsed, "coordinates", "sketch") == "model" else parsed
+
+
+def _line_ends_mm(parsed: Any) -> tuple[float, float, float, float]:
+    """A line's, rectangle's or centreline's ends, as their tools read them."""
+    return (parsed.x1 or 0.0, parsed.y1 or 0.0, parsed.x2 or 0.0, parsed.y2 or 0.0)
+
+
+def _entity_item(tool: str, parsed: Any) -> dict[str, Any]:
+    """The ``add_sketch_entities`` item for one step's validated input."""
+    if tool == "add_circle":
+        return {
+            "tool": tool,
+            "center_x": parsed.center_x,
+            "center_y": parsed.center_y,
+            "radius": parsed.radius,
+            "construction": parsed.construction,
+        }
+    if tool == "add_arc":
+        return {
+            "tool": tool,
+            "center_x": parsed.center_x,
+            "center_y": parsed.center_y,
+            "start_x": parsed.start_x,
+            "start_y": parsed.start_y,
+            "end_x": parsed.end_x,
+            "end_y": parsed.end_y,
+            "direction": parsed.direction,
+        }
+    item: dict[str, Any] = dict(
+        zip(("x1", "y1", "x2", "y2"), _line_ends_mm(parsed), strict=True)
+    )
+    item["tool"] = tool
+    if tool != "add_centerline":
+        item["construction"] = parsed.construction
+    return item
+
+
+def _entity_reply(
+    tool: str, parsed: Any, entity_id: Any, execution_time: float | None
+) -> dict[str, Any]:
+    """The reply ``tool`` gives for ``parsed``, drawn as ``entity_id``."""
+    if tool == "add_circle":
+        return _circle_reply(
+            parsed.center_x,
+            parsed.center_y,
+            parsed.radius,
+            entity_id,
+            parsed.construction,
+            execution_time,
+        )
+    if tool == "add_arc":
+        return _arc_reply(
+            [parsed.center_x, parsed.center_y],
+            [parsed.start_x, parsed.start_y],
+            [parsed.end_x, parsed.end_y],
+            parsed.direction,
+            entity_id,
+            execution_time,
+        )
+    ends = _line_ends_mm(parsed)
+    if tool == "add_centerline":
+        return _centerline_reply(*ends, entity_id, execution_time)
+    if tool == "add_rectangle":
+        return _rectangle_reply(*ends, entity_id, parsed.construction, execution_time)
+    return _line_reply(*ends, entity_id, parsed.construction, execution_time)
+
+
+async def draw_entity_steps(
+    adapter: SolidWorksAdapter, steps: Sequence[tuple[str, Mapping[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Draw consecutive single-entity steps in one SolidWorks operation.
+
+    For ``execute_workflow``: a run of ``add_line``, ``add_circle``,
+    ``add_rectangle``, ``add_arc`` and ``add_centerline`` steps then pays one
+    settle gap instead of one per step. Each step is ``(tool, arguments)``:
+    the tool's own fields, unwrapped from ``input_data`` as
+    ``execute_workflow`` passes them to the tool, with references resolved
+    and no ``document``. The leading steps whose input their tool accepts
+    in sketch coordinates are drawn, in order, by one ``add_sketch_entities``
+    call that keeps what it drew when one fails, as separate calls would.
+
+    Args:
+        adapter: The SolidWorks adapter.
+        steps: The steps, in order.
+
+    Returns:
+        list[dict[str, Any]]: One reply per step drawn, in order, each as its
+        own tool replies (same keys; ids as the live adapter registers them).
+        The last is an error payload when that step failed; nothing after it
+        was drawn. Fewer replies than steps, the last a success (or none),
+        means the next step runs through its own tool: it gives model
+        coordinates, or input its tool refuses.
+    """
+    planned: list[tuple[str, Any]] = []
+    for tool, arguments in steps:
+        parsed = _entity_step_input(tool, arguments)
+        if parsed is None:
+            break
+        planned.append((tool, parsed))
+    if not planned:
+        return []
+    result = await adapter.add_sketch_entities(
+        [_entity_item(tool, parsed) for tool, parsed in planned],
+        rollback_on_error=False,
+    )
+    data = result.data if isinstance(result.data, dict) else {}
+    drawn = list(data.get("items") or [])
+    replies = [
+        _entity_reply(tool, parsed, entry.get("id"), entry.get("execution_time"))
+        for (tool, parsed), entry in zip(planned, drawn, strict=False)
+    ]
+    if result.is_success:
+        return replies
+    failed = data.get("failed_index")
+    if not isinstance(failed, int) or not 0 <= failed < len(planned):
+        # No item failed (a dialog after the last, or nothing ran): the error
+        # is the next step's, or the last one's.
+        failed = min(len(replies), len(planned) - 1)
+    step = _ENTITY_STEPS[planned[failed][0]]
+    failed_id = data.get("failed_id")
+    context = (
+        f"The {step.noun} {failed_id} was drawn as normal geometry, not construction"
+        if failed_id
+        else step.context
+    )
+    message = f"{context}: {data.get('error') or result.error or 'Operation failed'}"
+    dialog = {key: data[key] for key in ("dialog", "dialogs") if key in data}
+    return [
+        *replies[:failed],
+        error_payload(
+            message,
+            _CLASSIFIER.classify(message),
+            result.execution_time,
+            dialog or None,
+        ),
+    ]
+
+
 async def register_sketching_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -1190,18 +1600,9 @@ async def register_sketching_tools(
             else result.data
         )
         await _make_construction(line_id, input_data.construction, "line")
-        reply: dict[str, Any] = {
-            "status": "success",
-            "message": f"Added line from ({x1}, {y1}) to ({x2}, {y2})",
-            "line": {
-                "id": line_id,
-                "start": {"x": x1, "y": y1},
-                "end": {"x": x2, "y": y2},
-                "construction": input_data.construction,
-                "length": ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5,
-            },
-            "execution_time": result.execution_time,
-        }
+        reply = _line_reply(
+            x1, y1, x2, y2, line_id, input_data.construction, result.execution_time
+        )
         if projection is not None:
             reply["projection"] = projection
         return reply
@@ -1240,18 +1641,14 @@ async def register_sketching_tools(
             else result.data
         )
         await _make_construction(circle_id, input_data.construction, "circle")
-        reply: dict[str, Any] = {
-            "status": "success",
-            "message": f"Added circle at ({cx}, {cy}) with radius {input_data.radius}mm",
-            "circle": {
-                "id": circle_id,
-                "center": {"x": cx, "y": cy},
-                "radius": input_data.radius,
-                "construction": input_data.construction,
-                "diameter": input_data.radius * 2,
-            },
-            "execution_time": result.execution_time,
-        }
+        reply = _circle_reply(
+            cx,
+            cy,
+            input_data.radius,
+            circle_id,
+            input_data.construction,
+            result.execution_time,
+        )
         if projection is not None:
             reply["projection"] = projection
         return reply
@@ -1298,23 +1695,9 @@ async def register_sketching_tools(
             else result.data
         )
         await _make_construction(rect_id, input_data.construction, "rectangle")
-        width = abs(rx2 - rx1)
-        height = abs(ry2 - ry1)
-
-        reply: dict[str, Any] = {
-            "status": "success",
-            "message": f"Added rectangle from ({rx1}, {ry1}) to ({rx2}, {ry2})",
-            "rectangle": {
-                "id": rect_id,
-                "corner1": {"x": rx1, "y": ry1},
-                "corner2": {"x": rx2, "y": ry2},
-                "construction": input_data.construction,
-                "width": width,
-                "height": height,
-                "area": width * height,
-            },
-            "execution_time": result.execution_time,
-        }
+        reply = _rectangle_reply(
+            rx1, ry1, rx2, ry2, rect_id, input_data.construction, result.execution_time
+        )
         if projection is not None:
             reply["projection"] = projection
         return reply
@@ -1483,26 +1866,14 @@ async def register_sketching_tools(
         )
 
         require_success(result, context="Failed to add arc")
-        arc_id = result.data
-        reply: dict[str, Any] = {
-            "status": "success",
-            "message": (
-                f"Added {input_data.direction} arc centered at "
-                f"({center[0]}, {center[1]})"
-            ),
-            "arc": {
-                "id": arc_id,
-                "center": {"x": center[0], "y": center[1]},
-                "start_point": {"x": start[0], "y": start[1]},
-                "end_point": {"x": end[0], "y": end[1]},
-                "direction": input_data.direction,
-                "radius": round(_distance(center, start), 6),
-                "sweep_deg": round(
-                    arc_sweep_deg(center, start, end, input_data.direction), 6
-                ),
-            },
-            "execution_time": result.execution_time,
-        }
+        reply = _arc_reply(
+            center,
+            start,
+            end,
+            input_data.direction,
+            result.data,
+            result.execution_time,
+        )
         if projection is not None:
             reply["projection"] = projection
         return reply
@@ -1590,6 +1961,56 @@ async def register_sketching_tools(
         if projection is not None:
             reply["projection"] = projection
         return reply
+
+    @mcp.tool()
+    async def add_sketch_geometry(input_data: AddSketchGeometryInput) -> dict[str, Any]:
+        """Draw many circles, lines, rectangles and centrelines in the open sketch in one call, as rows of numbers in mm.
+
+        Use it instead of a run of `add_circle`, `add_line`, `add_rectangle` or
+        `add_centerline` calls: 40 holes are one call, `circles: [[x, y, r], ...]`.
+        Rows: circles [x, y, r]; lines, rectangles (two opposite corners) and
+        centerlines [x1, y1, x2, y2], all sketch mm. One SolidWorks operation draws
+        them, each as its single tool would. Needs: an open sketch (`create_sketch`).
+        Changes: adds the entities; if SolidWorks refuses one, the call removes what
+        it drew and names the row. Returns: one id per row under the same keys, for
+        `add_sketch_constraint`, `add_sketch_dimension` and `sketch_offset`; and
+        `entity_count`.
+
+        Args:
+            input_data: At least one of `circles`, `lines`, `rectangles` or
+                `centerlines`; `construction` is off.
+
+        Returns:
+            dict[str, Any]: The ids drawn.
+        """
+        input_data = normalize_input(input_data, AddSketchGeometryInput)
+        items = input_data.entity_items()
+        result = await adapter.add_sketch_entities(items)
+        require_success(
+            result, context="Failed to draw sketch geometry", with_data=True
+        )
+        field_of = {tool: field for field, tool in _GEOMETRY_ROWS.items()}
+        ids: dict[str, list[Any]] = {field: [] for field in _GEOMETRY_ROWS}
+        drawn = (result.data or {}).get("items") or []
+        for item, entry in zip(items, drawn, strict=False):
+            ids[field_of[item["tool"]]].append(entry.get("id"))
+        counted = [
+            f"{len(found)} {field if len(found) != 1 else field[:-1]}"
+            for field, found in ids.items()
+            if found
+        ]
+        if len(counted) > 1:
+            listed = f"{', '.join(counted[:-1])} and {counted[-1]}"
+        else:
+            listed = "".join(counted) or "nothing"
+        return {
+            "status": "success",
+            "message": f"Drew {listed} in one operation",
+            **ids,
+            "entity_count": len(drawn),
+            "construction": input_data.construction,
+            "execution_time": result.execution_time,
+        }
 
     @mcp.tool()
     async def add_sketch_text(input_data: AddSketchTextInput) -> dict[str, Any]:
@@ -1878,18 +2299,7 @@ async def register_sketching_tools(
         result = await adapter.add_centerline(x1, y1, x2, y2)
 
         require_success(result, context="Failed to add centerline")
-        centerline_id = result.data
-        reply: dict[str, Any] = {
-            "status": "success",
-            "message": f"Added centerline from ({x1}, {y1}) to ({x2}, {y2})",
-            "centerline": {
-                "id": centerline_id,
-                "start_point": {"x": x1, "y": y1},
-                "end_point": {"x": x2, "y": y2},
-                "type": "construction",
-            },
-            "execution_time": result.execution_time,
-        }
+        reply = _centerline_reply(x1, y1, x2, y2, result.data, result.execution_time)
         if projection is not None:
             reply["projection"] = projection
         return reply

@@ -1430,6 +1430,24 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"outlines": outlines},
         )
 
+    async def add_sketch_entities(
+        self, items: list[dict[str, Any]], rollback_on_error: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw sketch entities in one operation through circuit breaker.
+
+        Args:
+            items (list[dict[str, Any]]): The entities, in order.
+            rollback_on_error (bool): Delete what the call drew when one fails.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "add_sketch_entities",
+            lambda: self.adapter.add_sketch_entities(items, rollback_on_error),
+            input_dict={"items": items, "rollback_on_error": rollback_on_error},
+        )
+
     async def add_sketch_text(
         self,
         text: str,

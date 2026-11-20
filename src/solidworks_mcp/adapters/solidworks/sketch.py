@@ -14,6 +14,7 @@ from ..base import AdapterResult, AdapterResultStatus
 from . import limits, rectangle_check, sketch_points, sketch_relations
 from . import sketch_pattern_dimensions as _pattern_dims
 from .com_utils import flag as _flag
+from .com_utils import strip_op_prefix
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -44,8 +45,29 @@ ARC_DIRECTION_FLAGS: dict[str, int] = {"ccw": 1, "cw": -1}
 
 #: The most segments one ``add_sketch_outlines`` call draws. A 7 x 7
 #: honeycomb is 294 segments; the cap keeps one call from holding SolidWorks
-#: for minutes.
+#: for minutes. ``add_sketch_entities`` has the same cap, a rectangle
+#: counting as its four lines.
 MAX_OUTLINE_SEGMENTS = 2000
+
+#: What ``add_sketch_entities`` draws: each single-entity tool, with the
+#: fields an item gives for it, the parameters of that tool's adapter
+#: method (sketch mm).
+SKETCH_ENTITY_FIELDS: dict[str, tuple[str, ...]] = {
+    "add_line": ("x1", "y1", "x2", "y2"),
+    "add_circle": ("center_x", "center_y", "radius"),
+    "add_rectangle": ("x1", "y1", "x2", "y2"),
+    "add_arc": ("center_x", "center_y", "start_x", "start_y", "end_x", "end_y"),
+    "add_centerline": ("x1", "y1", "x2", "y2"),
+}
+
+#: The prefix of the ids each of those tools registers (``Circle_3``).
+SKETCH_ENTITY_PREFIXES: dict[str, str] = {
+    "add_line": "Line",
+    "add_circle": "Circle",
+    "add_rectangle": "Rectangle",
+    "add_arc": "Arc",
+    "add_centerline": "Centerline",
+}
 
 
 class SolidWorksSketchMixin:
@@ -150,6 +172,11 @@ class SolidWorksSketchMixin:
         self, outlines: list[dict[str, Any]]
     ) -> AdapterResult[dict[str, Any]]:
         return _add_sketch_outlines_impl(self, outlines)
+
+    async def add_sketch_entities(
+        self, items: list[dict[str, Any]], rollback_on_error: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        return _add_sketch_entities_impl(self, items, rollback_on_error)
 
     async def add_sketch_text(
         self,
@@ -651,29 +678,35 @@ def _add_line_impl(
     """
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
-
-    def _line_operation() -> str:
-        """Inner COM closure that calls CreateLine and registers the entity.
-
-        Returns:
-            str: Registered entity ID for the new line.
-
-        Raises:
-            Exception: If ``CreateLine`` returns ``None``.
-        """
-        line = adapter.currentSketchManager.CreateLine(
-            x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
-        )
-        if not line:
-            raise Exception("Failed to create line")
-        entity_id: str = adapter._register_sketch_entity("Line", line)
-        # The midpoint, in mm: where a dimension to this line is placed.
-        adapter._sketch_entity_centers[entity_id] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-        return entity_id
-
     return cast(
-        AdapterResult[str], adapter._handle_com_operation("add_line", _line_operation)
+        AdapterResult[str],
+        adapter._handle_com_operation(
+            "add_line", lambda: _draw_line(adapter, x1, y1, x2, y2)
+        ),
     )
+
+
+def _draw_line(adapter: Any, x1: float, y1: float, x2: float, y2: float) -> str:
+    """Draw a line with ``CreateLine`` and register it, inside a COM operation.
+
+    Shared by ``add_line`` and ``add_sketch_entities``, so both draw and
+    register a line the same way.
+
+    Returns:
+        str: Registered entity ID for the new line.
+
+    Raises:
+        Exception: If ``CreateLine`` returns ``None``.
+    """
+    line = adapter.currentSketchManager.CreateLine(
+        x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
+    )
+    if not line:
+        raise Exception("Failed to create line")
+    entity_id: str = adapter._register_sketch_entity("Line", line)
+    # The midpoint, in mm: where a dimension to this line is placed.
+    adapter._sketch_entity_centers[entity_id] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    return entity_id
 
 
 def _add_circle_impl(
@@ -704,30 +737,35 @@ def _add_circle_impl(
     """
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
-
-    def _circle_operation() -> str:
-        """Inner COM closure that calls CreateCircleByRadius and registers the entity.
-
-        Returns:
-            str: Registered entity ID for the new circle.
-
-        Raises:
-            Exception: If ``CreateCircleByRadius`` returns ``None``.
-        """
-        circle = adapter.currentSketchManager.CreateCircleByRadius(
-            center_x / 1000.0, center_y / 1000.0, 0, radius / 1000.0
-        )
-        if not circle:
-            raise Exception("Failed to create circle")
-        entity_id: str = adapter._register_sketch_entity("Circle", circle)
-        # The centre, in mm: where a dimension to this circle is placed.
-        adapter._sketch_entity_centers[entity_id] = (center_x, center_y)
-        return entity_id
-
     return cast(
         AdapterResult[str],
-        adapter._handle_com_operation("add_circle", _circle_operation),
+        adapter._handle_com_operation(
+            "add_circle", lambda: _draw_circle(adapter, center_x, center_y, radius)
+        ),
     )
+
+
+def _draw_circle(adapter: Any, center_x: float, center_y: float, radius: float) -> str:
+    """Draw a circle with ``CreateCircleByRadius`` and register it.
+
+    Shared by ``add_circle`` and ``add_sketch_entities``; runs inside their
+    COM operation.
+
+    Returns:
+        str: Registered entity ID for the new circle.
+
+    Raises:
+        Exception: If ``CreateCircleByRadius`` returns ``None``.
+    """
+    circle = adapter.currentSketchManager.CreateCircleByRadius(
+        center_x / 1000.0, center_y / 1000.0, 0, radius / 1000.0
+    )
+    if not circle:
+        raise Exception("Failed to create circle")
+    entity_id: str = adapter._register_sketch_entity("Circle", circle)
+    # The centre, in mm: where a dimension to this circle is placed.
+    adapter._sketch_entity_centers[entity_id] = (center_x, center_y)
+    return entity_id
 
 
 def _add_rectangle_impl(
@@ -760,52 +798,58 @@ def _add_rectangle_impl(
     """
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
-
-    def _rectangle_operation() -> str:
-        """Inner COM closure that calls CreateCornerRectangle and registers the entity.
-
-        Returns:
-            str: Registered entity ID for the new rectangle.
-
-        Raises:
-            Exception: If ``CreateCornerRectangle`` returns ``None``, or the
-                lines it drew, read back, are not the rectangle asked
-                (``rectangle_check``; they are deleted again).
-        """
-        with rectangle_check.inference_off(adapter):
-            lines = adapter.currentSketchManager.CreateCornerRectangle(
-                x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
-            )
-        if not lines:
-            raise Exception("Failed to create rectangle")
-        drawn = rectangle_check.drawn_extent(adapter, lines)
-        asked = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-        wrong = rectangle_check.mismatch(asked, drawn) if drawn else None
-        if wrong is not None:
-            removed = (
-                "it was deleted again"
-                if rectangle_check.delete_segments(adapter, lines)
-                else "it is still in the sketch; delete it (delete_sketch_entities)"
-            )
-            raise Exception(
-                f"SolidWorks drew the rectangle from {wrong}; {removed}. "
-                "add_outlines draws the same corners as four lines."
-            )
-        entity_id = cast(str, adapter._register_sketch_entity("Rectangle", lines))
-        # Like polygons, rectangles register as a SAFEARRAY tuple of segment
-        # handles — no single dispatch ``GetCenterPoint`` to recover the
-        # geometric centre from later. Stash it now so the rectangle ID is a
-        # valid seed for ``sketch_circular_pattern``.
-        adapter._sketch_entity_centers[entity_id] = (
-            (x1 + x2) / 2.0,
-            (y1 + y2) / 2.0,
-        )
-        return entity_id
-
     return cast(
         AdapterResult[str],
-        adapter._handle_com_operation("add_rectangle", _rectangle_operation),
+        adapter._handle_com_operation(
+            "add_rectangle", lambda: _draw_rectangle(adapter, x1, y1, x2, y2)
+        ),
     )
+
+
+def _draw_rectangle(adapter: Any, x1: float, y1: float, x2: float, y2: float) -> str:
+    """Draw a corner rectangle, read it back and register it.
+
+    Shared by ``add_rectangle`` and ``add_sketch_entities``; runs inside
+    their COM operation. Sketch inference is off while it is drawn, and the
+    four lines are read back against the corners asked (``rectangle_check``).
+
+    Returns:
+        str: Registered entity ID for the new rectangle.
+
+    Raises:
+        Exception: If ``CreateCornerRectangle`` returns ``None``, or the
+            lines it drew, read back, are not the rectangle asked (they are
+            deleted again).
+    """
+    with rectangle_check.inference_off(adapter):
+        lines = adapter.currentSketchManager.CreateCornerRectangle(
+            x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
+        )
+    if not lines:
+        raise Exception("Failed to create rectangle")
+    drawn = rectangle_check.drawn_extent(adapter, lines)
+    asked = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    wrong = rectangle_check.mismatch(asked, drawn) if drawn else None
+    if wrong is not None:
+        removed = (
+            "it was deleted again"
+            if rectangle_check.delete_segments(adapter, lines)
+            else "it is still in the sketch; delete it (delete_sketch_entities)"
+        )
+        raise Exception(
+            f"SolidWorks drew the rectangle from {wrong}; {removed}. "
+            "add_outlines draws the same corners as four lines."
+        )
+    entity_id = cast(str, adapter._register_sketch_entity("Rectangle", lines))
+    # Like polygons, rectangles register as a SAFEARRAY tuple of segment
+    # handles — no single dispatch ``GetCenterPoint`` to recover the
+    # geometric centre from later. Stash it now so the rectangle ID is a
+    # valid seed for ``sketch_circular_pattern``.
+    adapter._sketch_entity_centers[entity_id] = (
+        (x1 + x2) / 2.0,
+        (y1 + y2) / 2.0,
+    )
+    return entity_id
 
 
 def _add_arc_impl(
@@ -861,45 +905,71 @@ def _add_arc_impl(
             status=AdapterResultStatus.ERROR,
             error=f"direction must be 'ccw' or 'cw', not {direction!r}",
         )
-
-    def _arc_operation() -> str:
-        """Inner COM closure that calls CreateArc and registers the entity.
-
-        Returns:
-            str: Registered entity ID for the new arc.
-
-        Raises:
-            Exception: If ``CreateArc`` returns ``None``.
-        """
-        arc = adapter.currentSketchManager.CreateArc(
-            center_x / 1000.0,
-            center_y / 1000.0,
-            0,
-            start_x / 1000.0,
-            start_y / 1000.0,
-            0,
-            end_x / 1000.0,
-            end_y / 1000.0,
-            0,
-            flag,
-        )
-        if not arc:
-            raise Exception("Failed to create arc")
-        entity_id: str = adapter._register_sketch_entity("Arc", arc)
-        adapter._sketch_entity_centers[entity_id] = (center_x, center_y)
-        return entity_id
-
     return cast(
-        AdapterResult[str], adapter._handle_com_operation("add_arc", _arc_operation)
+        AdapterResult[str],
+        adapter._handle_com_operation(
+            "add_arc",
+            lambda: _draw_arc(
+                adapter, center_x, center_y, start_x, start_y, end_x, end_y, flag
+            ),
+        ),
     )
+
+
+def _draw_arc(
+    adapter: Any,
+    center_x: float,
+    center_y: float,
+    start_x: float,
+    start_y: float,
+    end_x: float,
+    end_y: float,
+    flag: int,
+) -> str:
+    """Draw an arc with ``CreateArc`` and register it.
+
+    Shared by ``add_arc`` and ``add_sketch_entities``; runs inside their COM
+    operation.
+
+    Args:
+        adapter: The adapter, with a sketch open.
+        center_x: Arc centre X in mm.
+        center_y: Arc centre Y in mm.
+        start_x: Start point X in mm.
+        start_y: Start point Y in mm.
+        end_x: End point X in mm.
+        end_y: End point Y in mm.
+        flag: ``CreateArc``'s direction (``ARC_DIRECTION_FLAGS``).
+
+    Returns:
+        str: Registered entity ID for the new arc.
+
+    Raises:
+        Exception: If ``CreateArc`` returns ``None``.
+    """
+    arc = adapter.currentSketchManager.CreateArc(
+        center_x / 1000.0,
+        center_y / 1000.0,
+        0,
+        start_x / 1000.0,
+        start_y / 1000.0,
+        0,
+        end_x / 1000.0,
+        end_y / 1000.0,
+        0,
+        flag,
+    )
+    if not arc:
+        raise Exception("Failed to create arc")
+    entity_id: str = adapter._register_sketch_entity("Arc", arc)
+    adapter._sketch_entity_centers[entity_id] = (center_x, center_y)
+    return entity_id
 
 
 def _sketch_edit_operation(
     adapter: Any, operation_name: str, operation: Any
 ) -> AdapterResult[dict[str, Any]]:
     """Run a sketch-editing closure; its errors read as plain sentences."""
-    from .com_utils import strip_op_prefix
-
     if not adapter.currentModel:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
     result = cast(
@@ -930,6 +1000,40 @@ def _segments_of(entity: Any) -> list[Any]:
     if isinstance(entity, (list, tuple)):
         return [part for part in entity if part is not None]
     return [entity]
+
+
+def _remove_drawn(adapter: Any, drawn: list[tuple[str, Any]]) -> bool:
+    """Delete what one call drew again: select its segments, then ``EditDelete``.
+
+    Args:
+        adapter: The adapter, with the sketch still open.
+        drawn: ``(entity id, handle)`` for each entity the call drew; a
+            rectangle's handle is its four lines, and an empty id is a
+            segment that was never registered.
+
+    Returns:
+        bool: True when SolidWorks deleted them (or there was nothing to
+        delete); their ids are then dropped from the registry.
+    """
+    segments = [segment for _, handle in drawn for segment in _segments_of(handle)]
+    if not segments:
+        return True  # nothing drawn, and nothing selected to delete
+    selected = all(
+        adapter._select_sketch_entity(segment, index > 0)
+        for index, segment in enumerate(segments)
+    )
+    if not selected:
+        return False
+    # EditDelete returns nothing; only an exception means it failed.
+    if (
+        adapter._attempt(lambda: adapter.currentModel.EditDelete(), default=False)
+        is False
+    ):
+        return False
+    for entity_id, _ in drawn:
+        adapter._sketch_entities.pop(entity_id, None)
+        adapter._sketch_entity_centers.pop(entity_id, None)
+    return True
 
 
 def _add_sketch_outlines_impl(
@@ -993,29 +1097,8 @@ def _add_sketch_outlines_impl(
             start[0] / 1000.0, start[1] / 1000.0, 0, end[0] / 1000.0, end[1] / 1000.0, 0
         )
 
-    def _undo(drawn: list[tuple[str, Any]]) -> bool:
-        """Delete this call's segments again; True when SolidWorks did."""
-        if not drawn:
-            return True  # nothing drawn, and nothing selected to delete
-        selected = all(
-            adapter._select_sketch_entity(handle, index > 0)
-            for index, (_, handle) in enumerate(drawn)
-        )
-        if not selected:
-            return False
-        # EditDelete returns nothing; only an exception means it failed.
-        if (
-            adapter._attempt(lambda: adapter.currentModel.EditDelete(), default=False)
-            is False
-        ):
-            return False
-        for entity_id, _ in drawn:
-            adapter._sketch_entities.pop(entity_id, None)
-            adapter._sketch_entity_centers.pop(entity_id, None)
-        return True
-
     def _cleanup(drawn: list[tuple[str, Any]]) -> str:
-        if _undo(drawn):
+        if _remove_drawn(adapter, drawn):
             return "the segments this call drew were removed again"
         return (
             f"{len(drawn)} segments this call drew stay in the sketch; undo or "
@@ -1082,6 +1165,283 @@ def _add_sketch_outlines_impl(
         AdapterResult[dict[str, Any]],
         adapter._handle_com_operation("add_sketch_outlines", _outlines_operation),
     )
+
+
+def sketch_entities_problem(items: Any) -> str | None:
+    """Why ``add_sketch_entities`` can't draw ``items``, or None when it can.
+
+    Checked before anything is drawn, by the live adapter and the mock alike,
+    so a malformed item never stops a call half-way.
+
+    Args:
+        items: The items, each ``{"tool": ..., <fields>}`` as
+            ``SKETCH_ENTITY_FIELDS`` lists them.
+
+    Returns:
+        str | None: An ``Invalid request: ...`` sentence naming the item, or
+        None.
+    """
+    if not isinstance(items, list | tuple) or not items:
+        return "Invalid request: no sketch entities to draw"
+    segments = 0
+    for index, item in enumerate(items):
+        problem = _item_problem(index, item)
+        if problem is not None:
+            return f"Invalid request: {problem}"
+        segments += 4 if item["tool"] == "add_rectangle" else 1
+    if segments > MAX_OUTLINE_SEGMENTS:
+        return (
+            f"Invalid request: {segments} segments in one call (a rectangle is "
+            f"four); the most is {MAX_OUTLINE_SEGMENTS}. Split them over several "
+            "calls"
+        )
+    return None
+
+
+def _item_problem(index: int, item: Any) -> str | None:
+    """What is wrong with one ``add_sketch_entities`` item, or None."""
+    if not isinstance(item, dict):
+        return f"item {index} is not an object"
+    tool = item.get("tool")
+    fields = SKETCH_ENTITY_FIELDS.get(tool) if isinstance(tool, str) else None
+    if fields is None:
+        return (
+            f"item {index}: tool {tool!r} is not one add_sketch_entities draws; "
+            f"give one of {', '.join(SKETCH_ENTITY_FIELDS)}"
+        )
+    known = {"tool", "label", "construction", *fields}
+    if tool == "add_arc":
+        known.add("direction")
+    unknown = sorted(map(str, set(item) - known))
+    if unknown:
+        return f"item {index} ({tool}) has no field {', '.join(unknown)}"
+    missing = [name for name in fields if name not in item]
+    if missing:
+        return f"item {index} ({tool}) needs {', '.join(missing)}"
+    for name in fields:
+        value = item[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+        ):
+            return f"item {index} ({tool}): {name} must be a number, not {value!r}"
+    if not isinstance(item.get("construction", False), bool):
+        return f"item {index} ({tool}): construction must be true or false"
+    if not isinstance(item.get("label", ""), str):
+        return f"item {index} ({tool}): label must be text"
+    direction = item.get("direction", "ccw")
+    if not isinstance(direction, str) or direction not in ARC_DIRECTION_FLAGS:
+        return (
+            f"item {index} (add_arc): direction must be 'ccw' or 'cw', not "
+            f"{direction!r}"
+        )
+    return None
+
+
+def _item_name(index: int, item: dict[str, Any]) -> str:
+    """How messages name an item: its ``label`` (``circles[2]``), else ``item 2``."""
+    label = item.get("label")
+    return label if isinstance(label, str) and label else f"item {index}"
+
+
+def _describe_item(item: dict[str, Any]) -> str:
+    """An item's geometry for a message, e.g. ``circle at (10, 5), radius 2``."""
+    tool = item["tool"]
+    if tool == "add_circle":
+        return (
+            f"circle at ({item['center_x']:g}, {item['center_y']:g}), "
+            f"radius {item['radius']:g}"
+        )
+    if tool == "add_arc":
+        return (
+            f"{item.get('direction', 'ccw')} arc about ({item['center_x']:g}, "
+            f"{item['center_y']:g}) from ({item['start_x']:g}, "
+            f"{item['start_y']:g}) to ({item['end_x']:g}, {item['end_y']:g})"
+        )
+    return (
+        f"{SKETCH_ENTITY_PREFIXES[tool].lower()} from ({item['x1']:g}, "
+        f"{item['y1']:g}) to ({item['x2']:g}, {item['y2']:g})"
+    )
+
+
+def _draw_item(adapter: Any, item: dict[str, Any]) -> str:
+    """Draw one item as its single tool draws it; the id it registered."""
+    tool = item["tool"]
+    values = [float(item[name]) for name in SKETCH_ENTITY_FIELDS[tool]]
+    if tool == "add_circle":
+        return _draw_circle(adapter, *values)
+    if tool == "add_rectangle":
+        return _draw_rectangle(adapter, *values)
+    if tool == "add_arc":
+        cx, cy, sx, sy, ex, ey = values
+        flag = ARC_DIRECTION_FLAGS[item.get("direction", "ccw")]
+        return _draw_arc(adapter, cx, cy, sx, sy, ex, ey, flag)
+    if tool == "add_centerline":
+        return _draw_centerline(adapter, *values)
+    return _draw_line(adapter, *values)
+
+
+def _entities(count: int) -> str:
+    """``1 entity``, ``3 entities``."""
+    return f"{count} {'entity' if count == 1 else 'entities'}"
+
+
+def _id_span(ids: list[str]) -> str:
+    """Ids for a message: all of a few, else the first and last."""
+    return ", ".join(ids) if len(ids) <= 6 else f"{ids[0]} ... {ids[-1]}"
+
+
+def _sentences(*parts: str | None) -> str:
+    """The parts given, as sentences each ending in one full stop."""
+    return " ".join(part.rstrip(" .;") + "." for part in parts if part)
+
+
+def _add_sketch_entities_impl(
+    adapter: Any, items: list[dict[str, Any]], rollback_on_error: bool = True
+) -> AdapterResult[dict[str, Any]]:
+    """Draw lines, circles, rectangles, arcs and centrelines in one COM operation.
+
+    Each item is ``{"tool": <tool>, <fields>}``: one of the single-entity
+    tools with the parameters of its adapter method (``SKETCH_ENTITY_FIELDS``,
+    sketch mm), plus ``construction`` (ignored for a centreline, which
+    already is), ``direction`` for an arc, and ``label``, how messages name
+    it. The items are drawn in order, each by the ``_draw_*`` function its
+    single tool uses (the same ids, registry entries and rectangle
+    read-back), inside one ``_handle_com_operation``: one settle gap for the
+    lot instead of one per entity. Pitfall #26 protects the gap between
+    operations, not the calls inside one, as ``add_sketch_outlines`` does.
+
+    When an item fails (SolidWorks refuses it, it won't become construction
+    geometry, or the call runs out of time), nothing after it is drawn. With
+    ``rollback_on_error`` (the default, as ``add_sketch_outlines``) what this
+    call drew is deleted again, so a failed call leaves the sketch as it was.
+    Without it, the items before the failure stay, as separate calls would
+    have left them, and an entity drawn but not made construction stays as
+    normal geometry, as ``add_line`` with ``construction`` leaves it.
+
+    Args:
+        adapter: A ``PyWin32Adapter`` with an open sketch.
+        items: The entities to draw, in order.
+        rollback_on_error: Delete what this call drew when an item fails.
+
+    Returns:
+        AdapterResult[dict[str, Any]]: ``items``, one ``{"index", "tool",
+        "id", "execution_time"}`` per item (``id`` as the item's single tool
+        returns it), and ``count``. On a failure the error names the item,
+        and ``data`` has ``items`` (those still in the sketch),
+        ``failed_index`` (None when no item failed, e.g. a dialog),
+        ``failed`` (its name), ``error`` (what went wrong with it),
+        ``removed`` and, when the failed item's entity is in the sketch,
+        ``failed_id``.
+    """
+    if not adapter.currentSketchManager:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
+    problem = sketch_entities_problem(items)
+    if problem is not None:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+
+    drawn: list[dict[str, Any]] = []  # each drawn item's result, in order
+    handles: list[tuple[str, Any]] = []  # every entity this call drew
+    failure: dict[str, Any] = {}
+
+    def _stop(
+        index: int, said: str, error: str, failed_id: str | None = None
+    ) -> Exception:
+        """Record a failed item, remove what this call drew if asked; the error."""
+        failure.update(index=index, failed=_item_name(index, items[index]))
+        failure["error"] = error
+        removed = (
+            rollback_on_error and bool(handles) and _remove_drawn(adapter, handles)
+        )
+        failure["removed"] = removed
+        if failed_id is not None and not removed:
+            failure["failed_id"] = failed_id
+        notes: list[str | None] = []
+        if removed:
+            notes.append(
+                f"The {_entities(len(handles))} this call drew "
+                f"{'was' if len(handles) == 1 else 'were'} removed again"
+            )
+        elif rollback_on_error and handles:
+            ids = [entity_id for entity_id, _ in handles]
+            notes.append(
+                f"The {_entities(len(ids))} this call drew "
+                f"{'stays' if len(ids) == 1 else 'stay'} in the sketch "
+                f"({_id_span(ids)}); delete them (delete_sketch_entities) or undo"
+            )
+        else:
+            if failed_id is not None:
+                notes.append(f"{failed_id} stays in the sketch as normal geometry")
+            if drawn:
+                notes.append(
+                    f"The {_entities(len(drawn))} drawn before it "
+                    f"{'stays' if len(drawn) == 1 else 'stay'} in the sketch"
+                )
+        return Exception(_sentences(said, *notes))
+
+    def _entities_operation() -> dict[str, Any]:
+        for index, item in enumerate(items):
+            name = _item_name(index, item)
+            try:
+                limits.check(f"drawing {name}")
+            except limits.OperationStopped as stopped:
+                raise _stop(index, str(stopped), str(stopped)) from stopped
+            started = time.perf_counter()
+            entity_id, error = adapter._attempt_with_error(
+                lambda i=item: _draw_item(adapter, i)
+            )
+            if entity_id is None:  # each _draw_* raises rather than return None
+                cause = str(error)
+                said = f"{name} ({_describe_item(item)}) was not created: {cause}"
+                raise _stop(index, said, cause)
+            handle = adapter._sketch_entities.get(entity_id)
+            handles.append((entity_id, handle))
+            wanted = bool(item.get("construction")) and item["tool"] != "add_centerline"
+            if wanted and not all(
+                _make_construction(adapter, segment, True)
+                for segment in _segments_of(handle)
+            ):
+                raise _stop(
+                    index,
+                    f"{name} ({_describe_item(item)}) was drawn as {entity_id} but "
+                    "could not be made construction geometry",
+                    f"SolidWorks did not make {entity_id} construction geometry",
+                    failed_id=entity_id,
+                )
+            drawn.append(
+                {
+                    "index": index,
+                    "tool": item["tool"],
+                    "id": entity_id,
+                    "execution_time": time.perf_counter() - started,
+                }
+            )
+        return {"items": list(drawn), "count": len(drawn)}
+
+    result = cast(
+        AdapterResult[dict[str, Any]],
+        adapter._handle_com_operation("add_sketch_entities", _entities_operation),
+    )
+    if result.is_success:
+        return result
+    result.error = strip_op_prefix(result.error, "add_sketch_entities")
+    if failure or drawn:
+        removed = bool(failure.get("removed"))
+        report: dict[str, Any] = {
+            "items": [] if removed else list(drawn),
+            "failed_index": failure.get("index"),
+            **{
+                key: failure[key]
+                for key in ("failed", "error", "failed_id")
+                if key in failure
+            },
+            "removed": removed,
+        }
+        # A dialog's details (``data.dialog``) stay beside the items.
+        earlier = result.data if isinstance(result.data, dict) else {}
+        result.data = {**earlier, **report}
+    return result
 
 
 def _set_sketch_construction_impl(
@@ -1262,30 +1622,33 @@ def _add_centerline_impl(
     """
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
-
-    def _centerline_operation() -> str:
-        """Inner COM closure that calls CreateCenterLine and registers
-        the resulting entity so it can be referenced by subsequent
-        dimension and constraint calls (e.g. as the centerline of a
-        ``symmetric`` relation).
-
-        Returns:
-            str: Registered entity ID (e.g. ``"Centerline_3"``).
-
-        Raises:
-            Exception: If ``CreateCenterLine`` returns ``None``.
-        """
-        centerline = adapter.currentSketchManager.CreateCenterLine(
-            x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
-        )
-        if not centerline:
-            raise Exception("Failed to create centerline")
-        return cast(str, adapter._register_sketch_entity("Centerline", centerline))
-
     return cast(
         AdapterResult[str],
-        adapter._handle_com_operation("add_centerline", _centerline_operation),
+        adapter._handle_com_operation(
+            "add_centerline", lambda: _draw_centerline(adapter, x1, y1, x2, y2)
+        ),
     )
+
+
+def _draw_centerline(adapter: Any, x1: float, y1: float, x2: float, y2: float) -> str:
+    """Draw a centreline with ``CreateCenterLine`` and register it.
+
+    Registered so later dimension and constraint calls can name it (e.g. as
+    the centreline of a ``symmetric`` relation). Shared by ``add_centerline``
+    and ``add_sketch_entities``; runs inside their COM operation.
+
+    Returns:
+        str: Registered entity ID (e.g. ``"Centerline_3"``).
+
+    Raises:
+        Exception: If ``CreateCenterLine`` returns ``None``.
+    """
+    centerline = adapter.currentSketchManager.CreateCenterLine(
+        x1 / 1000.0, y1 / 1000.0, 0, x2 / 1000.0, y2 / 1000.0, 0
+    )
+    if not centerline:
+        raise Exception("Failed to create centerline")
+    return cast(str, adapter._register_sketch_entity("Centerline", centerline))
 
 
 def _add_polygon_impl(

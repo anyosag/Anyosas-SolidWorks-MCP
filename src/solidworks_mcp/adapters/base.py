@@ -834,6 +834,32 @@ class SolidWorksAdapter(ABC):
             error="add_sketch_outlines is not implemented by this adapter",
         )
 
+    async def add_sketch_entities(
+        self, items: list[dict[str, Any]], rollback_on_error: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw lines, circles, rectangles, arcs and centrelines in one operation.
+
+        Args:
+            items (list[dict[str, Any]]): The entities, in order. Each is
+                ``{"tool": "add_circle", "center_x": 0, "center_y": 0,
+                "radius": 5}``: a single-entity tool (``add_line``,
+                ``add_circle``, ``add_rectangle``, ``add_arc``,
+                ``add_centerline``) with its adapter method's parameters in
+                mm, plus optional ``construction``, ``direction`` (an arc's)
+                and ``label`` (how messages name it).
+            rollback_on_error (bool): When an item fails, delete what this
+                call drew. False keeps the items drawn before it, as
+                separate calls would.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``items``, one ``{"index",
+            "tool", "id", "execution_time"}`` per item, and ``count``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_sketch_entities is not implemented by this adapter",
+        )
+
     async def add_sketch_text(
         self,
         text: str,

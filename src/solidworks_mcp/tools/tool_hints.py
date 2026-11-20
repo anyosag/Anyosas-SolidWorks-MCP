@@ -286,6 +286,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "plane_axes": _reads("Get Plane Axes"),
     "add_arc": _adds("Add Sketch Arc"),
     "add_outlines": _adds("Add Sketch Outlines"),
+    "add_sketch_geometry": _adds("Add Sketch Geometry Rows"),
     "add_sketch_text": _adds("Add Sketch Text"),
     "add_spline": _adds("Add Sketch Spline"),
     "add_centerline": _adds("Add Sketch Centerline"),

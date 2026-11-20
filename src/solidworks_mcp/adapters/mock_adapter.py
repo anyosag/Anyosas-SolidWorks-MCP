@@ -44,8 +44,10 @@ from .solidworks.sketch import (
     ARC_DIRECTION_FLAGS,
     MAX_OUTLINE_SEGMENTS,
     RELATION_NAME_MAP,
+    SKETCH_ENTITY_PREFIXES,
     default_plane_axes,
     plane_candidates_for,
+    sketch_entities_problem,
 )
 from .solidworks.stl_settings import ONE_FILE as _STL_ONE_FILE
 from .solidworks.stl_settings import preference_changes as _stl_changes
@@ -3199,6 +3201,50 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "line_count": counts["line"],
                 "arc_count": counts["arc"],
             },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    async def add_sketch_entities(
+        self, items: list[dict[str, Any]], rollback_on_error: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock drawing lines, circles, rectangles, arcs and centrelines in one call.
+
+        Refuses what the live adapter refuses (no open sketch, an item it
+        can't draw, too many segments) with the same messages, and gives each
+        entity an id the way the live adapter does (``Circle_N``, ...). Mock
+        geometry never fails part-way, so ``rollback_on_error`` changes
+        nothing here.
+
+        Args:
+            items (list[dict[str, Any]]): The entities, in order.
+            rollback_on_error (bool): Accepted as the live adapter takes it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``items``, one ``{"index", "tool",
+            "id", "execution_time"}`` per item, and ``count``.
+        """
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        problem = sketch_entities_problem(items)
+        if problem is not None:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+
+        await asyncio.sleep(self._delays["sketch_operation"] / 2)
+        self._operation_count += 1
+        drawn = [
+            {
+                "index": index,
+                "tool": item["tool"],
+                "id": self._new_sketch_entity_id(SKETCH_ENTITY_PREFIXES[item["tool"]]),
+                "execution_time": 0.0,
+            }
+            for index, item in enumerate(items)
+        ]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"items": drawn, "count": len(drawn)},
             execution_time=self._delays["sketch_operation"] / 2,
         )
 
