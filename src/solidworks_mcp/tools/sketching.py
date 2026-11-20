@@ -18,6 +18,7 @@ from ..adapters.solidworks.plane_frame import (
 )
 from ..adapters.solidworks.rebuild_diagnostics import body_count_warning
 from .input_compat import CompatInput
+from .reply_limits import limit_field, offset_field, page
 from .tool_boundary import (
     InvalidInputError,
     ToolOperationError,
@@ -585,6 +586,8 @@ class GetSketchInput(CompatInput):
     Attributes:
         name (str): The sketch's tree name.
         detail (str): ``full`` or ``summary``.
+        limit (int): The most segments to return.
+        offset (int): Segments to skip first.
     """
 
     name: str = Field(description="The sketch to read, e.g. 'Sketch3'")
@@ -597,6 +600,8 @@ class GetSketchInput(CompatInput):
             "fewer reads per segment, for large sketches"
         ),
     )
+    limit: int = limit_field()
+    offset: int = offset_field()
 
     def model_post_init(self, __context: Any) -> None:
         self.name = self.name.strip()
@@ -1680,7 +1685,8 @@ async def register_sketching_tools(
         `segment_counts`. A summary has `segment_counts`, `circles`, `dimensions`,
         `relations` (each `type` and `entities`: a `segment` index, which
         `edit_sketch` numbers from 1, or a point's `at_mm`), `relation_counts` and
-        `definition_state`.
+        `definition_state`. Segments come 50 at a time: a longer list has
+        `truncated`, `full_count` and `next_offset` (pass it as `offset`).
 
         Args:
             input_data: The sketch. `name` is required.
@@ -1705,6 +1711,15 @@ async def register_sketching_tools(
         )
         plane = data.get("plane")
         state = data.get("definition_state")
+        sketch = {
+            "name": input_data.name,
+            **{k: v for k, v in data.items() if k != "sketch"},
+        }
+        notes: dict[str, Any] = {}
+        if isinstance(sketch.get("segments"), list):
+            sketch["segments"], notes = page(
+                sketch["segments"], input_data.limit, input_data.offset
+            )
         return {
             "status": "success",
             "message": (
@@ -1712,10 +1727,8 @@ async def register_sketching_tools(
                 + (f" on {plane}" if plane else "")
                 + (f", {state}" if state else "")
             ),
-            "sketch": {
-                "name": input_data.name,
-                **{k: v for k, v in data.items() if k != "sketch"},
-            },
+            "sketch": sketch,
+            **notes,
             "execution_time": result.execution_time,
         }
 

@@ -19,6 +19,7 @@ from ..utils.feature_tree_classifier import (
     classify_feature_tree_snapshot,
 )
 from .input_compat import CompatInput
+from .reply_limits import limit_field, offset_field, page
 from .tool_boundary import (
     InvalidInputError,
     ToolOperationError,
@@ -309,6 +310,8 @@ class ListFeaturesInput(CompatInput):
             every tree has.
         types (list[str] | None): Feature types to keep.
         last (int | None): Keep only the newest N features of each document.
+        limit (int): The most features to return.
+        offset (int): Features to skip first.
     """
 
     include_suppressed: bool = Field(
@@ -352,6 +355,8 @@ class ListFeaturesInput(CompatInput):
             "of each document. Applied after include_standard and types"
         ),
     )
+    limit: int = limit_field()
+    offset: int = offset_field()
 
     @field_validator("types")
     @classmethod
@@ -1095,6 +1100,8 @@ async def register_file_management_tools(
         Returns: `features` (each with `name`, `type`, `suppressed` and, in an
         assembly, `component`), `count`, `total` (before the filters) and, when
         components are listed, `assembly_tree`, the same list grouped by component.
+        Up to 50 features come back: a longer list has `truncated`, `full_count`
+        and `next_offset` (pass it as `offset`).
 
         Args:
             input_data: What to list. Nothing is required: `include_suppressed`
@@ -1120,11 +1127,13 @@ async def register_file_management_tools(
             types=input_data.types,
             last=input_data.last,
         )
+        features, notes = page(features, input_data.limit, input_data.offset)
         reply: dict[str, Any] = {
             "status": "success",
             "features": features,
             "count": len(features),
             "total": len(rows),
+            **notes,
         }
         # A part's tree is just ``features`` again; the grouped view is only
         # worth its size when there are components to group by.

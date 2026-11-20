@@ -24,6 +24,7 @@ from ..adapters.solidworks.plane_frame import add, scale, two_points, unit, vect
 from ..adapters.solidworks.rebuild_diagnostics import body_count_warning, issues_warning
 from ..adapters.solidworks.reference_geometry import LINE_MM
 from .input_compat import CompatInput
+from .reply_limits import limit_field, offset_field, page
 from .sketching import AddSketchTextInput, text_warnings
 from .tool_boundary import (
     ToolOperationError,
@@ -1111,6 +1112,18 @@ class InsertComponentInput(CompatInput):
     def model_post_init(self, __context: Any) -> None:
         if not self.file_path.strip():
             raise ValueError("file_path is required")
+
+
+class ListComponentsInput(CompatInput):
+    """Input schema for listing an assembly's components.
+
+    Attributes:
+        limit (int): The most components to return.
+        offset (int): Components to skip first.
+    """
+
+    limit: int = limit_field()
+    offset: int = offset_field()
 
 
 class DeleteFeatureInput(CompatInput):
@@ -3650,19 +3663,32 @@ async def register_modeling_tools(
         return reply
 
     @mcp.tool()
-    async def list_components() -> dict[str, Any]:
+    async def list_components(
+        input_data: ListComponentsInput | None = None,
+    ) -> dict[str, Any]:
         """List the top-level components of the active assembly by instance name, e.g. "bracket-1".
 
         Use it before `add_mate`, which takes these names. Needs: an open, active
-        assembly. Read-only. Returns: `components` (instance names).
+        assembly. Read-only. Returns: `components` (instance names), up to 50: a
+        longer list has `truncated`, `full_count` and `next_offset` (pass it as
+        `offset`).
+
+        Args:
+            input_data: Optional: `limit` (50) and `offset` (0) page the list.
+
+        Returns:
+            dict[str, Any]: The component names.
         """
+        input_data = normalize_input(input_data, ListComponentsInput)
         result = await adapter.list_components()
         require_success(result, context="Failed to list components")
         components = result.data if isinstance(result.data, list) else []
+        shown, notes = page(components, input_data.limit, input_data.offset)
         return {
             "status": "success",
             "message": f"{len(components)} component(s) in the assembly",
-            "components": components,
+            "components": shown,
+            **notes,
             "execution_time": result.execution_time,
         }
 
@@ -3878,7 +3904,8 @@ async def register_modeling_tools(
         rebuilds. Needs: an open part. Changes: the selection only, all or nothing.
         Returns: `data` with `source`, `matched` (edges left after each rule, per rule
         with `any_of`; an error names the rule that removed them), `edges` (up to
-        50), `selected_edges`, `selection_count` and `read`.
+        50 described; more selected adds `truncated` and `full_count`),
+        `selected_edges`, `selection_count` and `read`.
 
         Args:
             input_data: The rules. Nothing is required: at most one source, any
@@ -3891,6 +3918,12 @@ async def register_modeling_tools(
         result = await adapter.select_edges(input_data.query(), input_data.append)
         require_success(result)
         data = result.data if isinstance(result.data, dict) else {}
+        described = data.get("edges")
+        if isinstance(described, list) and len(described) < int(
+            data.get("selected_edges") or 0
+        ):
+            # Every edge is selected; only the first ones are described.
+            data = {**data, "truncated": True, "full_count": data["selected_edges"]}
         return {
             "status": "success",
             "message": (
