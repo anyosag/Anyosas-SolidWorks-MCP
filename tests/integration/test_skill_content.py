@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from fastmcp import FastMCP
 
+from solidworks_mcp.relay import STUCK_ERROR
 from solidworks_mcp.skills import SERVER_INSTRUCTIONS, SKILL_DIR, SKILL_NAME
 from solidworks_mcp.tools import register_tools
 from solidworks_mcp.tools.error_classifier import (
@@ -114,6 +115,7 @@ def known_names(tools_by_name: dict[str, Any]) -> set[str]:
         INVALID_INPUT,
         NOT_SUPPORTED,
         OPERATION_FAILED,
+        STUCK_ERROR,  # the hot-reload relay's own error, not the classifier's
     }
     return (
         set(tools_by_name) | fields | error_types | _RESPONSE_KEYS | _BLENDER_MCP_TOOLS

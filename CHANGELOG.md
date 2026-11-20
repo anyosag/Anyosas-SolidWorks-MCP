@@ -14,6 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hot reload.** `solidworks-mcp --hot-reload`, or
+  `SOLIDWORKS_MCP_HOT_RELOAD=1` in the server's environment, runs a small
+  relay that keeps the client connected while the server restarts: when the
+  package's files change, or on the new `reload_mcp_server` tool, it starts
+  a new server, replays the handshake and `enable_tool_groups`, stops the
+  old one and tells the client the tool list changed. A new server that
+  fails to start is dropped and the old one keeps going.
+- **Stuck-call watchdog.** Under the relay, a tool call with no reply or
+  progress for `SOLIDWORKS_MCP_HANG_SECONDS` (900; `0` turns it off) is
+  answered with `operation_stuck`, as is every other call in flight, and
+  the server is restarted. Four calls in the sampled sessions sat 30
+  minutes until the client gave up.
+- **`add_sketch_geometry`** draws many circles (`[x, y, r]`), lines,
+  rectangles and centrelines from rows in one SolidWorks operation: one
+  settle pause instead of one per entity, and about a third of the input to
+  write. A row SolidWorks refuses rolls the call back. Experimental until
+  its live test runs.
+- **`server_time_s` in every reply**: the server's own time for the call,
+  where `execution_time` covers only the COM operation. The server log gets
+  one `Timing` line per call (pace, pre-checks, the COM work, post-checks);
+  `SOLIDWORKS_MCP_TIMING=1` adds the breakdown to replies.
+- **`export_image` returns the picture** in its reply (`inline`, on by
+  default), as well as writing the file; `execute_workflow` returns the last
+  one. Agents had been spending a turn reading each image back.
+
 - **`add_outlines`** draws whole outlines in the open sketch in one call:
   polygons from `points`, or chains of lines and arcs from `start` and
   `segments`, closed by default, any number per call (up to 2,000
@@ -146,6 +171,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`execute_workflow` checks every step before running any**, and returns
+  all the problems at once with each tool's fields; a step may be written
+  `{"add_circle": {...}}`, and `arguments` need no `input_data` wrapper. Its
+  reply has a top-level `execution_time`, and the final "all steps done"
+  progress notice is gone (it raced the reply).
+- **`measure_clearance` measures the whole components first**, in one call
+  (0.4 s where the face search took 8.5 s on average), and searches face
+  pairs only when that gives no distance or `faces: true` asks for the
+  nearest faces.
+- **`select_edges` refuses an unscoped scan of a large part.** Without a
+  `feature`, more than `SOLIDWORKS_MCP_EDGE_SCAN_LIMIT` edges (500) returns
+  `edge_scan_too_large` at once, with the count and the time the scan would
+  take; `scan_whole_part: true` scans anyway. Unscoped scans took 33 of the
+  tool's 42 minutes in the sampled sessions.
+- **`delete_feature` no longer lists the whole feature tree twice.** It
+  follows the feature's children before deleting and checks each by name
+  afterwards, listing the tree only when the count changed by a different
+  number (about 6 s saved a delete).
 - **Trial features no longer play SolidWorks' error sound.** A cut left
   without a direction built both sides of its sketch to compare them, and
   the side with nothing to cut is a rebuild error, so SolidWorks played
@@ -194,6 +237,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **STL export no longer fails before it works.** `Extension.SaveAs2` was
+  called with six arguments and Python `None` where it takes an interface
+  pointer, so every export logged a type mismatch and fell back to
+  `SaveAs3`. It now gets its eight arguments (COM pitfall #63).
+- **The relay can't freeze on a stalled server.** It no longer writes to the
+  server while holding its lock, closes a stuck server's input on a thread of
+  its own, and keeps the answer to a call sent during a reload.
 - **`add_fillet` on the current selection fillets it.** With `edge_names`
   empty (after `select_edges`, `select_face_edges` or a pick in SolidWorks),
   it built nothing: the volume check before the fillet read mass

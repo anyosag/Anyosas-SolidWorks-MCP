@@ -1825,6 +1825,46 @@ the full table is in `openspec/changes/hole-wizard-and-threads/design.md`,
   it the other part's teeth meet uncut material. A thread relief or a longer
   chamfer clears it; turning the part doesn't.
 
+## 63. `Extension.SaveAs2` takes eight arguments
+
+Not yet confirmed live (2026-11-20); found in the SOLIDWORKS 2026 type
+library while reading why every STL export logged a failure.
+
+- **Signature:** `IModelDocExtension.SaveAs2(Name, Version, Options,
+  ExportData, ReferencePrefixOrSuffixText, AddTextAsPrefix, Errors,
+  Warnings)`: a BSTR, two longs, an IDispatch, a BSTR, a bool, then two
+  by-ref longs. Only the fourth is an interface.
+- **What went wrong:** the STL export called it with six arguments, Python
+  `None` for the export data and the text, and `""` for the flag. The server
+  log holds 97 `(-2147352571, 'Type mismatch.', None, 4)`: argument 4, the
+  export data, where `None` marshals as `VT_NULL`. Every export then fell back
+  to `SaveAs3`, which worked for parts.
+- **Fix:** no export data is `VARIANT(VT_DISPATCH, None)` (the null runbook
+  #11 gives `SelectByID2`'s callout), the text `""`, the flag `False`, and
+  the out-parameters by-ref longs. `SaveAs3` stays as the fallback.
+- **Assemblies get no export data** for now: `SaveAs2` never took it, so what
+  its merge does to the components is unchecked. Check
+  `GetExportFileData(2)` live before giving it one.
+
+## 64. A tool call that waits half an hour without touching SolidWorks
+
+Seen, not explained (2026-11-20). `check_printability` on a small part (41 x
+3.5 x 41 mm, 10,350 triangles) got no reply for 1,800 s. The server log has
+nothing from the call's start until 9 s after the client cancelled it; then
+its temporary STL export ran, and the next call was answered at once. A
+COM call blocked inside SolidWorks can't be cancelled, and the mesh check on
+that part takes 0.04 s, so the call was most likely waiting on something
+inside the server (an `await`) that the cancel released. An earlier
+`check_printability` hang (2026-11-17) looked the same.
+
+- **Mitigation:** the hot-reload relay answers a call with no reply or
+  progress for `SOLIDWORKS_MCP_HANG_SECONDS` (900) with `operation_stuck`
+  and restarts the server. The server log's per-call `Timing` lines show
+  how far the next one gets.
+- **Not the cause:** Claude Code keeps reading a server's stderr after it
+  connects (it stops logging it, and `resume()`s the stream), so a full
+  stderr pipe doesn't block the server.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape

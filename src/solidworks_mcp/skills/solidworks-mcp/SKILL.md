@@ -20,11 +20,13 @@ checking the result, and what doesn't work yet.
   when someone else may be using SolidWorks; the server activates it first.
   A `warning` saying another MCP server is on the same document means two
   clients are editing it: tell the user.
-- Call tools one at a time and wait for each result. The server keeps a
-  short pause between SolidWorks calls on purpose: driving SolidWorks
-  back-to-back crashes it.
-- Each call is a round trip, and round trips are most of a build's time.
-  Run a known sequence in one call with `execute_workflow` (below).
+- Calls that don't depend on each other can share one message: Claude Code
+  runs them one after another, and the server keeps a short pause between
+  SolidWorks calls on purpose (driving SolidWorks back-to-back crashes it).
+  Wait for a result before a call that needs it. With a client that runs
+  calls at the same time, call tools one at a time.
+- Each model turn costs seconds, most of a build's time. Run a known
+  sequence in one call with `execute_workflow` (below).
 - If your client loads tool schemas on demand (a tool search), load every
   tool the job needs in one search, not one per tool.
 
@@ -38,7 +40,8 @@ A solid feature always comes from a closed sketch:
    given when `exit_sketch` closes it, and that reply has the final name.
 3. Draw: `add_rectangle`, `add_circle`, `add_line`, `add_arc`, `add_polygon`,
    and so on; `add_outlines` draws whole outlines, or dozens of holes, in
-   one call. `create_sketch`'s reply says where sketch x and y point in the
+   one call, and `add_sketch_geometry` draws many circles, lines,
+   rectangles and centrelines from rows (`circles: [[x, y, r], ...]`). `create_sketch`'s reply says where sketch x and y point in the
    model (on Top, sketch y is model -Z). For a revolve, add the axis with
    `add_centerline` in this sketch, or make a reference axis with
    `create_axis`.
@@ -71,9 +74,11 @@ Give `create_part` its `material` when you know the exact name; it saves a
 
 ## Several steps in one call
 
-`execute_workflow` runs a list of steps, each `{"tool": ..., "arguments":
-{...}}`, in order, exactly as separate calls would; `arguments` is what you
-would pass that tool (its fields, or `{"input_data": {...}}`). A step's
+`execute_workflow` runs a list of steps in order, exactly as separate calls
+would. A step is `{"tool": "add_circle", "arguments": {...}}` or the short
+`{"add_circle": {...}}`; `arguments` are that tool's own fields, without an
+`input_data` wrapper. Every step is checked before any runs, and all the
+problems come back at once, each with its tool's fields. A step's
 `document` runs it on that open document. A sketch and its feature (steps
 2-5) fit in one call; up to 200 steps per call (split a longer list into
 calls run in order: each numbers its steps from 0, and a step can use only
@@ -88,7 +93,9 @@ steps added. Each step's entry is a summary (status, message, its own
 warning, small facts and checks such as `measured_change` and an export's
 file and mesh checks; `detail: "full"` gives whole replies), and `warnings` lists
 each warning once. Read them, including each feature's
-`measured_change`, before the next call.
+`measured_change`, before the next call. The last `export_image` picture
+comes back in the reply (`export_image` alone returns its picture too), so
+look at it there rather than reading the file.
 
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
@@ -97,6 +104,9 @@ Worked sequences for parts, assemblies and drawings:
 
 - Batch known steps in one `execute_workflow` call; keep its default
   `detail: "summary"` (and `get_sketch` `detail: "summary"` for a big sketch).
+- Write steps short (`{"add_circle": {...}}`), leave out fields at their
+  defaults, and give many circles or lines to `add_sketch_geometry` as rows
+  rather than one step each: what you write is time too.
 - Find edges with `query_geometry` before `select_edges`, so the rules hit
   the first time.
 - Call `verify_model` once, at the end, with every value you expect.
@@ -126,7 +136,10 @@ Details and the model axes: [references/selection-and-units.md](references/selec
 - For edges by rule, use `select_edges`: the edges a `feature` made (a cut's
   rims and walls), then only the `linear` ones `parallel_to` an axis, those
   `inside_box`, or a length range. When nothing matches, the error says
-  which rule removed them.
+  which rule removed them. Without a `feature`, a part of more than 500
+  edges is refused at once (`edge_scan_too_large`; reading costs about
+  0.1 s an edge): give a `feature` or a tight `inside_box`, or
+  `scan_whole_part` when you mean the whole part.
 - If the user says "this face" or "these edges", call
   `get_selected_entities` to read what they clicked rather than guessing.
 - A point on an edge where two faces meet can pick the wrong edge; give a

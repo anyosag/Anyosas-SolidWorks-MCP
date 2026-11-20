@@ -24,6 +24,9 @@ SolidWorks MCP server: drive SolidWorks parts, assemblies and drawings.
 `add_circle`, ...), `exit_sketch`, then the feature (`create_extrusion`, \
 `create_cut_extrude`, `create_revolve`). Features take the sketch's \
 `sketch_name`, or use the one you closed last.
+- Run a known sequence in one `execute_workflow` call (a step can be \
+`{"add_circle": {...}}`; all are checked before any runs). Draw many circles \
+or lines at once with `add_sketch_geometry` rows.
 - Inputs are millimetres and degrees unless a field says metres. Field \
 descriptions ending "..." are cut short; `describe_tool_inputs` gives them whole.
 - Tools come in groups (core, sketching, features, assembly, bodies, drawings, \

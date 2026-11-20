@@ -36,11 +36,11 @@ Steps 1-5 as one `execute_workflow` call:
 
 ```json
 {"steps": [
-  {"tool": "create_part", "arguments": {"name": "plate"}},
-  {"tool": "create_sketch", "arguments": {"plane": "Top"}},
-  {"tool": "add_rectangle", "arguments": {"x1": -50, "y1": -30, "x2": 50, "y2": 30}},
+  {"create_part": {"name": "plate"}},
+  {"create_sketch": {"plane": "Top"}},
+  {"add_rectangle": {"x1": -50, "y1": -30, "x2": 50, "y2": 30}},
   {"tool": "exit_sketch"},
-  {"tool": "create_extrusion", "arguments": {"depth": 10}}
+  {"create_extrusion": {"depth": 10}}
 ]}
 ```
 
@@ -403,8 +403,10 @@ involved must be closed).
    `top_pairs` that overlap most (components, count and volume); fix the
    largest first. For a gap that must stay open
    (a latch's 0.25 mm play), `measure_clearance` with the two components
-   gives the smallest gap and where it is; `export_image` with `section`
-   (a plane and an offset) shows it cut open. In a sweep of many calls,
+   gives the smallest gap and where it is, measured between the whole
+   components in one call; `faces: true` also names the two nearest faces
+   (a slower search, face pair by face pair). `export_image` with `section`
+   (a plane and an offset) shows it cut open. In that face search,
    `coarse: true` (or a `timeout_s`) answers sooner with two bounds, the gap
    being at most `clearance_mm` and at least the reply's lower bound;
    `complete` says when they are the same.
