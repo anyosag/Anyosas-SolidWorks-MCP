@@ -241,6 +241,25 @@ nothing fails, and the empty pattern is deleted; try `reverse_direction`.
 2. `exit_sketch`, then `create_cut_revolve` (`angle` 360 by default; give
    `axis_entity` for a reference axis). Check the volume dropped.
 
+## Standard holes and printable threads
+
+1. Make the plate, then call `create_hole_wizard_hole` with `kind`
+   (`clearance`, `counterbore`, `countersink`, `tapped`), a bare `size`
+   (`M3`) and `face_point`, the hole's centre on a flat face. Leave out
+   `depth_mm` for a hole through all.
+2. Read the sizes back from `data.hole`: they come from SolidWorks' ISO
+   tables, not from the server. Check `measured_change`.
+3. `data.position.dimensions` names the dimensions that place the hole;
+   `set_dimension` on one moves it.
+4. A tapped hole has a cosmetic thread. For a thread that prints, give
+   `thread: "modeled"`: the hole is drilled at the basic minor diameter of
+   the coarse pitch and threaded (`data.thread`).
+5. Another pitch, or a thread on a rod: `create_thread` with `size`
+   (`M30x1`), `edge_point` (a point on the circular edge, not its centre)
+   and `length_mm`. Inside a hole (`internal: true`), drill the ISO basic
+   minor diameter first (D - 1.0825 P: Ø8.376 for M10x1.5); on a rod, make
+   it the nominal diameter. A modeled thread slows every later rebuild.
+
 ## Labels: raised or engraved text
 
 `emboss_text` does it in one call: `text`, `depth` (mm), `plane` (or

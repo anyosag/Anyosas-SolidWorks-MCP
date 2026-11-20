@@ -240,6 +240,8 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "create_sweep": _STABLE,
     "delete_feature": _STABLE,
     "edit_feature": _UNCHECKED,
+    "create_hole_wizard_hole": _UNCHECKED,
+    "create_thread": _UNCHECKED,
     "emboss_text": _UNCHECKED,
     "get_dimension": _UNCHECKED,
     "get_feature_definition": _UNCHECKED,

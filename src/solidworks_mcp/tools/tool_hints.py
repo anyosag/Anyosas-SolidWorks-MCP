@@ -242,6 +242,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "set_units": _sets("Set Units"),
     "create_cut_extrude": _adds("Create Extruded Cut"),
     "emboss_text": _adds("Emboss or Engrave Text"),
+    "create_hole_wizard_hole": _adds("Create Hole Wizard Hole"),
+    "create_thread": _adds("Create Thread"),
     "add_fillet": _adds("Add Fillet"),
     "add_chamfer": _adds("Add Chamfer"),
     "create_sweep": _adds("Create Sweep"),

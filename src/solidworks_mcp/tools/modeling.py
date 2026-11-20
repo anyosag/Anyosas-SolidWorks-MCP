@@ -944,6 +944,101 @@ class EmbossTextInput(AddSketchTextInput):
             raise ValueError("plane is blank")
 
 
+class CreateThreadInput(CompatInput):
+    """Input schema for a modeled ISO metric thread on a circular edge.
+
+    Attributes:
+        size (str): ISO size with its pitch, e.g. ``M10x1.5``.
+        edge_point (list[float]): A point on the circular edge, mm.
+        length_mm (float): How far the thread runs into the material, mm.
+        internal (bool): True for a thread in a hole.
+    """
+
+    size: str = Field(
+        description="ISO metric size with its pitch, e.g. 'M10x1.5' or 'M30x1'",
+    )
+    edge_point: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="[x, y, z] mm on the circular edge (rod end or hole mouth), not its centre",
+    )
+    length_mm: float = Field(
+        gt=0, description="How far the thread runs from the edge, mm"
+    )
+    internal: bool = Field(
+        default=False, description="True for a thread in a hole (Metric Tap profile)"
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Check the size's form and write it as ``M<d>x<p>``."""
+        from ..adapters.solidworks.threads import parse_thread_size, size_name
+
+        super().model_post_init(__context)
+        self.size = size_name(
+            *parse_thread_size(self.size.strip().upper().replace("X", "x"))
+        )
+
+
+class CreateHoleWizardHoleInput(CompatInput):
+    """Input schema for an ISO Hole Wizard hole on a flat face.
+
+    Attributes:
+        kind (str): clearance, counterbore, countersink or tapped.
+        size (str): ISO size without a pitch, e.g. ``M3``.
+        face_point (list[float]): The hole's centre on a flat face, mm.
+        side (str | None): The way the face must point.
+        depth_mm (float | None): Blind depth, mm; through all when left out.
+        fit (str | None): close, normal or loose (not for tapped).
+        thread (str): cosmetic or modeled (tapped only).
+    """
+
+    kind: Literal["clearance", "counterbore", "countersink", "tapped"] = Field(
+        description="'clearance', 'counterbore', 'countersink' or 'tapped'"
+    )
+    size: str = Field(
+        description="ISO metric size without a pitch, e.g. 'M3' or 'M5'",
+    )
+    face_point: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="The hole's centre, [x, y, z] mm on a flat face",
+    )
+    side: str | None = Field(
+        default=None,
+        description="Check that the face points this way: +X/-X/+Y/-Y/+Z/-Z or top/front/...",
+    )
+    depth_mm: float | None = Field(
+        default=None,
+        gt=0,
+        description="Blind depth from the face, mm; leave out for through all",
+    )
+    fit: Literal["close", "normal", "loose"] | None = Field(
+        default=None,
+        description="Screw fit: 'close', 'normal' (default) or 'loose'; not for tapped",
+    )
+    thread: Literal["cosmetic", "modeled"] = Field(
+        default="cosmetic",
+        description="Tapped only: 'cosmetic' (a callout) or 'modeled' (a real, printable thread)",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse a fit on a tapped hole and a modeled thread on another kind."""
+        from ..adapters.solidworks.threads import parse_diameter
+
+        super().model_post_init(__context)
+        diameter = parse_diameter(self.size.strip().upper())
+        if diameter is None:
+            raise ValueError(
+                f"hole size {self.size!r} is not an ISO metric size; give a bare "
+                "M<diameter>, e.g. 'M3' (no pitch)"
+            )
+        self.size = f"M{diameter:g}"
+        if self.kind == "tapped" and self.fit is not None:
+            raise ValueError("fit is for clearance, counterbore and countersink holes")
+        if self.kind != "tapped" and self.thread == "modeled":
+            raise ValueError("thread 'modeled' is only for tapped holes")
+
+
 def _check_edge_ids(edge_names: list[str], edge_ids: list[str]) -> None:
     """Refuse ``edge_ids`` given with ``edge_names``, or ids that aren't ids.
 
@@ -4641,6 +4736,122 @@ async def register_modeling_tools(
                 "timeout_s, for the exact value."
             )
         return reply
+
+    def _feature_reply(
+        result: AdapterResult[Any],
+        message: str,
+        before: AdapterResult[dict[str, Any]] | None,
+        after: AdapterResult[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """``data`` with ``measured_change``; warnings go to the reply's top."""
+        data = _attach_measured_change(dict(result.data or {}), before, after)
+        notes = [data.pop(key) for key in ("warning",) if data.get(key)]
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": message,
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+        if notes:
+            reply["warning"] = " ".join(notes)
+        return reply
+
+    @mcp.tool()
+    async def create_thread(input_data: CreateThreadInput) -> dict[str, Any]:
+        """Cut a real, printable ISO metric thread (SolidWorks' Thread feature) from a circular edge.
+
+        Use it for a screw thread on a rod or in a hole of the active part; for
+        a standard tapped hole in one call, use `create_hole_wizard_hole` with
+        `thread: "modeled"`. `edge_point` is a point on the edge where the
+        thread starts (centre plus radius), so a rod end and its chamfer's edge
+        are told apart. The size must be in SolidWorks' thread library (`Metric
+        Die` outside, `Metric Tap` inside). An external thread needs a rod of
+        the nominal diameter; an internal one a hole of the ISO basic minor
+        diameter (D - 1.0825 P), so drill that first. A modeled thread slows
+        every later rebuild, so long fine threads are refused. Needs: an open
+        part. Changes: adds a Thread feature; a refused call changes nothing.
+        Returns: `data` with `feature`, `thread` (`size`, `pitch_mm`, major and
+        minor diameters, `length_mm`, `internal`), `edge` and `measured_change`.
+
+        Args:
+            input_data: The thread. `size` (e.g. 'M10x1.5'), `edge_point` (mm)
+                and `length_mm` are required; `internal` is false.
+
+        Returns:
+            dict[str, Any]: The thread made.
+        """
+        input_data = normalize_input(input_data, CreateThreadInput)
+        before = await _read_summary(adapter)
+        result = await adapter.create_thread(
+            input_data.size,
+            list(input_data.edge_point),
+            input_data.length_mm,
+            input_data.internal,
+        )
+        require_success(result, context="Failed to create the thread")
+        after = await _read_summary(adapter) if before is not None else None
+        where = "internal" if input_data.internal else "external"
+        name = (result.data or {}).get("feature")
+        return _feature_reply(
+            result,
+            f"Created {where} {input_data.size} thread {input_data.length_mm:g} mm "
+            f"long: {name}",
+            before,
+            after,
+        )
+
+    @mcp.tool()
+    async def create_hole_wizard_hole(
+        input_data: CreateHoleWizardHoleInput,
+    ) -> dict[str, Any]:
+        """Make an ISO metric hole with SolidWorks' Hole Wizard: clearance, counterbore, countersink or tapped.
+
+        Use it for screw holes from a standard size (`M3`, `M5`); for a plain
+        round hole of any diameter, sketch a circle and use `create_cut_extrude`.
+        The hole is centred on `face_point`, on a flat face, and its position is
+        dimensioned from the origin, so `set_dimension` can move it. The sizes
+        come from SolidWorks' ISO tables and are read back. A tapped hole has a
+        cosmetic thread; `thread: "modeled"` drills the basic minor diameter of
+        the coarse pitch and cuts a real thread (slower rebuilds); for another
+        pitch, drill the hole and use `create_thread`. Needs: an open part.
+        Changes: adds a Hole Wizard feature (and a Thread); a failed call changes
+        nothing. Returns: `data` with `feature`, `hole` (the sizes used),
+        `position` (`dimensions`, `fully_defined`), `face`, `thread` (modeled)
+        and `measured_change`.
+
+        Args:
+            input_data: The hole. `kind`, `size` (e.g. 'M3') and `face_point`
+                (mm) are required; through all, a normal fit and a cosmetic
+                thread by default.
+
+        Returns:
+            dict[str, Any]: The hole made and the sizes SolidWorks used.
+        """
+        input_data = normalize_input(input_data, CreateHoleWizardHoleInput)
+        before = await _read_summary(adapter)
+        result = await adapter.create_hole_wizard_hole(
+            input_data.kind,
+            input_data.size,
+            list(input_data.face_point),
+            input_data.side,
+            input_data.depth_mm,
+            input_data.fit,
+            input_data.thread,
+        )
+        require_success(result, context="Failed to create the hole")
+        after = await _read_summary(adapter) if before is not None else None
+        depth = (
+            f"{input_data.depth_mm:g} mm deep"
+            if input_data.depth_mm is not None
+            else "through all"
+        )
+        name = (result.data or {}).get("feature")
+        return _feature_reply(
+            result,
+            f"Created {input_data.size} {input_data.kind} hole, {depth}: {name}",
+            before,
+            after,
+        )
 
     # Counted from the registry rather than hand-maintained. The literal that
     # used to live here had drifted: it read 15 while 16 tools were actually

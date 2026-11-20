@@ -2836,6 +2836,43 @@ class SolidWorksAdapter(ABC):
             error="delete_equation is not implemented by this adapter",
         )
 
+    async def create_thread(
+        self,
+        size: str,
+        edge_point: list[float],
+        length_mm: float,
+        internal: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make a modeled ISO metric thread from the circular edge at ``edge_point``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_thread is not implemented by this adapter",
+        )
+
+    async def create_hole_wizard_hole(
+        self,
+        kind: str,
+        size: str,
+        face_point: list[float],
+        side: str | None = None,
+        depth_mm: float | None = None,
+        fit: str | None = None,
+        thread: str = "cosmetic",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make an ISO Hole Wizard hole on the flat face at ``face_point``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Error unless the adapter implements it.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_hole_wizard_hole is not implemented by this adapter",
+        )
+
     async def measure_entities(
         self,
         entities: list[str],

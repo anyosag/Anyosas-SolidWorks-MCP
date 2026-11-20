@@ -23,7 +23,8 @@ GROUPS: dict[str, str] = {
     CORE: "open/create/save, basic sketching, extrude/cut/revolve, fillet/chamfer, "
     "checks, STEP/STL/image export, workflows, error recovery",
     "sketching": "splines, ellipses, text, outlines, sketch patterns, mirror, offset",
-    "features": "loft, sweep, patterns, mirror, reference geometry, dimensions, "
+    "features": "loft, sweep, patterns, mirror, holes, threads, reference geometry, "
+    "dimensions, "
     "editing, suppress/rollback, edge selection by rule",
     "assembly": "assemblies: components, mates, transforms, interference, clearance",
     "bodies": "multibody parts: combine, split, move, save bodies as parts",

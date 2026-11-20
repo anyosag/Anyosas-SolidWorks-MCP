@@ -48,6 +48,7 @@ from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.equations import SolidWorksEquationsMixin
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.file_ledger import FileLedger, ledger_path
+from .solidworks.holes import SolidWorksHolesMixin
 from .solidworks.io import activate_doc
 from .solidworks.loaded_documents import SolidWorksLoadedDocumentsMixin
 from .solidworks.reference_geometry import SolidWorksReferenceGeometryMixin
@@ -57,6 +58,7 @@ from .solidworks.sessions import (
     session_directory,
     shared_document_notice,
 )
+from .solidworks.threads import SolidWorksThreadsMixin
 from .solidworks.window import (
     MinimizeKeeper,
     SolidWorksWindow,
@@ -2333,6 +2335,8 @@ class PyWin32Adapter(
     SolidWorksDrawingStandardMixin,
     SolidWorksDocumentationMixin,
     SolidWorksEquationsMixin,
+    SolidWorksHolesMixin,
+    SolidWorksThreadsMixin,
     SolidWorksSketchMixin,
     SolidWorksFeaturesMixin,
     SolidWorksSaveBodiesMixin,

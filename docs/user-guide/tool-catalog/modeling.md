@@ -4,7 +4,7 @@ Create and manipulate SolidWorks parts, assemblies, and drawings. These are the 
 
 > **Prerequisite:** An active SolidWorks session. Most feature tools require an open Part document.
 
-**Total tools in this category: 42**
+**Total tools in this category: 44**
 
 ---
 
@@ -1089,6 +1089,63 @@ Measure the smallest gap between two components of the active assembly, in mm.
 {
   "component_a": "example",
   "component_b": "example"
+}
+```
+
+---
+
+### `create_thread`
+
+Cut a real, printable ISO metric thread (SolidWorks' Thread feature) from a circular edge.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `size` | `str` | ✅ | `` | ISO metric size with its pitch, e.g. 'M10x1.5' or 'M30x1' |
+| `edge_point` | `List[float]` | ✅ | `` | [x, y, z] mm on the circular edge (rod end or hole mouth), not its centre |
+| `length_mm` | `float` | ✅ | `` | How far the thread runs from the edge, mm |
+| `internal` | `bool` | — | `False` | True for a thread in a hole (Metric Tap profile) |
+
+**Sample call:**
+
+```json
+{
+  "size": "example",
+  "edge_point": [],
+  "length_mm": 10.0
+}
+```
+
+---
+
+### `create_hole_wizard_hole`
+
+Make an ISO metric hole with SolidWorks' Hole Wizard: clearance, counterbore, countersink or tapped.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `kind` | `Literal['clearance', 'counterbore', 'countersink', 'tapped']` | ✅ | `` | 'clearance', 'counterbore', 'countersink' or 'tapped' |
+| `size` | `str` | ✅ | `` | ISO metric size without a pitch, e.g. 'M3' or 'M5' |
+| `face_point` | `List[float]` | ✅ | `` | The hole's centre, [x, y, z] mm on a flat face |
+| `side` | `str?` | — | `None` | Check that the face points this way: +X/-X/+Y/-Y/+Z/-Z or top/front/... |
+| `depth_mm` | `float?` | — | `None` | Blind depth from the face, mm; leave out for through all |
+| `fit` | `Literal['close', 'normal', 'loose']?` | — | `None` | Screw fit: 'close', 'normal' (default) or 'loose'; not for tapped |
+| `thread` | `Literal['cosmetic', 'modeled']` | — | `cosmetic` | Tapped only: 'cosmetic' (a callout) or 'modeled' (a real, printable thread) |
+
+**Sample call:**
+
+```json
+{
+  "kind": null,
+  "size": "example",
+  "face_point": []
 }
 ```
 
