@@ -25,17 +25,8 @@ keeps the replies.
    circles, the last centre at x 49.5. The count to 6 gives 6 circles, the
    spacing to 9 puts the last centre at x 45. Settles ``XSpacingDim`` and
    ``CreateNumOfInstancesDimInXDir``.
-3. ``equations`` (step 2's part): ``set_global_variable`` "well_d" 1.2 mm;
-   ``add_equation`` seed diameter = "well_d" (reads 1.2) and spacing =
-   "well_d" * 5 (reads 6). "well_d" to 1.5: ``driven`` reads 1.5 and 7.5,
-   ``get_sketch`` circles r 0.75 and the last centre at x 37.5.
-   ``list_equations`` counts 3. ``"nope" * 2`` is ``invalid_input`` and
-   leaves 3 equations and the spacing at 7.5. Deleting "well_d" is refused
-   while used; deleting the spacing's equation keeps 7.5; deleting the
-   other two leaves 0. Settles ``GetEquationMgr``, ``Add2`` (one
-   configuration), the indexed ``Equation``/``Value``/``GlobalVariable``
-   reads through ``IDispatch.Invoke``, ``Status`` after a bad expression,
-   ``Delete`` and the rebuild that updates the dimensions.
+3. (moved) The equation steps are ``tests/scripts/probe_equations.py``,
+   for the ``parametric-equations`` tools.
 4. ``session`` (step 2's part, no restart): with ``currentModel`` dropped,
    ``adopt_active_document`` gives the part back by title, and ``save_as``
    with ``currentModel`` dropped saves the active part (the file exists).
@@ -279,116 +270,6 @@ async def linear(tools: dict[str, Any], adapter: Any, report: Report) -> dict[st
     }
 
 
-async def equations(
-    tools: dict[str, Any], adapter: Any, report: Report, names: dict[str, Any]
-) -> None:
-    seed, spacing, sketch = names["seed"], names["spacing"], names["sketch"]
-    added = report.keep(
-        "3.variable",
-        await tools["set_global_variable"](
-            {"name": "well_d", "value": 1.2, "units": "mm"}
-        ),
-    )
-    report.check("3.added", "Add2 a global variable", "added", added["data"]["action"])
-    first = report.keep(
-        "3.seed",
-        await tools["add_equation"]({"dimension": seed, "expression": "well_d"}),
-    )
-    report.check(
-        "3.seed_value",
-        "an equation drives a dimension",
-        1.2,
-        (first.get("data") or {}).get("dimension", {}).get("value"),
-    )
-    second = report.keep(
-        "3.spacing",
-        await tools["add_equation"](
-            {"dimension": spacing, "expression": '"well_d" * 5'}
-        ),
-    )
-    report.check(
-        "3.spacing_value",
-        "an expression of the variable",
-        6.0,
-        (second.get("data") or {}).get("dimension", {}).get("value"),
-    )
-    changed = report.keep(
-        "3.change",
-        await tools["set_global_variable"]({"name": "well_d", "value": 1.5}),
-    )
-    report.check(
-        "3.driven",
-        "one change moves both dimensions",
-        [1.5, 7.5],
-        [
-            (d.get("dimension") or {}).get("value")
-            for d in (changed.get("data") or {}).get("driven") or []
-        ],
-    )
-    found = _circles(
-        report.keep("3.sketch", await tools["get_sketch"]({"name": sketch}))
-    )
-    report.check(
-        "3.radii",
-        "the seed's copies follow the variable",
-        True,
-        bool(found) and all(abs(s - 0.75) <= TOLERANCE for _, s in found),
-    )
-    report.check(
-        "3.last_x",
-        "the spacing follows the variable",
-        37.5,
-        max((c[0] for c, _ in found), default=None),
-    )
-    listed = report.keep("3.list", await tools["list_equations"]({}))
-    report.check(
-        "3.count", "the indexed reads", 3, (listed.get("data") or {}).get("count")
-    )
-    bad = report.keep(
-        "3.bad",
-        await tools["add_equation"]({"dimension": spacing, "expression": '"nope" * 2'}),
-    )
-    report.check(
-        "3.bad_type",
-        "Status -1 is invalid_input",
-        "invalid_input",
-        bad.get("error_type"),
-    )
-    after = await tools["list_equations"]({})
-    report.check(
-        "3.bad_count", "a refused equation is undone", 3, after["data"]["count"]
-    )
-    kept = await tools["get_dimension"]({"name": spacing})
-    report.check(
-        "3.bad_value",
-        "and the dimension kept",
-        7.5,
-        (kept.get("dimension") or {}).get("value"),
-    )
-    refused = report.keep(
-        "3.delete_used", await tools["delete_equation"]({"name": "well_d"})
-    )
-    report.check(
-        "3.delete_used",
-        "a variable in use is kept",
-        "invalid_input",
-        refused.get("error_type"),
-    )
-    report.keep("3.delete_spacing", await tools["delete_equation"]({"name": spacing}))
-    freed = await tools["get_dimension"]({"name": spacing})
-    report.check(
-        "3.freed",
-        "a freed dimension keeps its value",
-        7.5,
-        (freed.get("dimension") or {}).get("value"),
-    )
-    await tools["delete_equation"]({"name": seed})
-    last = report.keep(
-        "3.delete_variable", await tools["delete_equation"]({"name": "well_d"})
-    )
-    report.check("3.empty", "Delete", 0, (last.get("data") or {}).get("count"))
-
-
 async def session(
     tools: dict[str, Any], adapter: Any, report: Report, out: Path
 ) -> None:
@@ -425,14 +306,13 @@ async def run() -> int:
         tools = await _tools(adapter)
 
         async def later_steps() -> None:
-            # Steps 3 and 4 work on step 2's part.
-            names = await linear(tools, adapter, report)
-            await equations(tools, adapter, report, names)
+            # Step 4 works on step 2's part.
+            await linear(tools, adapter, report)
             await session(tools, adapter, report, out)
 
         for name, step in (
             ("circular", lambda: circular(tools, adapter, report)),
-            ("linear, equations, session", later_steps),
+            ("linear, session", later_steps),
         ):
             try:
                 await step()
