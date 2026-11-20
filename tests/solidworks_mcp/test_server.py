@@ -1267,6 +1267,22 @@ def test_cli_main_routes_hot_reload_to_the_relay():
     mock_run.assert_not_called()
 
 
+def test_cli_main_routes_to_the_relay_when_the_env_asks(monkeypatch):
+    """SOLIDWORKS_MCP_HOT_RELOAD=1 runs the relay without the flag."""
+    from solidworks_mcp.server import cli_main
+
+    monkeypatch.setenv("SOLIDWORKS_MCP_HOT_RELOAD", "1")
+    with (
+        patch("solidworks_mcp.server.sys.argv", ["solidworks-mcp", "--year", "2026"]),
+        patch("solidworks_mcp.relay.main") as relay_main,
+        patch("solidworks_mcp.server.typer.run") as mock_run,
+    ):
+        cli_main()
+
+    relay_main.assert_called_once_with(["--year", "2026"])
+    mock_run.assert_not_called()
+
+
 def test_cli_main_routes_skill_to_the_skill_app():
     """`solidworks-mcp skill ...` installs the skill, not the server."""
     from solidworks_mcp.server import cli_main

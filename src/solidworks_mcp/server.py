@@ -943,7 +943,9 @@ def cli_main() -> None:
     Returns:
         None: None.
     """
-    if "--hot-reload" in sys.argv[1:]:
+    if "--hot-reload" in sys.argv[1:] or os.environ.get(
+        "SOLIDWORKS_MCP_HOT_RELOAD"
+    ) in ("1", "true", "yes"):
         from . import relay
 
         relay.main([arg for arg in sys.argv[1:] if arg != "--hot-reload"])

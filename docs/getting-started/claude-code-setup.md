@@ -179,7 +179,9 @@ For beginners, `--scope project` is the easiest to understand because the config
 ## Optional: Pick Up Server Updates Without Restarting Claude
 
 Add `--hot-reload` to the server's arguments, for example
-`solidworks-mcp.exe --year 2026 --hot-reload`. Claude then talks to a small
+`solidworks-mcp.exe --year 2026 --hot-reload`, or set
+`SOLIDWORKS_MCP_HOT_RELOAD=1` in the server's `env` (older versions ignore
+the setting, where they would refuse the flag). Claude then talks to a small
 relay that runs the server as a child process. When the server's files
 change (after a `git pull`, merge or checkout in the folder the package is
 installed from), the relay waits until no call is running, starts the new

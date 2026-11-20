@@ -311,6 +311,13 @@ def test_snapshot_skips_files_that_vanish(tmp_path, monkeypatch):
     assert snapshot(tmp_path) == {}
 
 
+def test_the_server_child_does_not_inherit_the_hot_reload_setting(monkeypatch):
+    monkeypatch.setenv("SOLIDWORKS_MCP_HOT_RELOAD", "1")
+    code = "import os, sys; sys.exit(7 if 'SOLIDWORKS_MCP_HOT_RELOAD' in os.environ else 0)"
+    child = relay_module._Child([sys.executable, "-c", code], 1)
+    assert child.process.wait(30) == 0
+
+
 def test_child_send_after_stop_and_kill_of_a_stuck_server():
     child = relay_module._Child(
         [sys.executable, "-c", "import time; time.sleep(60)"], 1

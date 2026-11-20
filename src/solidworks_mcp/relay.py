@@ -97,6 +97,10 @@ class _Child:
             stdout=subprocess.PIPE,
             stderr=None,
             bufsize=0,
+            # The server itself must not start another relay.
+            env={
+                k: v for k, v in os.environ.items() if k != "SOLIDWORKS_MCP_HOT_RELOAD"
+            },
         )
 
     def send(self, line: bytes) -> bool:
