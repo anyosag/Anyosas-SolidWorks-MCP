@@ -3013,9 +3013,12 @@ class SolidWorksIOMixin:
                 summary["document_type"] = "part"
                 summary["solid_body_count"] = None if bodies is None else len(bodies)
             else:
+                from .assembly_box import solid_box
+
                 assembly = _sw_type_info.flagged(model, "IAssemblyDoc")
                 summary["volume_mm3"] = _model_volume_mm3(adapter, model)
-                box = _box_from_metres(
+                # GetBox(0) can be loose and counts a part's sketch lines.
+                box = solid_box(adapter, assembly) or _box_from_metres(
                     adapter._attempt(lambda: assembly.GetBox(0), default=None),
                     "assembly_box",
                 )

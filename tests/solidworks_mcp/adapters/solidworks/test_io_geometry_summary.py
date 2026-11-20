@@ -313,6 +313,43 @@ async def test_assembly_counts_components_and_mates(monkeypatch) -> None:
     assert model.forbidden == []
 
 
+def _part_component(name: str, body: _Body, origin=(0.0, 0.0, 0.0)) -> SimpleNamespace:
+    """A shown, resolved part component holding one body, placed at ``origin``."""
+    return SimpleNamespace(
+        Name2=name,
+        Visible=1,
+        GetSuppression2=lambda: 3,
+        GetChildren=lambda: None,
+        GetBodies2=lambda _kind: (body,),
+        Transform2=SimpleNamespace(
+            ArrayData=(1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0, *origin, 1.0, 0, 0, 0)
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_assembly_is_boxed_by_its_solids_not_getbox(monkeypatch) -> None:
+    """Aggrewell enclosure v2: GetBox(0) read 10 mm tall, the solids are 7.2 mm."""
+    adapter = _build_adapter(monkeypatch)
+    model = _Model(2)
+    model.assembly_box = [0.0, -0.0014, 0.0, 0.05, 0.0086, 0.04]  # the axis line
+    model.components = [
+        _part_component("Tray-1", _Body((0.0, 0.0, 0.0), (0.05, 0.005, 0.04))),
+        _part_component(
+            "Lid-1", _Body((0.0, 0.0, 0.0), (0.05, 0.0022, 0.04)), (0.0, 0.005, 0.0)
+        ),
+    ]
+    adapter.currentModel = model
+
+    result = await adapter.get_model_geometry_summary()
+
+    data = result.data
+    assert data["bounding_box_method"] == "component_extreme_points"
+    assert data["bounding_box_mm"]["size"] == pytest.approx([50.0, 7.2, 40.0])
+    assert data["component_count"] == 2
+    assert model.forbidden == []
+
+
 @pytest.mark.asyncio
 async def test_assembly_without_mate_group_has_zero_mates(monkeypatch) -> None:
     adapter = _build_adapter(monkeypatch)

@@ -278,6 +278,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   belongs to is one too), those listed stay in, and are left out only if
   SolidWorks refuses the call with them. If SolidWorks still makes nothing
   while a pattern is listed, the `hint` says so. Not yet run live.
+- **An assembly's bounding box is its solids'.** `verify_model` and the
+  other readers of the geometry summary boxed an assembly with
+  `IAssemblyDoc.GetBox(0)`, which can be loose and counts more than solids:
+  one holding a part with a `create_axis` axis (a line in a 3D sketch) read
+  10 mm tall where its solids are 7.2 mm. The box is now that of the shown,
+  unsuppressed components' solid bodies: each body's extreme points along
+  the assembly's axes, placed by its component's `Transform2` (the bodies
+  come in their part's coordinates), as a part's box already was. Hidden and
+  suppressed components are left out, with everything below them.
+  `bounding_box_method` says `component_extreme_points`; a lightweight
+  component, or anything else that can't be read, falls back to `GetBox(0)`
+  (`assembly_box`). Not yet run live.
 - **STL export no longer fails before it works.** `Extension.SaveAs2` was
   called with six arguments and Python `None` where it takes an interface
   pointer, so every export logged a type mismatch and fell back to

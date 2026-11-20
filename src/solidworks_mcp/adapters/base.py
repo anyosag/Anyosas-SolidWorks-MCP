@@ -1929,9 +1929,13 @@ class SolidWorksAdapter(ABC):
         Returns:
             AdapterResult[dict[str, Any]]: ``document_type`` (``"part"`` or
             ``"assembly"``), ``volume_mm3``, ``bounding_box_mm`` (``min``,
-            ``max`` and ``size`` as ``[x, y, z]``), ``bounding_box_method``,
-            ``solid_body_count``, and for assemblies ``component_count`` and
-            ``mate_count``. Error when there is no active part or assembly.
+            ``max`` and ``size`` as ``[x, y, z]``), ``bounding_box_method``
+            (how the box was measured: the solid bodies' extreme points,
+            ``"extreme_points"`` for a part and ``"component_extreme_points"``
+            for an assembly's shown components, else SolidWorks' own looser
+            ``"part_box"`` or ``"assembly_box"``), ``solid_body_count``, and
+            for assemblies ``component_count`` and ``mate_count``. Error when
+            there is no active part or assembly.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

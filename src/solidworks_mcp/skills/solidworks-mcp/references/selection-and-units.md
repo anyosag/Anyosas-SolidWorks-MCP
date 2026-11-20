@@ -33,7 +33,9 @@ of inertia in kg·mm², about the centre of mass.
 
 `verify_model`'s `bounding_box_mm` is [x, y, z] in these axes, so a
 100 x 60 rectangle on the Top plane extruded 10 mm is [100, 10, 60], and a
-point at sketch (10, 20) on Top is model (10, 0, -20).
+point at sketch (10, 20) on Top is model (10, 0, -20). It boxes solid
+bodies only: sketches, axes and planes don't count, and in an assembly
+neither do hidden or suppressed components.
 
 `create_sketch` returns `sketch.axes` for the plane it used: `x`, `y` and
 `normal` as model vectors, the sketch origin in mm, and a `summary` such as
