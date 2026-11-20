@@ -133,6 +133,12 @@ async def test_each_step_replies_as_its_own_tool_does(mock_config: Any) -> None:
     one_by_one = await _recorder()
     tools = await _tools(one_by_one, mock_config)
     expected = [await tools[tool](dict(arguments)) for tool, arguments in _STEPS]
+    # server_time_s is the error boundary's time for one tool call; a step
+    # drawn in the batch has no call of its own, so it isn't compared.
+    expected = [
+        {key: value for key, value in reply.items() if key != "server_time_s"}
+        for reply in expected
+    ]
     batch = await _recorder()
 
     replies = await draw_entity_steps(batch, _STEPS)
