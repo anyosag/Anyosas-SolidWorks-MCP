@@ -216,6 +216,12 @@ about (instances - 1) times the first feature's. A pattern that changes
 nothing fails, and the empty pattern is deleted; try `reverse_direction`.
 `bodies: true` repeats solid bodies (names from `list_bodies`).
 
+To repeat a pattern (rings of vents in a grid, or mirrored), name the
+pattern: it carries its seeds, the first vent included. SolidWorks refuses
+a pattern listed beside its own seeds, so a seed listed with it is left out
+and named in `left_out` and the reply's `warning`. A chamfer listed with
+its hole keeps both: only a pattern or mirror carries other features.
+
 ## Starting a feature at a depth, and drafted or mid-plane cuts
 
 - `start_offset_mm` on `create_extrusion` or `create_cut_extrude` starts it

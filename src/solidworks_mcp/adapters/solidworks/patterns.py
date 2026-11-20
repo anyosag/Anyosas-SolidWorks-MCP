@@ -29,6 +29,7 @@ from typing import Any
 from .. import sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
 from .com_utils import strip_op_prefix
+from .pattern_seeds import no_plan, plan_for
 
 #: Selection marks ``FeatureLinearPattern5`` reads (API help Remarks).
 MARK_DIRECTION_1 = 1
@@ -240,7 +241,9 @@ def pattern_linear(
     """Select the directions and the seeds, then call FeatureLinearPattern5.
 
     Whether any instance landed on the part is checked by the tool, from the
-    volume before and after.
+    volume before and after. A listed feature that a listed pattern or mirror
+    repeats already is left out first (:mod:`.pattern_seeds`); one that only
+    may be is left out if SolidWorks makes nothing with it.
 
     Args:
         adapter: A connected ``PyWin32Adapter``.
@@ -256,10 +259,11 @@ def pattern_linear(
         bodies: Pattern solid bodies (mark 256) instead of features (mark 4).
 
     Returns:
-        AdapterResult[dict[str, Any]]: ``name``, ``patterned``, ``bodies``,
-        ``direction`` and ``direction2`` (each ``spec``, ``follows``,
-        ``count``, ``spacing_mm`` and ``flipped``, the ``FlipDir`` sent) and
-        ``instances``.
+        AdapterResult[dict[str, Any]]: ``name``, ``patterned`` (the features
+        selected), ``left_out`` when some were (each ``feature`` and
+        ``patterned_by``), ``bodies``, ``direction`` and ``direction2`` (each
+        ``spec``, ``follows``, ``count``, ``spacing_mm`` and ``flipped``, the
+        ``FlipDir`` sent) and ``instances``.
     """
     from .features import _BodyEntityPicker
 
@@ -288,62 +292,70 @@ def pattern_linear(
         picker = _BodyEntityPicker(adapter)
         if "edge" in (first.kind, second.kind if second else None):
             picker.rebuild()  # before anything is selected: it clears it
-        adapter._attempt(lambda: model.ClearSelection2(True), default=None)
-        follows = _select_direction(adapter, first, MARK_DIRECTION_1, False, picker)
-        follows2 = (
-            _select_direction(adapter, second, MARK_DIRECTION_2, True, picker)
-            if second
-            else None
-        )
-        for name in names:
-            if not _select_seed(adapter, name, bodies):
-                what = "body" if bodies else "feature"
-                where = "list_bodies" if bodies else "list_features"
-                raise Exception(
-                    f"Failed to select {what} to pattern: {name} ({where} names them)"
-                )
-
+        seeds = no_plan(names) if bodies else plan_for(adapter, names)
         feature_manager = sw_type_info.flagged(model.FeatureManager, "IFeatureManager")
-        feature, error = adapter._attempt_with_error(
-            lambda: feature_manager.FeatureLinearPattern5(
-                int(count),  # Num1
-                float(spacing) / 1000.0,  # Spacing1 (m)
-                number2,  # Num2
-                gap2 / 1000.0,  # Spacing2 (m)
-                flip1,  # FlipDir1
-                flip2,  # FlipDir2
-                "",  # DName1: the direction is selected
-                "",  # DName2
-                False,  # GeometryPattern: each instance solved as a feature
-                False,  # VaryInstance
-                False,  # HasOffset1
-                False,  # HasOffset2
-                False,  # CtrlByNum1
-                False,  # CtrlByNum2
-                False,  # FromCentroid1
-                False,  # FromCentroid2
-                False,  # RevOffset1
-                False,  # RevOffset2
-                0.0,  # Offset1
-                0.0,  # Offset2
-                False,  # D2PatternSeedOnly
-                False,  # SyncSubAssemblies
+        feature: Any = None
+        error: Exception | None = None
+        used = names
+        for used in seeds.attempts():
+            adapter._attempt(lambda: model.ClearSelection2(True), default=None)
+            follows = _select_direction(adapter, first, MARK_DIRECTION_1, False, picker)
+            follows2 = (
+                _select_direction(adapter, second, MARK_DIRECTION_2, True, picker)
+                if second
+                else None
             )
-        )
+            for name in used:
+                if not _select_seed(adapter, name, bodies):
+                    what = "body" if bodies else "feature"
+                    where = "list_bodies" if bodies else "list_features"
+                    raise Exception(
+                        f"Failed to select {what} to pattern: {name} ({where} names them)"
+                    )
+            feature, error = adapter._attempt_with_error(
+                lambda: feature_manager.FeatureLinearPattern5(
+                    int(count),  # Num1
+                    float(spacing) / 1000.0,  # Spacing1 (m)
+                    number2,  # Num2
+                    gap2 / 1000.0,  # Spacing2 (m)
+                    flip1,  # FlipDir1
+                    flip2,  # FlipDir2
+                    "",  # DName1: the direction is selected
+                    "",  # DName2
+                    False,  # GeometryPattern: each instance solved as a feature
+                    False,  # VaryInstance
+                    False,  # HasOffset1
+                    False,  # HasOffset2
+                    False,  # CtrlByNum1
+                    False,  # CtrlByNum2
+                    False,  # FromCentroid1
+                    False,  # FromCentroid2
+                    False,  # RevOffset1
+                    False,  # RevOffset2
+                    0.0,  # Offset1
+                    0.0,  # Offset2
+                    False,  # D2PatternSeedOnly
+                    False,  # SyncSubAssemblies
+                )
+            )
+            if feature:
+                break
         if not feature:
             reason = f": {error}" if error is not None else ""
             raise Exception(
-                f"FeatureLinearPattern5 returned nothing (seeds={names}, "
+                f"FeatureLinearPattern5 returned nothing (seeds={used}, "
                 f"direction={first.spec!r}"
                 + (f", direction2={second.spec!r}" if second else "")
-                + f"){reason}"
+                + f"){reason}."
+                + seeds.refusal(used)
             )
         pattern_name = adapter._attempt(
             lambda: adapter._get_attr_or_call(feature, "Name"), default=None
         )
         return {
             "name": str(pattern_name) if pattern_name else None,
-            "patterned": names,
+            "patterned": used,
+            **seeds.left_out_field(used),
             "bodies": bool(bodies),
             "direction": {
                 "spec": first.spec,

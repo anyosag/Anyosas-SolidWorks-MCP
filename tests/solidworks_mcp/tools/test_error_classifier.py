@@ -364,3 +364,17 @@ def test_a_missed_expect_is_its_own_category_whatever_the_feature_said(
     assert found.error_type == "expectation_failed"
     assert "Don't call the tool again" in found.hint
     assert counts_toward_breaker(message) is False
+
+
+def test_a_refused_pattern_with_a_pattern_listed_hints_at_its_seeds(
+    classifier: ErrorClassifier,
+) -> None:
+    found = classifier.classify(
+        "Failed to make the linear pattern: FeatureLinearPattern5 returned nothing "
+        "(seeds=['Vent_Ring1_Pattern'], direction='x'). Vent_Ring1_Pattern is a "
+        "pattern or mirror, and SolidWorks refuses one listed with features it "
+        "already repeats."
+    )
+
+    assert found.error_type == OPERATION_FAILED
+    assert "carries its own seeds" in found.hint

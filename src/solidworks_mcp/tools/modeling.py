@@ -276,6 +276,35 @@ def _add_warnings(reply: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     return reply
 
 
+def _left_out_warning(data: dict[str, Any]) -> str:
+    """The warning for the features a pattern or mirror left out, or ``""``.
+
+    Args:
+        data: The adapter's pattern or mirror data; its ``left_out`` holds
+            each ``feature`` left out and the listed ``patterned_by`` that
+            repeats it.
+
+    Returns:
+        str: E.g. "Left out Hole1, CS1 (Ring1 repeats them already): ...".
+    """
+    by_pattern: dict[str, list[str]] = {}
+    for item in data.get("left_out") or []:
+        by_pattern.setdefault(str(item["patterned_by"]), []).append(
+            str(item["feature"])
+        )
+    if not by_pattern:
+        return ""
+    parts = [
+        f"{', '.join(names)} ({pattern} repeats {'it' if len(names) == 1 else 'them'} "
+        "already)"
+        for pattern, names in by_pattern.items()
+    ]
+    return (
+        f"Left out {'; '.join(parts)}: a pattern or mirror carries its own seeds, "
+        "and SolidWorks refuses them listed beside it."
+    )
+
+
 def _summary_data(measured: Any) -> dict[str, Any] | None:
     """A geometry summary's data, from its result or as a plain dict."""
     if isinstance(measured, dict):
@@ -4847,7 +4876,8 @@ async def register_modeling_tools(
 
         Use it for symmetric parts: model one half, then mirror. Body mirroring (the
         default) is what works for lofts and sweeps; to mirror a cut, name the cut and
-        set `mirror_bodies` off. It fails when the volume doesn't change, which means
+        set `mirror_bodies` off. Features a listed pattern already repeats are left
+        out (`left_out`). It fails when the volume doesn't change, which means
         nothing was mirrored. Needs: an open part with the named bodies or features.
         Changes: adds a Mirror feature. Returns: `mirror` with `name`, `mirrored`,
         `mirror_plane`, `merge`, `mirror_bodies`, and `volume_before`,
@@ -4872,11 +4902,12 @@ async def register_modeling_tools(
         data = result.data if isinstance(result.data, dict) else {}
         reply = {
             "status": "success",
-            "message": f"Mirrored {', '.join(input_data.features)} "
+            "message": f"Mirrored {', '.join(data.get('mirrored') or input_data.features)} "
             f"about {input_data.mirror_plane}",
             "mirror": data,
             "execution_time": result.execution_time,
         }
+        _add_warnings(reply, [_left_out_warning(data)])
         return await _expected(reply, input_data.expect)
 
     @mcp.tool()
@@ -4888,7 +4919,8 @@ async def register_modeling_tools(
         faces: one cut, one pattern). Bosses and cuts both work. Give `angle` to spread the instances evenly over
         that many degrees (360 by default), or `step_angle` for the degrees between
         neighbours, e.g. 3 instances 60 degrees apart; `reverse_direction` turns the
-        other way. It fails when the volume doesn't change, which means no instance
+        other way. Features a listed pattern already repeats are left out
+        (`left_out`). It fails when the volume doesn't change, which means no instance
         landed on the part. Needs: an open part with the named features and axis.
         Changes: adds a circular pattern feature. Returns: `pattern` with `name`,
         `patterned`, `axis`, `count`, `step_angle`, `total_angle`,
@@ -4937,13 +4969,14 @@ async def register_modeling_tools(
         reply = {
             "status": "success",
             "message": (
-                f"Patterned {', '.join(input_data.features)} around "
-                f"{axis} ({input_data.count} instances, "
+                f"Patterned {', '.join(data.get('patterned') or input_data.features)} "
+                f"around {axis} ({input_data.count} instances, "
                 f"{data['step_angle']:g} degrees apart)"
             ),
             "pattern": data,
             "execution_time": result.execution_time,
         }
+        _add_warnings(reply, [_left_out_warning(data)])
         return await _expected(reply, input_data.expect)
 
     @mcp.tool()
@@ -4956,7 +4989,8 @@ async def register_modeling_tools(
         `spacing2` apart along `direction2`. A direction is `x`, `y` or `z`
         (`-x` the other way), a reference axis or plane by name (the plane's
         normal), or a point on a straight edge as "x,y,z" mm. Cuts and bosses
-        both work; `bodies` repeats solid bodies. For a ring, use
+        both work; `bodies` repeats solid bodies. Features a listed pattern already
+        repeats are left out (`left_out`). For a ring, use
         `pattern_circular`. It fails when the volume doesn't change: no instance
         landed on the part, and the empty pattern is deleted. Needs: an open part
         with the named features. Changes: adds a linear pattern feature.
@@ -4994,7 +5028,7 @@ async def register_modeling_tools(
         reply: dict[str, Any] = {
             "status": "success",
             "message": (
-                f"Patterned {', '.join(input_data.features)}: "
+                f"Patterned {', '.join(data.get('patterned') or input_data.features)}: "
                 f"{data.get('instances', input_data.count)} instances "
                 f"({data.get('name')})"
             ),
@@ -5018,6 +5052,7 @@ async def register_modeling_tools(
                 "the instances land on the part.",
                 execution_time=result.execution_time,
             )
+        _add_warnings(reply, [_left_out_warning(data)])
         return await _expected(reply, input_data.expect, after)
 
     @mcp.tool()

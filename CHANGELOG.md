@@ -260,6 +260,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pattern listed beside its own seeds is made without them.** On the
+  Aggrewell enclosure lid, a `pattern_linear` of the vents that listed each
+  ring's hole, chamfer and circular pattern failed ("FeatureLinearPattern5
+  returned nothing"), and so did a `mirror_feature` of the same eight
+  features ("InsertMirrorFeature returned nothing"): a pattern or mirror
+  carries its own seeds, and SolidWorks refuses them listed again.
+  `pattern_linear`, `pattern_circular` and `mirror_feature` now read, before
+  selecting, each listed pattern's parents (`IFeature.GetParents`, which
+  changes nothing, where `AccessSelections` would roll the model back) and
+  its seed count, follow a pattern of a pattern down to the inner seeds,
+  and leave out every other listed feature these repeat. The reply names
+  them in `left_out` (`feature` and `patterned_by`) and in a `warning`.
+  Planes, axes and sketches among the parents are not seeds, and a plain
+  feature carries nothing: a chamfer listed with its hole keeps both. When
+  a pattern has more parents than seeds (the feature a direction edge
+  belongs to is one too), those listed stay in, and are left out only if
+  SolidWorks refuses the call with them. If SolidWorks still makes nothing
+  while a pattern is listed, the `hint` says so. Not yet run live.
 - **STL export no longer fails before it works.** `Extension.SaveAs2` was
   called with six arguments and Python `None` where it takes an interface
   pointer, so every export logged a type mismatch and fell back to

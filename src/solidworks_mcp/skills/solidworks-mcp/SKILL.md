@@ -65,7 +65,8 @@ Repeat 2-5 for each feature. For holes in a ring or a row, draw every
 circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
 and cut once, or repeat the cut with `pattern_circular` (`step_angle` for
 the degrees between instances), `pattern_linear` (rows and grids) or
-`mirror_feature`. Labels: `emboss_text` raises or engraves text in one
+`mirror_feature`; to repeat a pattern, name the pattern without its seeds
+(it carries them). Labels: `emboss_text` raises or engraves text in one
 call; `add_sketch_text` writes it into a sketch of its own.
 
 To change a model that exists, edit in place (`edit_feature`,

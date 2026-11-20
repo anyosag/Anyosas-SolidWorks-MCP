@@ -7049,6 +7049,47 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     #: this is the set of plane names ``mirror_feature`` will accept.
     _BUILTIN_PLANES = frozenset({"Front Plane", "Top Plane", "Right Plane"})
 
+    def _mock_seed_plan(self, names: list[str], bodies: bool) -> Any:
+        """What a pattern or mirror leaves out, as ``pattern_seeds`` plans it live.
+
+        The mock's own patterns and mirrors are features of the
+        ``GetTypeName2`` type (``LPattern``, ``CirPattern``, ``MirrorPattern``)
+        holding their ``seeds``, so their parents are exactly their seeds.
+
+        Args:
+            names: The features (or bodies) listed.
+            bodies: Bodies were listed, which repeat nothing.
+
+        Returns:
+            SeedPlan: The plan; it leaves nothing unsure.
+        """
+        from .solidworks.pattern_seeds import PatternParents, no_plan, plan
+
+        if bodies:
+            return no_plan(names)
+        by_name = {feature.name: feature for feature in self._features.values()}
+
+        def kind_of(name: str) -> str | None:
+            feature = by_name.get(name)
+            return feature.type if feature is not None else None
+
+        def parents_of(name: str) -> PatternParents:
+            seeds = tuple((by_name[name].parameters or {}).get("seeds") or ())
+            return PatternParents(seeds, len(seeds))
+
+        return plan(names, kind_of, parents_of)
+
+    def _mock_add_pattern(self, name: str, kind: str, seeds: list[str]) -> None:
+        """Put a pattern or mirror in the feature tree, holding its seeds."""
+        feature = SolidWorksFeature(
+            name=name,
+            type=kind,
+            id=f"{kind.lower()}_{uuid.uuid4().hex[:8]}",
+            parameters={"seeds": list(seeds)},
+            properties={"created": datetime.now().isoformat(), "mock": True},
+        )
+        self._features[feature.id or name] = feature
+
     async def mirror_feature(
         self,
         features: list[str],
@@ -7071,7 +7112,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         the live-measured 1819569.1 mm^3 wing volume) is doubled, matching
         the ~2.0 ratio a correct mirror produces (measured live: 1.998528
         for a lofted wing, exactly 2.0 for a boss whose sketch sits on the
-        plane).
+        plane). Of features, one a listed pattern or mirror repeats already
+        is left out, as live (``left_out``); the mirror joins the feature
+        tree as a ``MirrorPattern`` (``MirrorSolid`` for bodies).
 
         Args:
             features (list[str]): Body or feature names to mirror.
@@ -7115,6 +7158,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         await asyncio.sleep(self._delays["feature_operation"])
         self._operation_count += 1
+        seeds = self._mock_seed_plan(names, bool(mirror_bodies))
+        used = seeds.attempts()[0]
 
         volume_before = self._mirror_volume
         volume_after = volume_before * 2
@@ -7122,12 +7167,18 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         self._feature_tree_count += 1
         feature_name = f"Mirror{self._feature_tree_count}"
+        self._mock_add_pattern(
+            feature_name,
+            "MirrorSolid" if mirror_bodies else "MirrorPattern",
+            [] if mirror_bodies else used,
+        )
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "name": feature_name,
-                "mirrored": names,
+                "mirrored": used,
+                **seeds.left_out_field(used),
                 "mirror_plane": mirror_plane,
                 "merge": bool(merge),
                 "mirror_bodies": bool(mirror_bodies),
@@ -7173,7 +7224,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         per-instance volume, so volume_before/volume_after/volume_ratio
         stay self-consistent and scale with ``count`` roughly the way
         adding more blades to the hub would - reproducing the live
-        48431.5 -> 75916.4 mm^3 measurement exactly for ``count=4``.
+        48431.5 -> 75916.4 mm^3 measurement exactly for ``count=4``. A
+        listed feature a listed pattern or mirror repeats already is left
+        out, as live (``left_out``); the pattern joins the feature tree as a
+        ``CirPattern``.
 
         Args:
             features (list[str]): Names of the features to pattern.
@@ -7219,6 +7273,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         await asyncio.sleep(self._delays["feature_operation"])
         self._operation_count += 1
+        seeds = self._mock_seed_plan(names, False)
+        used = seeds.attempts()[0]
 
         volume_before = self._pattern_volume
         volume_after = volume_before + self._PATTERN_BLADE_VOLUME * (int(count) - 1)
@@ -7226,12 +7282,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         self._feature_tree_count += 1
         pattern_name = f"CirPattern{self._feature_tree_count}"
+        self._mock_add_pattern(pattern_name, "CirPattern", used)
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "name": pattern_name,
-                "patterned": names,
+                "patterned": used,
+                **seeds.left_out_field(used),
                 "axis": axis,
                 "count": int(count),
                 "angle": float(angle),
@@ -7264,6 +7322,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         the argument checks, a direction named but never made (not a default
         plane, nor a plane or axis made this session), and a seed feature or
         body that isn't in the part. It reads no volume: the tool measures it.
+        A listed feature a listed pattern or mirror repeats already is left
+        out, as live (``left_out``); a pattern of features joins the feature
+        tree as an ``LPattern``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The pattern's ``name`` and inputs.
@@ -7312,6 +7373,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         await asyncio.sleep(self._delays["feature_operation"])
         self._operation_count += 1
         self._feature_tree_count += 1
+        seeds = self._mock_seed_plan(names, bool(bodies))
+        used = seeds.attempts()[0]
+        pattern_name = f"LPattern{self._feature_tree_count}"
+        # A pattern of bodies repeats no feature.
+        self._mock_add_pattern(pattern_name, "LPattern", [] if bodies else used)
         number2, gap2 = (int(count2), float(spacing2)) if direction2 else (1, 0.0)
 
         def _way(item: Any, number: int, gap: float, reverse: bool) -> dict[str, Any]:
@@ -7326,8 +7392,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
-                "name": f"LPattern{self._feature_tree_count}",
-                "patterned": names,
+                "name": pattern_name,
+                "patterned": used,
+                **seeds.left_out_field(used),
                 "bodies": bool(bodies),
                 "direction": _way(
                     parsed[0], int(count), float(spacing), reverse_direction

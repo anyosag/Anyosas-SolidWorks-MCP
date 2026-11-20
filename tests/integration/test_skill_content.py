@@ -46,6 +46,7 @@ _RESPONSE_KEYS = {
     "expected_size_mm",
     "failing_features",
     "global_scale",
+    "left_out",
     "length_m",
     "length_mm",
     "measured_change",

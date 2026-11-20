@@ -31,6 +31,7 @@ from . import (
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
+from .pattern_seeds import no_plan, plan_for
 from .summary_reuse import read_summary
 
 
@@ -5013,7 +5014,9 @@ def _mirror_feature_impl(
     the marks are the whole game - see ``_MIRROR_MARK_*``.
 
     Whether the mirror actually produced geometry is checked by the caller,
-    which can read volume through ``get_mass_properties``.
+    which can read volume through ``get_mass_properties``. Of features (not
+    bodies), one that a listed pattern or mirror repeats already is left out
+    first (:mod:`.pattern_seeds`).
 
     Args:
         adapter: A connected ``PyWin32Adapter`` with a valid ``currentModel``.
@@ -5023,7 +5026,9 @@ def _mirror_feature_impl(
         mirror_bodies: Select and mirror whole bodies rather than features.
 
     Returns:
-        AdapterResult[dict[str, Any]]: The mirror feature's name and inputs.
+        AdapterResult[dict[str, Any]]: The mirror feature's name and inputs:
+        ``mirrored`` is what was selected, and ``left_out`` (when any was)
+        each ``feature`` left out with the ``patterned_by`` that repeats it.
 
     Raises:
         Exception: Propagated through ``_handle_com_operation``.
@@ -5046,13 +5051,14 @@ def _mirror_feature_impl(
     source_mark = _MIRROR_MARK_BODIES if mirror_bodies else _MIRROR_MARK_FEATURES
     entity_type = "SOLIDBODY" if mirror_bodies else None
 
-    def _mirror_operation() -> dict[str, Any]:
+    def _select_sources(used: list[str]) -> None:
+        """Select ``used`` and the plane under their marks, replacing the selection."""
         adapter._attempt(
             lambda: adapter.currentModel.ClearSelection2(True), default=None
         )
         callout = _null_callout()
 
-        for index, name in enumerate(names):
+        for index, name in enumerate(used):
             append = index > 0
             selected = False
             if entity_type is not None:
@@ -5087,22 +5093,30 @@ def _mirror_feature_impl(
         ):
             raise Exception(f"Failed to select mirror plane: {mirror_plane}")
 
+    def _mirror_operation() -> dict[str, Any]:
+        seeds = no_plan(names) if mirror_bodies else plan_for(adapter, names)
         feature_manager = sw_type_info.flagged(
             adapter.currentModel.FeatureManager, "IFeatureManager"
         )
-        feature = adapter._attempt(
-            lambda: feature_manager.InsertMirrorFeature(
-                bool(mirror_bodies),  # BMirrorBody
-                False,  # BGeometryPattern - solve the whole feature
-                bool(merge),  # BMerge
-                False,  # BKnit
-            ),
-            default=None,
-        )
+        feature: Any = None
+        used = names
+        for used in seeds.attempts():
+            _select_sources(used)
+            feature = adapter._attempt(
+                lambda: feature_manager.InsertMirrorFeature(
+                    bool(mirror_bodies),  # BMirrorBody
+                    False,  # BGeometryPattern - solve the whole feature
+                    bool(merge),  # BMerge
+                    False,  # BKnit
+                ),
+                default=None,
+            )
+            if feature is not None:
+                break
         if feature is None:
             raise Exception(
-                f"InsertMirrorFeature returned nothing (sources={names}, "
-                f"plane={mirror_plane})"
+                f"InsertMirrorFeature returned nothing (sources={used}, "
+                f"plane={mirror_plane})." + seeds.refusal(used)
             )
 
         name = adapter._attempt(
@@ -5112,7 +5126,8 @@ def _mirror_feature_impl(
             # No invented fallback: an unreadable name is reported as None
             # rather than as the literal "Mirror", which would not resolve.
             "name": str(name) if name else None,
-            "mirrored": names,
+            "mirrored": used,
+            **seeds.left_out_field(used),
             "mirror_plane": mirror_plane,
             "merge": bool(merge),
             "mirror_bodies": bool(mirror_bodies),
@@ -5153,7 +5168,8 @@ def _pattern_circular_impl(
     patterns the other way round the axis.
 
     Whether anything was produced is checked by the caller, which can read
-    volume through ``get_mass_properties``.
+    volume through ``get_mass_properties``. A listed feature that a listed
+    pattern or mirror repeats already is left out first (:mod:`.pattern_seeds`).
 
     Args:
         adapter: A connected ``PyWin32Adapter`` with a valid ``currentModel``.
@@ -5165,7 +5181,9 @@ def _pattern_circular_impl(
         reverse_direction: Pattern the other way round the axis.
 
     Returns:
-        AdapterResult[dict[str, Any]]: The pattern's name and inputs.
+        AdapterResult[dict[str, Any]]: The pattern's name and inputs:
+        ``patterned`` is what was selected, and ``left_out`` (when any was)
+        each ``feature`` left out with the ``patterned_by`` that repeats it.
 
     Raises:
         Exception: Propagated through ``_handle_com_operation``.
@@ -5193,9 +5211,8 @@ def _pattern_circular_impl(
             ),
         )
 
-    def _pattern_operation() -> dict[str, Any]:
-        import math
-
+    def _select_axis_and_features(used: list[str]) -> None:
+        """Select the axis and ``used`` under their marks, replacing the selection."""
         adapter._attempt(
             lambda: adapter.currentModel.ClearSelection2(True), default=None
         )
@@ -5215,7 +5232,7 @@ def _pattern_circular_impl(
                 "first, and pass the name it returns."
             )
 
-        for name in names:
+        for name in used:
             selected = bool(
                 adapter._attempt(
                     lambda n=name: adapter.currentModel.Extension.SelectByID2(
@@ -5239,32 +5256,42 @@ def _pattern_circular_impl(
             if not selected:
                 raise Exception(f"Failed to select feature to pattern: {name}")
 
+    def _pattern_operation() -> dict[str, Any]:
+        import math
+
+        seeds = plan_for(adapter, names)
         feature_manager = sw_type_info.flagged(
             adapter.currentModel.FeatureManager, "IFeatureManager"
         )
-        feature = adapter._attempt(
-            lambda: feature_manager.FeatureCircularPattern5(
-                int(count),  # Number
-                math.radians(float(angle)),  # Spacing (radians)
-                bool(reverse_direction),  # FlipDirection
-                axis,  # DName
-                False,  # GeometryPattern
-                bool(equal_spacing),  # EqualSpacing
-                False,  # VaryInstance
-                False,  # SyncSubAssemblies
-                False,  # BDir2
-                False,  # BSymmetric
-                0,  # Number2
-                0.0,  # Spacing2
-                "",  # DName2
-                False,  # EqualSpacing2
-            ),
-            default=None,
-        )
+        feature: Any = None
+        used = names
+        for used in seeds.attempts():
+            _select_axis_and_features(used)
+            feature = adapter._attempt(
+                lambda: feature_manager.FeatureCircularPattern5(
+                    int(count),  # Number
+                    math.radians(float(angle)),  # Spacing (radians)
+                    bool(reverse_direction),  # FlipDirection
+                    axis,  # DName
+                    False,  # GeometryPattern
+                    bool(equal_spacing),  # EqualSpacing
+                    False,  # VaryInstance
+                    False,  # SyncSubAssemblies
+                    False,  # BDir2
+                    False,  # BSymmetric
+                    0,  # Number2
+                    0.0,  # Spacing2
+                    "",  # DName2
+                    False,  # EqualSpacing2
+                ),
+                default=None,
+            )
+            if feature is not None:
+                break
         if feature is None:
             raise Exception(
-                f"FeatureCircularPattern5 returned nothing (features={names}, "
-                f"axis={axis})"
+                f"FeatureCircularPattern5 returned nothing (features={used}, "
+                f"axis={axis})." + seeds.refusal(used)
             )
 
         pattern_name = adapter._attempt(
@@ -5272,7 +5299,8 @@ def _pattern_circular_impl(
         )
         return {
             "name": str(pattern_name) if pattern_name else None,
-            "patterned": names,
+            "patterned": used,
+            **seeds.left_out_field(used),
             "axis": axis,
             "count": int(count),
             "angle": float(angle),

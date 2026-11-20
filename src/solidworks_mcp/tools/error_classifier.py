@@ -295,6 +295,19 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
         patterns=(r"built no feature",),
     ),
+    # A pattern or mirror SolidWorks made nothing of, with a pattern or mirror
+    # among the features listed (``pattern_seeds.SeedPlan.refusal``).
+    ErrorRule(
+        error_type=OPERATION_FAILED,
+        hint=(
+            "SolidWorks made nothing, and a feature listed is a pattern or "
+            "mirror. A pattern carries its own seeds, and SolidWorks refuses one "
+            "listed with features it is built from; those the server could read "
+            "were already left out. List the pattern without the others it "
+            "repeats, or pattern them in a call of their own."
+        ),
+        patterns=(r"refuses one listed with features it already repeats",),
+    ),
     # Before not_found: the message quotes edge_rules' "No matching edges
     # found", which not_found also matches.
     ErrorRule(
