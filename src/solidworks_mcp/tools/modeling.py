@@ -24,6 +24,7 @@ from ..adapters.solidworks.edge_feature_check import warnings as edge_feature_wa
 from ..adapters.solidworks.plane_frame import add, scale, two_points, unit, vector
 from ..adapters.solidworks.rebuild_diagnostics import body_count_warning, issues_warning
 from ..adapters.solidworks.reference_geometry import LINE_MM
+from ..adapters.solidworks.summary_reuse import read_summary
 from .analysis import (
     FeatureExpectations,
     check_geometry,
@@ -76,20 +77,23 @@ def _result_value(data: Any, *keys: str, default: Any = None) -> Any:
     return default
 
 
-async def _read_summary(adapter: Any) -> AdapterResult[dict[str, Any]] | None:
+async def _read_summary(
+    adapter: Any, *, before_feature: bool = False
+) -> AdapterResult[dict[str, Any]] | None:
     """Read the geometry summary, or ``None`` if the adapter has no such read.
 
     Args:
         adapter: The active adapter.
+        before_feature: The read before the feature changes anything. Inside
+            ``execute_workflow`` it may be the last feature's after summary,
+            and read nothing (``summary_reuse``).
 
     Returns:
         AdapterResult[dict[str, Any]] | None: The summary result.
     """
-    reader = getattr(adapter, "get_model_geometry_summary", None)
-    if reader is None:
+    if getattr(adapter, "get_model_geometry_summary", None) is None:
         return None
-    result: AdapterResult[dict[str, Any]] = await reader()
-    return result
+    return await read_summary(adapter, before_feature=before_feature)
 
 
 def _box_size(summary: dict[str, Any]) -> Any:
@@ -3117,7 +3121,7 @@ async def register_modeling_tools(
             regions=input_data.regions,
         )
 
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.create_extrusion(params)
 
         require_success(result, context="Failed to create extrusion")
@@ -3185,7 +3189,7 @@ async def register_modeling_tools(
             axis_entity=input_data.axis_entity,
         )
 
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.create_revolve(params)
 
         require_success(result, context="Failed to create revolve")
@@ -3241,7 +3245,7 @@ async def register_modeling_tools(
             axis_entity=input_data.axis_entity,
             cut=True,
         )
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.create_revolve(params)
         require_success(result, context="Failed to create cut-revolve")
         after = await _read_summary(adapter) if before is not None else None
@@ -3422,7 +3426,7 @@ async def register_modeling_tools(
         if input_data.reverse_direction is not None:
             # Set only when given: left unset, the adapter picks the side.
             params.reverse_direction = input_data.reverse_direction
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.create_cut_extrude(params)
         require_success(result, context="Failed to create cut-extrude")
         after = await _read_summary(adapter) if before is not None else None
@@ -3565,7 +3569,7 @@ async def register_modeling_tools(
         )
         if input_data.reverse_direction is not None:
             params.reverse_direction = input_data.reverse_direction
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         make = adapter.create_extrusion if emboss else adapter.create_cut_extrude
         result = await make(params)
         require_success(result, context=f"Failed to {input_data.mode} the text")
@@ -4971,7 +4975,7 @@ async def register_modeling_tools(
             dict[str, Any]: The pattern created.
         """
         input_data = normalize_input(input_data, PatternLinearInput)
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.pattern_linear(
             input_data.features,
             input_data.direction,
@@ -5134,7 +5138,7 @@ async def register_modeling_tools(
             dict[str, Any]: The thread made.
         """
         input_data = normalize_input(input_data, CreateThreadInput)
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.create_thread(
             input_data.size,
             list(input_data.edge_point),
@@ -5183,7 +5187,7 @@ async def register_modeling_tools(
             dict[str, Any]: The hole made and the sizes SolidWorks used.
         """
         input_data = normalize_input(input_data, CreateHoleWizardHoleInput)
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.create_hole_wizard_hole(
             input_data.kind,
             input_data.size,
