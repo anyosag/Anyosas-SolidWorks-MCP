@@ -96,7 +96,13 @@ async def test_adapter_without_the_read_leaves_reply_unchanged(mcp_server):
         _CALLS["create_extrusion"]
     )
 
-    assert set(result) == {"status", "message", "extrusion", "execution_time"}
+    assert set(result) == {
+        "status",
+        "message",
+        "extrusion",
+        "execution_time",
+        "server_time_s",
+    }
 
 
 @pytest.mark.asyncio

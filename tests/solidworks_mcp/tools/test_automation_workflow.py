@@ -128,6 +128,7 @@ async def test_a_box_in_one_call(part: Any) -> None:
         "status": "success",
         "message": "Created extrusion: Boss-Extrude1",
         "execution_time": ANY,
+        "server_time_s": ANY,
         "measured_change": ANY,
         "extrusion": ANY,
     }
@@ -437,7 +438,9 @@ async def test_a_planned_tool_is_refused(mock_config: Any) -> None:
     assert "batch_export is not available yet" in result["message"]
 
 
-async def test_progress_is_reported_before_each_step_and_at_the_end(part: Any) -> None:
+async def test_progress_is_reported_before_each_step_only(part: Any) -> None:
+    """No "All N steps done" after the last: it raced the reply, and the client
+    logged "unknown token" with "STDIO connection dropped" (9 times)."""
     _adapter, run = part
     ctx = AsyncMock()
 
@@ -450,10 +453,9 @@ async def test_progress_is_reported_before_each_step_and_at_the_end(part: Any) -
         (1, 4),
         (2, 4),
         (3, 4),
-        (4, 4),
     ]
     assert calls[1]["message"] == "Step 2 of 4: add_rectangle"
-    assert calls[-1]["message"] == "All 4 steps done"
+    assert calls[-1]["message"] == "Step 4 of 4: create_extrusion"
 
 
 async def test_a_workflow_stops_between_steps_when_the_client_has_gone(

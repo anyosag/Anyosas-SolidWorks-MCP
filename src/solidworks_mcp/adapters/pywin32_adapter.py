@@ -10,7 +10,10 @@ import platform
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, TypeVar, cast
@@ -469,6 +472,179 @@ class _ComPacer:
 
 
 _PACER = _ComPacer()
+
+
+#: The phases of one COM operation, in the order they run: the settle gap it
+#: waits (``pace``); the checks before the call (SolidWorks gone, active
+#: document switched, SolidWorks busy, the window and dialog watchdog set
+#: up); the timed closure (its ``execution_time``); and what runs after it
+#: (selection cleared, active document read, window put back, dialogs, a
+#: failed call's probe).
+TIMING_PHASES = ("pace", "pre_checks", "closure", "post_checks")
+
+
+@dataclass
+class _OperationTotals:
+    """One operation name's share of a tool call's time."""
+
+    count: int = 0
+    closure_s: float = 0.0
+    total_s: float = 0.0
+
+
+class CallTiming:
+    """Where one tool call's server time went, summed over its COM operations.
+
+    ``tools/tool_boundary.py`` opens one for each tool call (:func:`timed_call`).
+    Each outermost ``_handle_com_operation`` adds its phases
+    (:data:`TIMING_PHASES`), and the gap the pacer waits before an adapter
+    method (``pace_before_com``) counts as ``pace``. A tool call made inside
+    another (a workflow's step) adds its totals to the outer one when it
+    ends. Plain Python, on the thread that runs the tool: no COM calls.
+
+    Attributes:
+        tool: The tool being timed.
+        parent: The tool call this one runs inside, if any.
+        phases: Seconds spent in each phase.
+        operations: Each operation name's count and seconds.
+    """
+
+    def __init__(self, tool: str, parent: "CallTiming | None" = None) -> None:
+        self.tool = tool
+        self.parent = parent
+        self.phases = dict.fromkeys(TIMING_PHASES, 0.0)
+        self.operations: dict[str, _OperationTotals] = {}
+
+    def add_operation(self, name: str, phases: dict[str, float]) -> None:
+        """Count one COM operation and the seconds it spent in each phase."""
+        totals = self.operations.setdefault(name, _OperationTotals())
+        totals.count += 1
+        totals.closure_s += phases["closure"]
+        totals.total_s += sum(phases.values())
+        for phase, seconds in phases.items():
+            self.phases[phase] += seconds
+
+    def add_pace(self, seconds: float) -> None:
+        """Count a settle gap waited outside any operation."""
+        self.phases["pace"] += seconds
+
+    def absorb(self, inner: "CallTiming") -> None:
+        """Add the totals of a tool call that ran inside this one."""
+        for phase, seconds in inner.phases.items():
+            self.phases[phase] += seconds
+        for name, theirs in inner.operations.items():
+            totals = self.operations.setdefault(name, _OperationTotals())
+            totals.count += theirs.count
+            totals.closure_s += theirs.closure_s
+            totals.total_s += theirs.total_s
+
+    def _by_time(self) -> list[tuple[str, _OperationTotals]]:
+        """The operations, the ones that took longest first."""
+        return sorted(self.operations.items(), key=lambda item: -item[1].total_s)
+
+    def breakdown(self, server_s: float) -> dict[str, Any]:
+        """The ``timing`` a reply carries when ``SOLIDWORKS_MCP_TIMING=1``.
+
+        Args:
+            server_s: The tool call's whole time in the server.
+
+        Returns:
+            dict[str, Any]: ``server_s``, ``com_operations``, each phase's
+            seconds as ``<phase>_s``, ``other_s`` (the server time outside
+            every phase: the tool's own Python, file reads) and
+            ``operations``, each name's ``count``, ``closure_s`` and
+            ``total_s``. ``pace_s`` also holds the gaps waited before
+            adapter methods, which no operation's ``total_s`` has.
+        """
+        spent = sum(self.phases.values())
+        return {
+            "server_s": round(server_s, 3),
+            "com_operations": sum(t.count for t in self.operations.values()),
+            **{f"{phase}_s": round(s, 3) for phase, s in self.phases.items()},
+            "other_s": round(max(0.0, server_s - spent), 3),
+            "operations": {
+                name: {
+                    "count": totals.count,
+                    "closure_s": round(totals.closure_s, 3),
+                    "total_s": round(totals.total_s, 3),
+                }
+                for name, totals in self._by_time()
+            },
+        }
+
+    def summary(self, server_s: float) -> str:
+        """The one line the server log gets for this tool call.
+
+        Args:
+            server_s: The tool call's whole time in the server.
+
+        Returns:
+            str: e.g. ``Timing export_stl: 2.913 s; pace 0.750, pre_checks
+            0.004, closure 0.812, post_checks 0.010, other 1.337 s; 4 COM
+            operations: export_file x1 0.940 s, ...``.
+        """
+        where = f" (in {self.parent.tool})" if self.parent is not None else ""
+        spent = sum(self.phases.values())
+        phases = ", ".join(f"{phase} {s:.3f}" for phase, s in self.phases.items())
+        count = sum(t.count for t in self.operations.values())
+        listed = ", ".join(
+            f"{name} x{totals.count} {totals.total_s:.3f} s"
+            for name, totals in self._by_time()
+        )
+        return (
+            f"Timing {self.tool}{where}: {server_s:.3f} s; {phases}, other "
+            f"{max(0.0, server_s - spent):.3f} s; {count} COM operations"
+            + (f": {listed}" if listed else "")
+        )
+
+
+#: The tool call being timed, as the boundary opened it (None outside one).
+_CALL_TIMING: ContextVar[CallTiming | None] = ContextVar(
+    "solidworks_mcp_call_timing", default=None
+)
+
+
+@contextmanager
+def timed_call(tool: str) -> Iterator[CallTiming]:
+    """Time one tool call: the COM operations it runs add their phases here.
+
+    Opened inside another (a workflow's step), it adds its totals to the
+    outer call's as it ends.
+
+    Args:
+        tool: The tool's name, for the log line.
+
+    Yields:
+        CallTiming: The call's timing, filled in as it runs.
+    """
+    parent = _CALL_TIMING.get()
+    timing = CallTiming(tool, parent)
+    token = _CALL_TIMING.set(timing)
+    try:
+        yield timing
+    finally:
+        _CALL_TIMING.reset(token)
+        if parent is not None:
+            parent.absorb(timing)
+
+
+class _PhaseClock:
+    """Times the phases of one COM operation as it moves through them."""
+
+    def __init__(self) -> None:
+        self.phases = dict.fromkeys(TIMING_PHASES, 0.0)
+        self._phase = TIMING_PHASES[0]
+        self._since = time.perf_counter()
+
+    def enter(self, phase: str) -> None:
+        """End the current phase and start ``phase`` (the same one: restart it)."""
+        now = time.perf_counter()
+        self.phases[self._phase] += now - self._since
+        self._phase, self._since = phase, now
+
+    def stop(self) -> None:
+        """End the current phase."""
+        self.enter(self._phase)
 
 
 def _run_macro_error_name(code: Any) -> str:
@@ -2654,6 +2830,8 @@ class PyWin32Adapter(
 
         Wraps COM operations with comprehensive error handling, performance metrics, and
         standardized result formatting. All SolidWorks COM calls should use this.
+        An outermost operation adds the seconds of each of its phases
+        (:data:`TIMING_PHASES`) to the tool call being timed (:func:`timed_call`).
 
         Args:
             operation_name (str): The operation name value.
@@ -2686,11 +2864,37 @@ class PyWin32Adapter(
                 ),
                 execution_time=0.0,
             )
+        # An operation run inside another is part of that one's closure.
+        timing = _CALL_TIMING.get() if self._operation_depth == 0 else None
+        clock = _PhaseClock()
+        try:
+            return self._guarded_com_operation(
+                clock,
+                operation_name,
+                operation_func,
+                *operation_args,
+                **operation_kwargs,
+            )
+        finally:
+            clock.stop()
+            if timing is not None:
+                timing.add_operation(operation_name, clock.phases)
+
+    def _guarded_com_operation(
+        self,
+        clock: _PhaseClock,
+        operation_name: str,
+        operation_func: Callable[..., T],
+        *operation_args: Any,
+        **operation_kwargs: Any,
+    ) -> AdapterResult[T]:
+        """``_handle_com_operation`` past its thread check, with ``clock`` told each phase."""
         gap_mode = _settle_mode() == "gap"
         if gap_mode:
             # Wait out the last operation's settle gap before any COM
             # call, the checks below included (pitfall #26).
             _PACER.wait()
+        clock.enter("pre_checks")
 
         # Only the outermost call keeps the window minimized and watches for
         # dialogs; operations that call other operations don't act twice.
@@ -2724,11 +2928,13 @@ class PyWin32Adapter(
         )
         watchdog = self._arm_dialog_watchdog() if outermost else None
         self._operation_depth += 1
+        clock.enter("closure")
         try:
             result = self._run_com_operation(
                 operation_name, operation_func, *operation_args, **operation_kwargs
             )
         finally:
+            clock.enter("post_checks")
             self._operation_depth -= 1
             if outermost:
                 if operation_name in _SELECTION_CLEARING_OPERATIONS:
@@ -2744,7 +2950,9 @@ class PyWin32Adapter(
             if gap_mode:
                 _PACER.mark(operation_name)
             else:
+                clock.enter("pace")
                 _settle_after(operation_name)
+                clock.enter("post_checks")
             dialogs = watchdog.disarm() if watchdog is not None else []
             if outermost:
                 self._keep_minimized(
@@ -3238,10 +3446,16 @@ class PyWin32Adapter(
         a dispatch). The circuit breaker calls this as each adapter method
         starts so those calls keep the gap too. A no-op in
         ``SOLIDWORKS_MCP_SETTLE_MODE=after``, where the previous operation
-        already slept.
+        already slept. The wait counts as ``pace`` in the tool call being
+        timed (:func:`timed_call`).
         """
-        if _settle_mode() == "gap":
-            _PACER.wait()
+        if _settle_mode() != "gap":
+            return
+        started = time.perf_counter()
+        _PACER.wait()
+        timing = _CALL_TIMING.get()
+        if timing is not None:
+            timing.add_pace(time.perf_counter() - started)
 
     def _attempt(
         self, operation: Callable[[], T], default: T | None = None

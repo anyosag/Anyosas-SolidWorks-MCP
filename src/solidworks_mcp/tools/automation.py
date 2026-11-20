@@ -9,28 +9,34 @@ create_template for reusable standards, and optimize_performance for tuning.
 
 import inspect
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastmcp import Context, FastMCP
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..adapters.base import SolidWorksAdapter
 from ..adapters.solidworks import limits
 from .error_classifier import INVALID_INPUT, OPERATION_FAILED, Classification
+from .export import ExportImageInput, reply_picture
 from .input_compat import CompatInput
 from .modeling import dependents_warning
+from .schema_compaction import _is_alias
 from .support_levels import SUPPORT_LEVELS, SupportLevel
 from .tool_boundary import (
     InvalidInputError,
     ToolOperationError,
     UnsupportedOperationError,
     error_payload,
+    input_model,
+    input_problems,
     normalize_input,
     require_capability,
     require_success,
     takes_input,
+    with_content,
     with_tool_boundary,
 )
 
@@ -262,18 +268,61 @@ _UNTRACKED_STEPS = frozenset(
 )
 
 
+#: The fields of a step in its long form; any other key is a short form's tool.
+_STEP_FIELDS = frozenset({"tool", "id", "arguments", "document"})
+
+
+def _short_form_schema(schema: dict[str, Any]) -> None:
+    """Let a step's listed schema take the short form, ``{"add_circle": {...}}``.
+
+    A client that checks a call against the schema would refuse the short
+    form otherwise: ``tool`` was required and no other key allowed.
+    """
+    schema.pop("required", None)
+    schema["additionalProperties"] = {
+        "type": "object",
+        "description": (
+            "Short form: the tool's name as the key and its arguments as the "
+            "value, e.g. {'add_circle': {'center_x': 0, 'center_y': 0, 'radius': 5}}"
+        ),
+    }
+
+
 class WorkflowStep(BaseModel):
     """One step of a workflow: a tool, its arguments and, optionally, its document.
+
+    ``{"add_circle": {...}}`` is short for ``{"tool": "add_circle",
+    "arguments": {...}}``; ``id`` and ``document`` may stand beside either.
 
     Attributes:
         tool (str): The tool's name, e.g. ``create_sketch``.
         id (str | None): A name later steps' references can use.
-        arguments (dict[str, Any]): Its input: the tool's fields, or
-            ``{"input_data": {...}}`` as over MCP.
+        arguments (dict[str, Any]): Its input: the tool's own fields
+            (``{"input_data": {...}}`` is unwrapped too).
         document (str | None): The open document to run it on.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_short_form_schema)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _short_form(cls, data: Any) -> Any:
+        """Read ``{"<tool>": {...}}`` as ``{"tool": "<tool>", "arguments": {...}}``."""
+        if not isinstance(data, dict) or "tool" in data or "arguments" in data:
+            return data
+        named = [key for key in data if key not in _STEP_FIELDS]
+        if len(named) != 1:
+            return data
+        (tool,) = named
+        arguments = data[tool]
+        if not isinstance(arguments, dict | None):
+            raise ValueError(
+                f"{tool!r} is not a step field (tool, arguments, id, document); "
+                f"as a short step, {{{tool!r}: {{...}}}}, its value must be the "
+                f"tool's arguments, an object, not {arguments!r}"
+            )
+        rest = {key: value for key, value in data.items() if key != tool}
+        return {"tool": tool, "arguments": arguments or {}, **rest}
 
     tool: str = Field(description="The tool to call, e.g. 'create_sketch'")
     id: str | None = Field(
@@ -288,11 +337,11 @@ class WorkflowStep(BaseModel):
     arguments: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "The tool's input: its fields, e.g. {'depth': 5}, or wrapped as "
-            "{'input_data': {...}} as you would call the tool over MCP. A string "
-            "value that is exactly '$steps.<step>.<path>' becomes the value at "
-            "that dotted path in an earlier step's reply; <step> is the step's "
-            "index from 0 or its id, e.g. '$steps.3.fillet.name' or "
+            "The tool's own fields, e.g. {'depth': 5}, with no input_data "
+            "wrapper. A string value that is exactly '$steps.<step>.<path>' "
+            "becomes the value at that dotted path in an earlier step's reply; "
+            "<step> is the step's index from 0 or its id, e.g. "
+            "'$steps.3.fillet.name' or "
             "'$steps.round.fillet.name' (a number in the path picks a list "
             "item). A 'document' key here is the step's document."
         ),
@@ -325,7 +374,8 @@ class WorkflowInput(CompatInput):
         description=(
             "The steps, run one after another: each a {tool, arguments} pair, "
             "with an optional document, e.g. {'tool': 'add_line', 'arguments': "
-            "{'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}}. At most "
+            "{'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}}, or the short form "
+            "{'add_line': {'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}}. At most "
             f"{MAX_WORKFLOW_STEPS} steps; split a longer list into several calls"
         ),
     )
@@ -442,7 +492,9 @@ def _map_leaves(value: Any, where: str, change: Callable[[str, Any], Any]) -> An
     return change(where, value)
 
 
-def _split_document(index: int, step: WorkflowStep) -> tuple[dict[str, Any], Any]:
+def _split_document(
+    index: int, step: WorkflowStep
+) -> tuple[dict[str, Any], Any, str | None]:
     """A step's arguments without ``document``, unwrapped from ``input_data``.
 
     Args:
@@ -450,12 +502,9 @@ def _split_document(index: int, step: WorkflowStep) -> tuple[dict[str, Any], Any
         step: The step.
 
     Returns:
-        tuple[dict[str, Any], Any]: The tool's arguments, and the step's
-        document (None to use the active one).
-
-    Raises:
-        InvalidInputError: When the document isn't a string, or two
-            different ones are given.
+        tuple[dict[str, Any], Any, str | None]: The tool's arguments, the
+        step's document (None to use the active one), and the problem when
+        the document isn't a string or two different ones are given.
     """
     arguments = dict(step.arguments)
     given = [step.document, arguments.pop("document", None)]
@@ -465,18 +514,22 @@ def _split_document(index: int, step: WorkflowStep) -> tuple[dict[str, Any], Any
         given.append(arguments.pop("document", None))
     for document in given:
         if not isinstance(document, str | None):
-            raise InvalidInputError(
+            return (
+                arguments,
+                None,
                 f"steps.{index}: document must be the title, file name or path "
-                f"of an open document, not {document!r}"
+                f"of an open document, not {document!r}",
             )
     documents = list(dict.fromkeys(d for d in given if d is not None))
     if len(documents) > 1:
-        raise InvalidInputError(
+        return (
+            arguments,
+            None,
             f"steps.{index}: document is given more than once, as "
             + " and ".join(map(repr, documents))
-            + "; give it once"
+            + "; give it once",
         )
-    return arguments, documents[0] if documents else None
+    return arguments, documents[0] if documents else None, None
 
 
 def _takes_document(fn: Any) -> bool:
@@ -486,8 +539,8 @@ def _takes_document(fn: Any) -> bool:
 
 
 def _parse_references(
-    value: Any, where: str, index: int, ids: dict[str, int] | None = None
-) -> Any:
+    value: Any, where: str, index: int, ids: dict[str, int]
+) -> tuple[Any, list[str]]:
     """``value`` with each ``$steps.`` string parsed into a :class:`_Reference`.
 
     Args:
@@ -496,44 +549,168 @@ def _parse_references(
         index: The step's index.
         ids: Every step's ``id`` and index (:func:`_step_ids`).
 
-    Raises:
-        InvalidInputError: For one not of the form ``$steps.<step>.<path>``,
-            naming an id no step has, or naming step ``index`` or a later one.
+    Returns:
+        tuple[Any, list[str]]: The parsed value, and a problem for each
+        reference not of the form ``$steps.<step>.<path>``, naming an id no
+        step has, or naming step ``index`` or a later one.
     """
-    known = ids or {}
+    problems: list[str] = []
 
     def parse(at: str, leaf: Any) -> Any:
         if not isinstance(leaf, str) or not leaf.startswith(_REFERENCE_PREFIX):
             return leaf
         match = _REFERENCE.fullmatch(leaf)
         if match is None:
-            raise InvalidInputError(
+            problems.append(
                 f"{at}: {leaf!r} is not a reference; write "
                 "$steps.<step>.<path>, <step> being a step's index or id, e.g. "
                 "$steps.0.sketch.name"
             )
+            return leaf
         name = match[1]
         if name.isdecimal():
             step = int(name)
             what = f"step {step}"
-        elif name in known:
-            step = known[name]
+        elif name in ids:
+            step = ids[name]
             what = f"step {name!r} (step {step})"
         else:
-            listed = ", ".join(known) or "none (give a step an id to use one)"
-            raise InvalidInputError(
+            listed = ", ".join(ids) or "none (give a step an id to use one)"
+            problems.append(
                 f"{at}: {leaf!r} names step {name!r}, but no step has that id; "
                 f"the ids are: {listed}"
             )
+            return leaf
         if step >= index:
-            raise InvalidInputError(
+            problems.append(
                 f"{at}: {leaf!r} names {what}, which doesn't run before "
                 f"step {index}; a step can use only the replies of the steps "
                 "before it"
             )
+            return leaf
         return _Reference(leaf, step, tuple(match[2].split(".")), name)
 
-    return _map_leaves(value, where, parse)
+    return _map_leaves(value, where, parse), problems
+
+
+def _holds_reference(value: Any) -> bool:
+    """Whether a parsed argument is, or holds, a :class:`_Reference`."""
+    if isinstance(value, dict):
+        return any(_holds_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_holds_reference(item) for item in value)
+    return isinstance(value, _Reference)
+
+
+def _field_list(tool: str, model: type[BaseModel]) -> str:
+    """A tool's input fields on one line, required ones first and starred.
+
+    Aliases kept for old callers are left out, as the listed schemas leave
+    them out (``schema_compaction``).
+    """
+    fields = sorted(
+        (
+            (name, info.is_required())
+            for name, info in model.model_fields.items()
+            if not _is_alias({"description": info.description or ""})
+        ),
+        key=lambda field: not field[1],
+    )
+    named = ", ".join(f"{name}*" if required else name for name, required in fields)
+    return f"{tool} takes {named} (* required)"
+
+
+def _argument_problem(
+    index: int, tool: str, fn: Any, arguments: dict[str, Any]
+) -> str | None:
+    """What a step's tool would refuse in its arguments, with the tool's fields.
+
+    The arguments are checked as the tool's boundary would check them when
+    the step runs. A ``$steps`` reference stands in for any value, so the
+    field that holds one isn't checked (:func:`input_problems`).
+
+    Args:
+        index: The step's index, for the message.
+        tool: The step's tool.
+        fn: The tool function.
+        arguments: The step's arguments, references parsed.
+
+    Returns:
+        str | None: The problem, or None when the arguments would do.
+    """
+    model = input_model(fn)
+    if model is None:
+        return None
+    unknown = [key for key, value in arguments.items() if _holds_reference(value)]
+    problem = input_problems(model, arguments, unknown)
+    if problem is None:
+        return None
+    return f"steps.{index} ({tool}): {problem}. {_field_list(tool, model)}"
+
+
+def _plan_step(
+    index: int,
+    step: WorkflowStep,
+    registry: dict[str, Any],
+    ids: dict[str, int],
+    rollback: bool,
+) -> tuple[_PlannedStep | None, list[str]]:
+    """Check one step before any step runs: its tool, document, references and arguments.
+
+    Args:
+        index: The step's index.
+        step: The step.
+        registry: Every registered tool, by name.
+        ids: Every step's ``id`` and index.
+        rollback: Whether the workflow rolls back on a failure.
+
+    Returns:
+        tuple[_PlannedStep | None, list[str]]: The step, ready to run, and
+        no problems; or None and the step's problems, each naming the step.
+    """
+    support = SUPPORT_LEVELS.get(step.tool)
+    if step.tool == "execute_workflow":
+        return None, [f"steps.{index}: a workflow can't run execute_workflow"]
+    if step.tool not in registry or support is None:
+        return None, [f"steps.{index}: no tool named {step.tool!r}"]
+    if support.level is SupportLevel.PLANNED:
+        return None, [f"steps.{index}: {step.tool} is not available yet"]
+    fn = registry[step.tool].fn
+    arguments, document, problem = _split_document(index, step)
+    if problem is None and arguments and not takes_input(fn):
+        problem = f"steps.{index}: {step.tool} takes no arguments"
+    if problem is None and document is not None and not _takes_document(fn):
+        problem = (
+            f"steps.{index}: {step.tool} doesn't take document (it doesn't act "
+            "on an open document, or picks its own); leave document out, or add "
+            "an activate_document step before it"
+        )
+    if problem is None and rollback and step.tool in _UNTRACKED_STEPS:
+        problem = (
+            f"steps.{index}: rollback_on_error can't be used with {step.tool}, "
+            "which changes the feature tree in a way a rollback can't follow; "
+            "run it without rollback_on_error"
+        )
+    if problem is not None:
+        return None, [problem]
+    call, problems = _parse_references(
+        {"arguments": arguments, "document": document}, f"steps.{index}", index, ids
+    )
+    if not problems:
+        problem = _argument_problem(index, step.tool, fn, call["arguments"])
+        problems = [problem] if problem else []
+    if problems:
+        return None, problems
+    return _PlannedStep(step.tool, fn, call, step.id), []
+
+
+def _problems_message(problems: list[str]) -> str:
+    """The ``invalid_input`` message for the problems found before any step ran."""
+    if len(problems) == 1:
+        return problems[0]
+    return f"{len(problems)} problems, so no step ran:\n" + "\n".join(
+        f"- {problem}" for problem in problems
+    )
 
 
 def _contents(value: Any) -> str:
@@ -589,12 +766,13 @@ def _resolve_references(
 
 async def _run_step(
     index: int, planned: _PlannedStep, replies: list[dict[str, Any]]
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one step, its references resolved against the earlier ``replies``.
 
     Returns:
-        dict[str, Any]: The tool's reply, or an ``invalid_input`` error reply
-        when a reference names nothing.
+        tuple[dict[str, Any], dict[str, Any]]: The tool's reply, or an
+        ``invalid_input`` error reply when a reference names nothing; and the
+        arguments it ran with.
     """
     call, problem = _resolve_references(planned.call, f"steps.{index}", replies)
     document = call["document"]
@@ -604,18 +782,25 @@ async def _run_step(
             f"{document!r}, not the name of a document"
         )
     if problem is not None:
-        return error_payload(
+        failed = error_payload(
             f"Invalid input: {problem}",
             Classification(INVALID_INPUT, _REFERENCE_HINT),
             0.0,
         )
+        return failed, call["arguments"]
     keywords = {} if document is None else {"document": document}
     reply: dict[str, Any]
     if takes_input(planned.fn):
         reply = await planned.fn(call["arguments"], **keywords)
     else:
         reply = await planned.fn(**keywords)
-    return reply
+    return reply, call["arguments"]
+
+
+def _inline_asked(arguments: dict[str, Any]) -> bool | None:
+    """An ``export_image`` step's own ``inline``, or None when it doesn't set one."""
+    image = ExportImageInput.model_validate(arguments)
+    return image.inline if "inline" in image.model_fields_set else None
 
 
 #: Checks a summary keeps whole wherever they sit in a reply (its top level
@@ -1012,29 +1197,33 @@ End Sub
     ) -> dict[str, Any]:
         """Run a list of tool steps in order in one call, stopping at the first that fails.
 
-        Use it for a sequence you already know, e.g. sketch, draw, exit, extrude: give
-        `steps`, each a `tool` and the `arguments` you would pass it (its fields, or
-        `{"input_data": {...}}`), and `document` to run it on another open document.
-        An argument `"$steps.<i>.<path>"` takes that value from step i's reply (i is
-        its index or `id`), e.g. `"old_name": "$steps.3.fillet.name"`. At most 200
-        steps: split a longer list into calls run in order (each numbers its steps
-        from 0). With `rollback_on_error`, a failing step makes it delete the
-        features and sketches the earlier steps added (dimensions or saved files
-        stay). Needs: whatever the steps need. Changes: whatever the steps change.
-        Returns: `steps` (each one's `status`, `message`, own `warning` and small
-        facts such as `measured_change` and `mesh_check`; with `detail: "full"`, its
-        whole `result`), `completed` and `warnings` (each once, with its steps); on
-        a failure, an error whose `data` has those (the failed step in full),
-        `failed_step` and `rolled_back`.
+        Use it for a sequence you already know, e.g. sketch, draw, exit, extrude. A
+        step is `{"tool": "add_circle", "arguments": {...}}` or `{"add_circle":
+        {...}}`; `arguments` are the tool's own fields, with no `input_data`
+        wrapper. A step's `document` runs it on another open document.
+        `"$steps.<i>.<path>"` takes a value from step i's reply (i: its index or
+        `id`), e.g. `"$steps.3.fillet.name"`. Every step's arguments are checked
+        before any step runs. At most 200 steps (split more into calls run in
+        order). With `rollback_on_error`, a failing step makes it delete the
+        features and sketches the earlier steps added. The last `export_image`
+        picture comes back in the reply. Needs: whatever the steps need. Changes:
+        whatever the steps change. Returns: `steps` (each one's `status`,
+        `message`, own `warning` and small facts; with `detail: "full"`, its whole
+        `result`), `completed`, `warnings` (each once, with its steps) and
+        `execution_time`; on a failure, an error whose `data` has those (the
+        failed step in full), `failed_step` and `rolled_back`.
 
         Args:
             input_data: The workflow. `steps` (1 to 200) is required;
                 `workflow_name`, `rollback_on_error` (off) and `detail`
                 ("summary") have defaults.
+            ctx: The MCP request: progress before each step, and the pictures
+                go back only to a call that came over MCP.
 
         Returns:
             dict[str, Any]: Each step's result.
         """
+        started = time.perf_counter()
         input_data = normalize_input(input_data, WorkflowInput)
         if len(input_data.steps) > MAX_WORKFLOW_STEPS:
             raise InvalidInputError(too_many_steps(len(input_data.steps)))
@@ -1043,43 +1232,16 @@ End Sub
         registry = {tool.name: tool for tool in await mcp.local_provider.list_tools()}
         ids = _step_ids(input_data.steps)
         plan: list[_PlannedStep] = []
+        problems: list[str] = []
         for index, step in enumerate(input_data.steps):
-            support = SUPPORT_LEVELS.get(step.tool)
-            if step.tool == "execute_workflow":
-                raise InvalidInputError(
-                    f"steps.{index}: a workflow can't run execute_workflow"
-                )
-            if step.tool not in registry or support is None:
-                raise InvalidInputError(f"steps.{index}: no tool named {step.tool!r}")
-            if support.level is SupportLevel.PLANNED:
-                raise InvalidInputError(
-                    f"steps.{index}: {step.tool} is not available yet"
-                )
-            fn = registry[step.tool].fn
-            arguments, step_document = _split_document(index, step)
-            if arguments and not takes_input(fn):
-                raise InvalidInputError(
-                    f"steps.{index}: {step.tool} takes no arguments"
-                )
-            if step_document is not None and not _takes_document(fn):
-                raise InvalidInputError(
-                    f"steps.{index}: {step.tool} doesn't take document (it "
-                    "doesn't act on an open document, or picks its own); leave "
-                    "document out, or add an activate_document step before it"
-                )
-            if input_data.rollback_on_error and step.tool in _UNTRACKED_STEPS:
-                raise InvalidInputError(
-                    f"steps.{index}: rollback_on_error can't be used with "
-                    f"{step.tool}, which changes the feature tree in a way a "
-                    "rollback can't follow; run it without rollback_on_error"
-                )
-            call = _parse_references(
-                {"arguments": arguments, "document": step_document},
-                f"steps.{index}",
-                index,
-                ids,
+            planned_step, found = _plan_step(
+                index, step, registry, ids, input_data.rollback_on_error
             )
-            plan.append(_PlannedStep(step.tool, fn, call, step.id))
+            problems += found
+            if planned_step is not None:
+                plan.append(planned_step)
+        if problems:
+            raise InvalidInputError(_problems_message(problems))
 
         name = input_data.workflow_name
         document = await _document() if input_data.rollback_on_error else None
@@ -1105,6 +1267,12 @@ End Sub
                 for text, steps in seen_warnings.items()
             ]
 
+        # The pictures to send back (only over MCP): every export_image step
+        # that set inline true, and the last one unless it set inline false.
+        # Each is (step index, picture, note), read as its step ends.
+        asked_pictures: list[tuple[int, Any, str | None]] = []
+        last_picture: tuple[int, Any, str | None] | None = None
+
         total = len(plan)
         for index, planned in enumerate(plan):
             if limits.client_gone():
@@ -1127,7 +1295,7 @@ End Sub
                     total=total,
                     message=f"Step {index + 1} of {total}: {planned.tool}",
                 )
-            reply = await _run_step(index, planned, replies)
+            reply, arguments = await _run_step(index, planned, replies)
             replies.append(reply)
             parts = _warning_parts(planned.tool, reply.get("warning"))
             gone = _deleted_with_dependents(planned.tool, reply)
@@ -1179,17 +1347,35 @@ End Sub
                         str(reply.get("hint") or ""),
                     ),
                 )
-        if ctx is not None:
-            await ctx.report_progress(
-                progress=total, total=total, message=f"All {total} steps done"
-            )
-        return {
-            "status": "success",
-            "message": f"Workflow '{name}' ran all {len(done)} steps",
-            "steps": done,
-            "completed": len(done),
-            "warnings": listed_warnings(),
-        }
+            if ctx is not None and planned.tool == "export_image":
+                asked = _inline_asked(arguments)
+                shot = (
+                    (index, *reply_picture(reply["file_check"]))
+                    if asked is not False
+                    else None
+                )
+                if shot is not None and asked:
+                    asked_pictures.append(shot)
+                last_picture = shot
+        # No progress notice after the last step: the reply says the same, and
+        # a notice that lands after it is one the client no longer expects.
+        sent = list(asked_pictures)
+        if last_picture is not None and last_picture not in sent:
+            sent.append(last_picture)
+        for index, _picture, note in sent:
+            if note is not None:
+                seen_warnings.setdefault(note, []).append(index)
+        return with_content(
+            {
+                "status": "success",
+                "message": f"Workflow '{name}' ran all {len(done)} steps",
+                "steps": done,
+                "completed": len(done),
+                "warnings": listed_warnings(),
+                "execution_time": time.perf_counter() - started,
+            },
+            *(picture for _, picture, _ in sent if picture is not None),
+        )
 
     @mcp.tool()
     async def create_template(input_data: TemplateInput) -> dict[str, Any]:

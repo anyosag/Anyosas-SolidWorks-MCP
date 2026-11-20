@@ -8,9 +8,11 @@ import json
 import os
 import string
 import tempfile
+from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+from fastmcp.utilities.types import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
@@ -25,6 +27,7 @@ from .tool_boundary import (
     normalize_input,
     require_capability,
     require_success,
+    with_content,
     with_tool_boundary,
 )
 
@@ -230,6 +233,7 @@ class ExportImageInput(CompatInput):
         up_axis (str): ``"y"`` (SolidWorks' views) or ``"z"`` (+Z up).
         hide_components (list[str] | None): Components hidden for the
             picture only.
+        inline (bool): Send the picture in the reply too (over MCP).
     """
 
     file_path: str | None = Field(
@@ -322,6 +326,15 @@ class ExportImageInput(CompatInput):
             "Assembly only: hide these components for the picture only, e.g. "
             '["cover-1"] for a cover-off view, by the names list_components '
             "gives; they are shown again afterwards, also when the picture fails"
+        ),
+    )
+    inline: bool = Field(
+        default=True,
+        description=(
+            "Send the picture back in the reply too, so you see it without "
+            "reading the file. PNG or JPG up to 2 MB; false only writes the "
+            "file. In execute_workflow only the last picture comes back, plus "
+            "those of steps that set this true"
         ),
     )
 
@@ -532,6 +545,82 @@ def _file_check(
             {"file_check": check},
         )
     return check
+
+
+#: The picture formats a reply carries (``file_check`` format to image
+#: type): the ones Claude reads.
+_INLINE_FORMATS = {"PNG": "png", "JPG": "jpeg"}
+
+#: The largest picture a reply carries, in bytes. Nothing resizes pictures
+#: (Pillow is not a dependency), so a bigger one stays in its file.
+INLINE_IMAGE_MAX_BYTES = 2_000_000
+
+#: The longest side a reply's picture may have, in pixels; the Claude API
+#: refuses a larger one.
+INLINE_IMAGE_MAX_PIXELS = 8000
+
+
+def reply_picture(file_check: dict[str, Any]) -> tuple[Image | None, str | None]:
+    """The picture an export wrote, to send in its reply, or why it stays in its file.
+
+    The picture goes as written, at the export's own width and height:
+    nothing resizes it. Only PNG and JPG go, up to
+    :data:`INLINE_IMAGE_MAX_BYTES` and :data:`INLINE_IMAGE_MAX_PIXELS` a side.
+    The file is read now, so a later export to the same path can't change it.
+
+    Args:
+        file_check: The export's ``file_check`` (``export_check.check_export``
+            of a good file).
+
+    Returns:
+        tuple[Image | None, str | None]: The picture and None, or None and
+        a note saying why it isn't sent and what to do instead.
+    """
+    path = file_check["file_path"]
+    kind = _INLINE_FORMATS.get(str(file_check.get("format")))
+    if kind is None:
+        return None, (
+            f"The picture is not in this reply: only PNG and JPG go in a reply, "
+            f"and {path} is {file_check.get('format')}. Read the file, or export "
+            "a .png."
+        )
+    size = int(file_check.get("size_bytes") or 0)
+    longest = max(int(file_check.get("width") or 0), int(file_check.get("height") or 0))
+    if size > INLINE_IMAGE_MAX_BYTES:
+        too_big = f"{size / 1e6:.1f} MB, over the {INLINE_IMAGE_MAX_BYTES / 1e6:.0f} MB"
+    elif longest > INLINE_IMAGE_MAX_PIXELS:
+        too_big = (
+            f"{longest} px on its longest side, over the {INLINE_IMAGE_MAX_PIXELS} px"
+        )
+    else:
+        return Image(data=Path(path).read_bytes(), format=kind), None
+    return None, (
+        f"The picture is not in this reply: it is {too_big} a reply carries. Read "
+        f"{path}, or export a smaller width and height."
+    )
+
+
+def _with_picture(reply: dict[str, Any], send: bool) -> dict[str, Any]:
+    """``export_image``'s reply, with the picture beside it when it is to be sent.
+
+    Args:
+        reply: The reply, with its ``file_check``.
+        send: Whether the picture goes back: the call came over MCP and
+            didn't set ``inline`` false.
+
+    Returns:
+        dict[str, Any]: The reply carrying the picture (:func:`with_content`),
+        or, when it can't go, the reply with a warning saying why.
+    """
+    if not send:
+        return reply
+    picture, note = reply_picture(reply["file_check"])
+    if picture is None:
+        return {
+            **reply,
+            "warning": " ".join(filter(None, (reply.get("warning"), note))),
+        }
+    return with_content(reply, picture)
 
 
 async def _stl_mesh_check(
@@ -925,7 +1014,9 @@ async def register_export_tools(
         }
 
     @mcp.tool()
-    async def export_image(input_data: ExportImageInput) -> dict[str, Any]:
+    async def export_image(
+        input_data: ExportImageInput, ctx: Context | None = None
+    ) -> dict[str, Any]:
         """Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG.
 
         Use it to show a result or check a shape. A standard view (front, back, left,
@@ -938,8 +1029,9 @@ async def register_export_tools(
         `hide` hides planes and sketches, `hide_components` hides assembly
         components (cover off), `section` cuts on a plane. Needs: an open, active
         document. Changes: writes the image file; the view stays turned and zoomed on
-        screen. Returns: `data` with `file_path`, `dimensions`, `view`, `view_axes`
-        (model directions shown right, up and toward you), `zoomed_to_fit`,
+        screen. Returns: the picture itself (up to 2 MB; `inline: false` leaves it
+        out), and `data` with `file_path`, `dimensions`, `view`, `view_axes` (model
+        directions shown right, up and toward you), `zoomed_to_fit`,
         `zoom_box_view_mm`, `hidden`, `hidden_components`, `section` and
         `window_state`, and `file_check`; a bad file is an `export_invalid` error.
 
@@ -949,13 +1041,18 @@ async def register_export_tools(
                 "1920x1080"), `view_orientation` (isometric) and `up_axis` (y) have
                 defaults; `view_direction` replaces `view_orientation`;
                 `zoom_to_fit` defaults to yes except for `current`.
+            ctx: The MCP request. Only a call that came over MCP sends the
+                picture back; a direct call gets the reply dict alone.
 
         Returns:
-            dict[str, Any]: The image written.
+            dict[str, Any]: The image written, with the picture beside it.
         """
         input_data = normalize_input(input_data, ExportImageInput)
+        send = ctx is not None and input_data.inline
         if hasattr(adapter, "export_image"):
-            result = await adapter.export_image(input_data.model_dump())
+            result = await adapter.export_image(
+                input_data.model_dump(exclude={"inline"})
+            )
             require_success(result, "Failed to export image")
             data = result.data if isinstance(result.data, dict) else {}
             reply: dict[str, Any] = {
@@ -990,7 +1087,7 @@ async def register_export_tools(
                 )
             if warnings:
                 reply["warning"] = " ".join(warnings)
-            return reply
+            return _with_picture(reply, send)
 
         if hasattr(adapter, "export_file") and input_data.file_path:
             result = await adapter.export_file(  # type: ignore[assignment]
@@ -1000,7 +1097,7 @@ async def register_export_tools(
             file_check = _file_check(
                 input_data.file_path, input_data.format_type, result.execution_time
             )
-            return {
+            reply = {
                 "status": "success",
                 "message": f"Exported image: {input_data.file_path}",
                 "file_check": file_check,
@@ -1013,6 +1110,7 @@ async def register_export_tools(
                 },
                 "execution_time": result.execution_time,
             }
+            return _with_picture(reply, send)
 
         raise UnsupportedOperationError(
             "Active adapter does not support export_image or "
