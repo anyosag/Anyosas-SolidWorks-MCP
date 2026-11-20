@@ -49,6 +49,27 @@ def _with_open_warning(reply: dict[str, Any], result: Any) -> dict[str, Any]:
     return reply
 
 
+def with_open_documents(reply: dict[str, Any], result: Any) -> dict[str, Any]:
+    """Add the documents open after a document operation, as ``open_documents``.
+
+    The adapter read them in the operation itself (``list_documents``), so
+    the agent needs no ``list_open_documents`` call next. Left out when the
+    adapter didn't give them.
+
+    Args:
+        reply: The tool's success reply.
+        result: The adapter result; the list is in ``metadata["open_documents"]``.
+
+    Returns:
+        dict[str, Any]: ``reply``.
+    """
+    metadata = getattr(result, "metadata", None)
+    documents = metadata.get("open_documents") if isinstance(metadata, dict) else None
+    if isinstance(documents, list):
+        reply["open_documents"] = documents
+    return reply
+
+
 #: Shared by every tool that can save an assembly (see adapters/solidworks/saving.py).
 _OVERWRITE_REFERENCES_DESCRIPTION = (
     "Set true only after the user agreed: lets an assembly save also overwrite "
@@ -957,7 +978,8 @@ async def register_file_management_tools(
         known format with its options, prefer `export_step`, `export_stl` and the other
         `export_*` tools. Needs: an open, active document. Changes: writes the file. A
         file already at `file_path` is kept and the call refused, unless `overwrite`
-        is on. Returns: `file_path` and `format`.
+        is on. Returns: `file_path` and `format`; for a SolidWorks format also
+        `open_documents` (`title`, `type`, `active`, `modified`).
 
         Args:
             input_data: The target. `file_path` is required; `format_type` defaults
@@ -979,16 +1001,21 @@ async def register_file_management_tools(
             "slddrw",
         }:
             result = await adapter.save_file(
-                input_data.file_path, input_data.overwrite_modified_references
+                input_data.file_path,
+                input_data.overwrite_modified_references,
+                list_documents=True,
             )
             require_success(result, "Failed to save file")
-            return {
-                "status": "success",
-                "message": f"File saved as: {input_data.file_path}",
-                "file_path": input_data.file_path,
-                "format": input_data.format_type,
-                "execution_time": result.execution_time,
-            }
+            return with_open_documents(
+                {
+                    "status": "success",
+                    "message": f"File saved as: {input_data.file_path}",
+                    "file_path": input_data.file_path,
+                    "format": input_data.format_type,
+                    "execution_time": result.execution_time,
+                },
+                result,
+            )
 
         require_capability(
             adapter,
@@ -1822,8 +1849,9 @@ async def register_file_management_tools(
         part an assembly loaded, with no window of its own, is opened first. Needs:
         the document open in SolidWorks. Changes: the active document. Returns: `data`
         with `activated` (the title), `verified` (read back from SolidWorks; null when
-        it couldn't be read) and `opened_window`. No match is an error that lists the
-        open documents.
+        it couldn't be read) and `opened_window`, and `open_documents` (`title`,
+        `type`, `active`, `modified`). No match is an error that lists the open
+        documents.
 
         Args:
             input_data: The document. `title_or_path` is required.
@@ -1832,19 +1860,24 @@ async def register_file_management_tools(
             dict[str, Any]: The activated document.
         """
         input_data = _coerce_input(ActivateDocumentInput, input_data)
-        result = await adapter.activate_document(input_data.title_or_path)
+        result = await adapter.activate_document(
+            input_data.title_or_path, list_documents=True
+        )
         require_success(result, context="Failed to activate document")
         data = result.data if isinstance(result.data, dict) else {}
         activated = data.get("activated", input_data.title_or_path)
         message = f"Activated {activated}"
         if data.get("verified") is None:
             message += " (could not be read back to confirm)"
-        return {
-            "status": "success",
-            "message": message,
-            "data": data,
-            "execution_time": result.execution_time,
-        }
+        return with_open_documents(
+            {
+                "status": "success",
+                "message": message,
+                "data": data,
+                "execution_time": result.execution_time,
+            },
+            result,
+        )
 
     @mcp.tool()
     async def save_body_as_part(
@@ -1861,7 +1894,8 @@ async def register_file_management_tools(
         made active again. The file is read back, so a SolidWorks dialog the server
         cancelled is only a `warning` when the file holds the body. Returns: `data` with
         `body`, `file_path`, `feature`, `solid_bodies` (every body name, to correct a
-        wrong one), `file_check` (`holds_body`, `volume_mm3`) and `closed_documents`.
+        wrong one), `file_check` (`holds_body`, `volume_mm3`) and `closed_documents`,
+        and `open_documents` (`title`, `type`, `active`, `modified`).
 
         Args:
             input_data: The body. `body_name` and `file_path` (a .sldprt) are
@@ -1877,7 +1911,10 @@ async def register_file_management_tools(
         )
         input_data = _coerce_input(SaveBodyAsPartInput, input_data)
         result = await adapter.save_body_as_part(
-            input_data.body_name, input_data.file_path, input_data.assembly_path
+            input_data.body_name,
+            input_data.file_path,
+            input_data.assembly_path,
+            list_documents=True,
         )
         require_success(result, context="Failed to save body as part")
         data = result.data if isinstance(result.data, dict) else {}
@@ -1890,7 +1927,7 @@ async def register_file_management_tools(
             "data": data,
             "execution_time": result.execution_time,
         }
-        return _with_open_warning(reply, result)
+        return with_open_documents(_with_open_warning(reply, result), result)
 
     @mcp.tool()
     async def list_save_bodies(

@@ -163,7 +163,7 @@ class TestModelingTools:
         mock_adapter.set_material.assert_awaited_once_with("Steel")
         # The template must reach the adapter, not just be echoed back.
         mock_adapter.create_part.assert_awaited_once_with(
-            "new_part", "mm", "standard_part"
+            "new_part", "mm", "standard_part", list_documents=True
         )
 
     @pytest.mark.asyncio
@@ -196,7 +196,7 @@ class TestModelingTools:
             "template": "standard_assembly",
         }
         mock_adapter.create_assembly.assert_awaited_once_with(
-            "test_assembly", "standard_assembly"
+            "test_assembly", "standard_assembly", list_documents=True
         )
 
         refused = await tool_func(
@@ -558,9 +558,8 @@ class TestModelingTools:
     @pytest.mark.asyncio
     async def test_input_validation(self):
         """Test input validation for modeling tools."""
-        # Test missing required fields
-        with pytest.raises(ValueError):
-            CreatePartInput()  # name is required
+        # The name is only a label, so nothing is required
+        assert CreatePartInput().name is None
 
         # Test invalid values
         with pytest.raises(ValueError):
@@ -623,8 +622,8 @@ class TestModelingTools:
         assert _result_value(_Obj(), "name", "title") == "ObjTitle"
         assert _result_value(_Obj(), "missing", default="def") == "def"
 
-        with pytest.raises(ValueError):
-            CreatePartInput(name="   ")
+        # The name is only a label: a blank one is none.
+        assert CreatePartInput(name="   ").name is None
 
         extrusion = CreateExtrusionInput(sketch_name="S1", depth=5, reverse=True)
         assert extrusion.reverse_direction is True

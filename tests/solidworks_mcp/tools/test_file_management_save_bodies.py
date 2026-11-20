@@ -65,7 +65,7 @@ async def test_save_body_as_part_passes_the_assembly_and_the_warning() -> None:
     )
 
     adapter.save_body_as_part.assert_awaited_once_with(
-        "Comb", "C:/c.sldprt", "C:/a.SLDASM"
+        "Comb", "C:/c.sldprt", "C:/a.SLDASM", list_documents=True
     )
     assert reply["status"] == "success"
     assert reply["warning"] == "SolidWorks showed a dialog during the call"

@@ -366,6 +366,43 @@ def _mock_block_faces(has_hole: bool) -> list[dict[str, Any]]:
     return faces
 
 
+def _mock_open_documents(
+    models: dict[str, SolidWorksModel], current: SolidWorksModel | None
+) -> list[dict[str, Any]]:
+    """The mock's documents as ``io.open_documents`` gives them.
+
+    Args:
+        models: Every document the mock has open, by path.
+        current: The active one.
+
+    Returns:
+        list[dict[str, Any]]: ``title``, ``type``, ``active`` and ``modified``.
+    """
+    return [
+        {
+            "title": model.name,
+            "type": model.type,
+            "active": current is not None and model.path == current.path,
+            "modified": bool((model.properties or {}).get("modified", False)),
+        }
+        for model in models.values()
+    ]
+
+
+def _with_open_documents(
+    result: AdapterResult[Any],
+    models: dict[str, SolidWorksModel],
+    current: SolidWorksModel | None,
+) -> AdapterResult[Any]:
+    """``result`` with the mock's open documents in its metadata, on success."""
+    if result.is_success:
+        result.metadata = {
+            **(result.metadata or {}),
+            "open_documents": _mock_open_documents(models, current),
+        }
+    return result
+
+
 class MockSolidWorksAdapter(SolidWorksAdapter):
     """Mock adapter that simulates SolidWorks operations.
 
@@ -623,11 +660,20 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             },
         )
 
-    async def open_model(self, file_path: str) -> AdapterResult[SolidWorksModel]:
+    async def open_model(
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
+    ) -> AdapterResult[SolidWorksModel]:
         """Mock opening a SolidWorks model.
 
         Args:
             file_path (str): Path to the target file.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
+            summarize (bool): Also give ``metadata["contents"]``: the mock's
+                feature rows and, for a part, its body names.
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -678,14 +724,41 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self._current_model = model
         self._models[file_path] = model
 
-        return AdapterResult(
+        result: AdapterResult[SolidWorksModel] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=model,
             execution_time=self._delays["model_operation"],
         )
+        if summarize:
+            result.metadata = {
+                "contents": {
+                    "features": [
+                        {
+                            "name": feature.name,
+                            "type": feature.type,
+                            "suppressed": bool(
+                                (feature.properties or {}).get("suppressed", False)
+                            ),
+                            "position": index,
+                            "component": None,
+                        }
+                        for index, feature in enumerate(self._features.values())
+                    ],
+                    "bodies": (
+                        list(self._mock_bodies()) if model_type == "Part" else None
+                    ),
+                }
+            }
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     async def open_model_read_only(
-        self, file_path: str
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Mock opening a model read-only: ``open_model``, marked read-only.
 
@@ -696,7 +769,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         writable = already is not None and not (already.properties or {}).get(
             "read_only"
         )
-        result = await self.open_model(file_path)
+        result = await self.open_model(
+            file_path, list_documents=list_documents, summarize=summarize
+        )
         if result.is_success and result.data is not None:
             result.data.properties = {
                 **(result.data.properties or {}),
@@ -746,14 +821,21 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         return saved
 
     async def close_model(
-        self, save: bool = False, overwrite_modified_references: bool = False
+        self,
+        save: bool = False,
+        overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Mock closing the current model.
+
+        The closed document leaves the mock's open documents.
 
         Args:
             save (bool): The save value. Defaults to False.
             overwrite_modified_references (bool): See
                 ``SolidWorksAdapter.close_model``.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
@@ -773,13 +855,17 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             await asyncio.sleep(self._delays["model_operation"])
             self._saved_references()
 
+        self._models.pop(self._current_model.path, None)
         self._current_model = None
 
-        return AdapterResult(
+        result: AdapterResult[Any] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=None,
             execution_time=self._delays["model_operation"],
         )
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     async def get_model_info(self) -> AdapterResult[dict[str, Any]]:
         """Mock metadata for the currently active model.
@@ -2414,6 +2500,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         name: str | None = None,
         units: str | None = None,
         template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Mock creating a new part.
 
@@ -2421,6 +2509,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             name (str | None): The name value. Defaults to None.
             units (str | None): The units value. Defaults to None.
             template (str | None): Template file path. Defaults to None.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -2463,20 +2552,28 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self._current_model = model
         self._models[model.path] = model
 
-        return AdapterResult(
+        result: AdapterResult[SolidWorksModel] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=model,
             execution_time=self._delays["model_operation"],
         )
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     async def create_assembly(
-        self, name: str | None = None, template: str | None = None
+        self,
+        name: str | None = None,
+        template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Mock creating a new assembly.
 
         Args:
             name (str | None): The name value. Defaults to None.
             template (str | None): Template file path. Defaults to None.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -2506,11 +2603,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self._current_model = model
         self._models[model.path] = model
 
-        return AdapterResult(
+        result: AdapterResult[SolidWorksModel] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data=model,
             execution_time=self._delays["model_operation"],
         )
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     async def create_drawing(
         self, name: str | None = None, template: str | None = None
@@ -2918,6 +3018,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self,
         file_path: str | None = None,
         overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock save, with the real adapter's overwrite confirmation.
 
@@ -2925,6 +3027,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             file_path (str | None): Path to the target file. Defaults to None.
             overwrite_modified_references (bool): See
                 ``SolidWorksAdapter.save_file``.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -2939,7 +3042,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         await asyncio.sleep(0.02)
         self._operation_count += 1
         resolved_path = file_path or self._current_model.path
-        return AdapterResult(
+        result: AdapterResult[dict[str, Any]] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "file_path": resolved_path,
@@ -2949,6 +3052,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             },
             execution_time=0.02,
         )
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     async def add_line(
         self, x1: float, y1: float, x2: float, y2: float
@@ -4276,13 +4382,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def activate_document(
-        self, title_or_path: str
+        self, title_or_path: str, *, list_documents: bool = False
     ) -> AdapterResult[dict[str, Any]]:
         """Mock making an already-open document active.
 
         Args:
             title_or_path (str): Title, full path, or file name of an open
                 document.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -4318,11 +4425,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         self._current_model = match
         self._operation_count += 1
-        return AdapterResult(
+        result: AdapterResult[dict[str, Any]] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={"activated": match.name, "verified": True},
             execution_time=0.05,
         )
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     async def insert_component(
         self,
@@ -4677,7 +4787,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str, assembly_path: str | None = None
+        self,
+        body_name: str,
+        file_path: str,
+        assembly_path: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock extracting a solid body from the active part to a new file.
 
@@ -4691,6 +4806,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             body_name (str): Name of a solid body in the active part.
             file_path (str): Absolute path for the new ``.sldprt``.
             assembly_path (str | None): The assembly asked for; recorded.
+            list_documents (bool): Also give ``metadata["open_documents"]``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The body, the written path, and a
@@ -4742,7 +4858,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             }
         )
 
-        return AdapterResult(
+        result: AdapterResult[dict[str, Any]] = AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "body": body_name,
@@ -4764,6 +4880,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             },
             execution_time=self._delays["model_operation"],
         )
+        if list_documents:
+            _with_open_documents(result, self._models, self._current_model)
+        return result
 
     def _mock_save_bodies(
         self, feature_name: str | None

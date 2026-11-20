@@ -411,11 +411,23 @@ class SolidWorksAdapter(ABC):
 
     # Model Operations
     @abstractmethod
-    async def open_model(self, file_path: str) -> AdapterResult[SolidWorksModel]:
+    async def open_model(
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
+    ) -> AdapterResult[SolidWorksModel]:
         """Open a SolidWorks model (part, assembly, or drawing).
 
         Args:
             file_path (str): Path to the target file.
+            list_documents (bool): Also return the documents open afterwards
+                in ``metadata["open_documents"]`` (each ``title``, ``type``,
+                ``active`` and ``modified``), read in the same operation.
+            summarize (bool): Also return the opened document's own feature
+                rows and solid-body names in ``metadata["contents"]``
+                (``features``, ``bodies``).
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -423,12 +435,18 @@ class SolidWorksAdapter(ABC):
         pass
 
     async def open_model_read_only(
-        self, file_path: str
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Open a SolidWorks model read-only, so nothing can be saved over it.
 
         Args:
             file_path (str): Path to the ``.sldprt``, ``.sldasm`` or ``.slddrw``.
+            list_documents (bool): As for ``open_model``.
+            summarize (bool): As for ``open_model``.
 
         Returns:
             AdapterResult[SolidWorksModel]: The opened model; its
@@ -521,7 +539,11 @@ class SolidWorksAdapter(ABC):
 
     @abstractmethod
     async def close_model(
-        self, save: bool = False, overwrite_modified_references: bool = False
+        self,
+        save: bool = False,
+        overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Close the current model.
 
@@ -531,6 +553,8 @@ class SolidWorksAdapter(ABC):
                 user's modified files an assembly uses; without it such a
                 save fails with a ``confirmation_required`` error listing
                 them in ``data.files``. Defaults to False.
+            list_documents (bool): Also return the documents still open in
+                ``metadata["open_documents"]`` (see ``open_model``).
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
@@ -541,6 +565,8 @@ class SolidWorksAdapter(ABC):
         self,
         file_path: str | None = None,
         overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Save the active model to the existing path or the provided path.
 
@@ -553,6 +579,8 @@ class SolidWorksAdapter(ABC):
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
             overwrite_modified_references (bool): See above. Defaults to False.
+            list_documents (bool): Also return the documents open afterwards
+                in ``metadata["open_documents"]`` (see ``open_model``).
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
@@ -620,6 +648,8 @@ class SolidWorksAdapter(ABC):
         name: str | None = None,
         units: str | None = None,
         template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Create a new part document.
 
@@ -627,6 +657,8 @@ class SolidWorksAdapter(ABC):
             name (str | None): The name value. Defaults to None.
             units (str | None): The units value. Defaults to None.
             template (str | None): Template file path. Defaults to None.
+            list_documents (bool): Also return the documents open afterwards
+                in ``metadata["open_documents"]`` (see ``open_model``).
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -635,13 +667,19 @@ class SolidWorksAdapter(ABC):
 
     @abstractmethod
     async def create_assembly(
-        self, name: str | None = None, template: str | None = None
+        self,
+        name: str | None = None,
+        template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Create a new assembly document.
 
         Args:
             name (str | None): The name value. Defaults to None.
             template (str | None): Template file path. Defaults to None.
+            list_documents (bool): Also return the documents open afterwards
+                in ``metadata["open_documents"]`` (see ``open_model``).
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -2110,7 +2148,12 @@ class SolidWorksAdapter(ABC):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str, assembly_path: str | None = None
+        self,
+        body_name: str,
+        file_path: str,
+        assembly_path: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Extract one solid body from the active multibody part to a new file.
 
@@ -2119,6 +2162,8 @@ class SolidWorksAdapter(ABC):
             file_path (str): Absolute path for the new ``.sldprt``.
             assembly_path (str | None): Also make an assembly of it there;
                 ``None`` makes none.
+            list_documents (bool): Also return the documents open afterwards
+                in ``metadata["open_documents"]`` (see ``open_model``).
 
         Returns:
             AdapterResult[dict[str, Any]]: The body, the written path, and the
@@ -2611,13 +2656,15 @@ class SolidWorksAdapter(ABC):
         )
 
     async def activate_document(
-        self, title_or_path: str
+        self, title_or_path: str, *, list_documents: bool = False
     ) -> AdapterResult[dict[str, Any]]:
         """Make an already-open document the active one.
 
         Args:
             title_or_path (str): Title, full path, or file name of an open
                 document.
+            list_documents (bool): Also return the documents open afterwards
+                in ``metadata["open_documents"]`` (see ``open_model``).
 
         Returns:
             AdapterResult[dict[str, Any]]: What was activated, or error.

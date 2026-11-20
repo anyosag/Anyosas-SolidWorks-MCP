@@ -13,8 +13,10 @@ from solidworks_mcp.adapters.base import (
     MassProperties,
 )
 from solidworks_mcp.tools.analysis import (
+    GeometryExpectations,
     _count_modelling_features,
     _verdict,
+    check_geometry,
     register_analysis_tools,
 )
 
@@ -410,3 +412,40 @@ def test_verdict_order() -> None:
     assert _verdict([{"passed": True}, {"passed": None}]) == "inconclusive"
     assert _verdict([{"passed": None}, {"passed": False}]) == "fail"
     assert _verdict([{"passed": True}]) == "pass"
+
+
+# ---- the geometry checks the feature tools' expect shares ------------------------
+
+
+def test_check_geometry_gives_verify_models_verdict_and_checks() -> None:
+    expectations = GeometryExpectations(
+        volume_mm3=50000, bounding_box_mm=(100, 50, 10), solid_body_count=2
+    )
+
+    verdict = check_geometry(expectations, _part_summary())
+
+    assert verdict["verdict"] == "fail"
+    assert [c["name"] for c in verdict["checks"]] == [
+        "volume_mm3",
+        "bounding_box_mm",
+        "solid_body_count",
+    ]
+    assert [c["passed"] for c in verdict["checks"]] == [True, True, False]
+    assert verdict["message"] == (
+        "Verification failed: 2 of 3 checks passed (failed: solid_body_count)"
+    )
+
+
+def test_check_geometry_without_a_summary_is_inconclusive() -> None:
+    verdict = check_geometry(GeometryExpectations(volume_mm3=1.0), {})
+
+    assert verdict["verdict"] == "inconclusive"
+    assert verdict["checks"][0]["note"] == "Could not be measured"
+
+
+@pytest.mark.asyncio
+async def test_verify_model_takes_the_expected_prefix(mcp_server, part_adapter):
+    result = await _verify(mcp_server, part_adapter, expected_volume_mm3=50000)
+
+    assert result["verdict"] == "pass"
+    assert result["checks"][0]["name"] == "volume_mm3"

@@ -18,12 +18,16 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parents[2] / "src" / "utils" / "measure_tool_cost.py"
 
 #: Characters of every listed description and input schema (all groups),
-#: measured at 240,653 (109,603 + 131,050) on 2026-11-19.
-TOTAL_BUDGET = 245_000
-#: Characters of the input schemas alone, measured at 131,050.
-SCHEMA_BUDGET = 133_500
-#: Characters of the core group, measured at 65,755.
-CORE_BUDGET = 67_000
+#: measured at 240,653 (109,603 + 131,050) on 2026-11-19; 245,777 on
+#: 2026-11-20, after the feature tools' `expect`, add_mate's
+#: `check_interference` and the document tools' `open_documents` (about
+#: 2,350 characters, to save the read an agent made in the next turn).
+TOTAL_BUDGET = 247_500
+#: Characters of the input schemas alone, measured at 134,240 (the `expect`
+#: field of eleven feature tools is most of the growth).
+SCHEMA_BUDGET = 135_500
+#: Characters of the core group, measured at 67,084.
+CORE_BUDGET = 68_000
 
 
 def _script() -> ModuleType:
