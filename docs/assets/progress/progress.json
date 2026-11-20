@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 201,
+  "total": 204,
   "by_level": {
-   "stable": 107,
+   "stable": 109,
    "beta": 0,
-   "experimental": 55,
+   "experimental": 56,
    "planned": 39
   },
   "list": [
@@ -548,6 +548,13 @@
     "summary": "Delete lines, arcs and other entities of the open sketch by id, or all of them."
    },
    {
+    "name": "describe_tool_inputs",
+    "family": "server_admin",
+    "level": "stable",
+    "reason": "",
+    "summary": "Give the full input schema of one or more tools, with each field's whole description."
+   },
+   {
     "name": "discover_solidworks_docs",
     "family": "docs_discovery",
     "level": "stable",
@@ -581,6 +588,13 @@
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
     "summary": "Raise a text label off the active part, or engrave it in, in one call."
+   },
+   {
+    "name": "enable_tool_groups",
+    "family": "server_admin",
+    "level": "stable",
+    "reason": "",
+    "summary": "Turn on more tool groups for this session, so their tools appear in your tool list."
    },
    {
     "name": "execute_macro",
@@ -623,6 +637,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Export the active sheet-metal part's flat pattern to DXF or DWG, for laser or waterjet cutting."
+   },
+   {
+    "name": "export_for_blender",
+    "family": "export",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Export the active part or assembly for Blender, with the code that imports it right."
    },
    {
     "name": "export_iges",

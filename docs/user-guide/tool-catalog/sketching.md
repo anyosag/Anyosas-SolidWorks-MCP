@@ -278,12 +278,17 @@ Read a sketch's segments, plane and text without opening it for editing.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | `str` | ✅ | `` | The sketch to read, e.g. 'Sketch3' |
+| `detail` | `Literal['full', 'summary']` | — | `full` | 'full' (the default): every segment with its points. 'summary': counts by type, circles as centre and radius, the dimensions (name, value), the relations and whether it is fully defined; fewer reads per segment, for large sketches |
+| `limit` | `int` | ✅ | `` |  |
+| `offset` | `int` | ✅ | `` |  |
 
 **Sample call:**
 
 ```json
 {
-  "name": "MCP_Demo_Part"
+  "name": "MCP_Demo_Part",
+  "limit": 10.0,
+  "offset": 10.0
 }
 ```
 
@@ -436,8 +441,8 @@ Add a geometric relation between sketch entities: horizontal, vertical, parallel
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `entity1` | `str` | ✅ | `` | First entity name or ID |
-| `entity2` | `str?` | — | `None` | Second entity name or ID (if required) |
+| `entity1` | `str` | ✅ | `` | First entity: an id from the add_* tools or edit_sketch, 'Origin', or a point of an entity: '<id>.center', '<id>.start', '<id>.end' |
+| `entity2` | `str?` | — | `None` | Second entity, named the same way, when the relation takes two |
 | `entity3` | `str?` | — | `None` | Third entity ID. Required for 'symmetric' (the centerline of symmetry); must be null for all other relations. |
 | `relation_type` | `str` | ✅ | `` | Relation type (parallel, perpendicular, tangent, coincident, etc.) |
 
@@ -454,7 +459,7 @@ Add a geometric relation between sketch entities: horizontal, vertical, parallel
 
 ### `add_sketch_dimension`
 
-Add a driving dimension to sketch entities: linear, angular, radial or diameter.
+Add a driving dimension to sketch entities: linear, horizontal, vertical, angular, radial or diameter.
 
 **Prerequisite:** Active sketch edit mode
 
@@ -462,10 +467,10 @@ Add a driving dimension to sketch entities: linear, angular, radial or diameter.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `entity1` | `str` | ✅ | `` | First entity name or ID |
-| `entity2` | `str?` | — | `None` | Second entity name or ID (for distance dimensions) |
-| `dimension_type` | `str` | — | `linear` | Dimension type (linear, radial, angular, etc.) |
-| `value` | `float` | ✅ | `` | Dimension value in mm or degrees |
+| `entity1` | `str` | ✅ | `` | First entity: an id from the add_* tools or edit_sketch, 'Origin', or a point of an entity: '<id>.center', '<id>.start', '<id>.end' |
+| `entity2` | `str?` | — | `None` | Second entity, named the same way, for a distance or an angle; a circle stands for its centre in a distance |
+| `dimension_type` | `Literal['linear', 'horizontal', 'vertical', 'angular', 'radial', 'diameter']` | — | `linear` | 'linear': a line's length, or the shortest distance between two points, circles (centres) or lines; 'horizontal' / 'vertical': the distance along sketch x / y (or a line's run / rise); 'angular': two connected lines; 'radial' / 'diameter': an arc or circle |
+| `value` | `float` | ✅ | `` | Dimension value in mm, or degrees for angular |
 
 **Sample call:**
 
@@ -480,28 +485,54 @@ Add a driving dimension to sketch entities: linear, angular, radial or diameter.
 
 ### `sketch_linear_pattern`
 
-Repeat sketch entities in a straight line at a fixed spacing.
+Repeat sketch entities in a straight line as a parametric sketch pattern.
 
 **Prerequisite:** Active sketch edit mode
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `entities` | `List[str]` | ✅ | `` | Ids of the entities to repeat (from the add_* tools) |
+| `direction_x` | `float` | — | `1.0` | Direction x component |
+| `direction_y` | `float` | — | `0.0` | Direction y component |
+| `spacing` | `float` | — | `10.0` | Spacing between instances, mm |
+| `count` | `int` | — | `3` | Instances, the seed included |
+| `add_dimensions` | `bool` | — | `True` | Add the pattern's spacing and count dimensions, so set_dimension can change it later. False makes plain copies. |
 
 **Sample call:**
 
 ```json
-{}
+{
+  "entities": []
+}
 ```
 
 ---
 
 ### `sketch_circular_pattern`
 
-Repeat sketch entities around the sketch origin, e.g. a bolt circle.
+Repeat sketch entities about a centre as a parametric sketch pattern, e.g. a bolt circle.
 
 **Prerequisite:** Active sketch edit mode
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `entities` | `List[str]` | ✅ | `` | Ids of the entities to repeat; the first must be a circle, arc, ellipse, polygon or rectangle |
+| `count` | `int` | — | `6` | Instances, the seed included |
+| `angle` | `float` | — | `360.0` | Degrees the instances spread over |
+| `center_x` | `float` | — | `0.0` | Pattern centre x in sketch mm (default the origin) |
+| `center_y` | `float` | — | `0.0` | Pattern centre y in sketch mm (default the origin) |
+| `add_dimensions` | `bool` | — | `True` | Add the pattern's radius, angle and count dimensions, so set_dimension can change it later. False makes plain copies. |
 
 **Sample call:**
 
 ```json
-{}
+{
+  "entities": []
+}
 ```
 
 ---

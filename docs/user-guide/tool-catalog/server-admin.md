@@ -4,7 +4,7 @@ Tools in the server_admin category.
 
 > **Prerequisite:** SolidWorks running
 
-**Total tools in this category: 2**
+**Total tools in this category: 4**
 
 ---
 
@@ -45,6 +45,50 @@ Minimize or restore the SolidWorks window, so the user can work in other apps wh
 ```json
 {
   "state": null
+}
+```
+
+---
+
+### `enable_tool_groups`
+
+Turn on more tool groups for this session, so their tools appear in your tool list.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `groups` | `List[str]` | ✅ | `` | Groups to turn on, e.g. ['bodies', 'drawings'], or ['all'] |
+
+**Sample call:**
+
+```json
+{
+  "groups": []
+}
+```
+
+---
+
+### `describe_tool_inputs`
+
+Give the full input schema of one or more tools, with each field's whole description.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `tools` | `List[str]` | ✅ | `` | Tool names, e.g. ['select_edges'] (up to 10) |
+
+**Sample call:**
+
+```json
+{
+  "tools": []
 }
 ```
 

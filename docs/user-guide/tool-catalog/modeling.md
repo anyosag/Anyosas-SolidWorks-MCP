@@ -587,10 +587,20 @@ List the top-level components of the active assembly by instance name, e.g. "bra
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `limit` | `int` | ✅ | `` |  |
+| `offset` | `int` | ✅ | `` |  |
+
 **Sample call:**
 
 ```json
-{}
+{
+  "limit": 10.0,
+  "offset": 10.0
+}
 ```
 
 ---
