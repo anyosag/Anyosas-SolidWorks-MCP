@@ -31,6 +31,7 @@ from . import (
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
+from .summary_reuse import read_summary
 
 
 class SolidWorksFeaturesMixin:
@@ -125,7 +126,7 @@ class SolidWorksFeaturesMixin:
             could be read, and the edge facts of :func:`_edge_facts`.
             ``ERROR`` when the volume did not change.
         """
-        before = await _summary_keeping_selection(self)
+        before = await _summary_keeping_selection(self, before_feature=True)
         volume_before = _summary_volume(before)
         # FeatureFillet3 on SW 2025+ returns a number, not the feature, so the
         # new fillet's name comes from the tree (listing keeps the selection).
@@ -183,7 +184,7 @@ class SolidWorksFeaturesMixin:
             the volume read before it, and the edge facts of
             :func:`_edge_facts`.
         """
-        before = await _summary_keeping_selection(self)
+        before = await _summary_keeping_selection(self, before_feature=True)
         result = _add_chamfer_impl(self, distance, edge_names, angle, flip)
         if not result.is_success or result.data is None:
             return result
@@ -2268,14 +2269,22 @@ def _name_from_tree(
         feature.name = new[0]
 
 
-async def _summary_keeping_selection(adapter: Any) -> dict[str, Any] | None:
+async def _summary_keeping_selection(
+    adapter: Any, before_feature: bool = False
+) -> dict[str, Any] | None:
     """The part's geometry summary, read without a rebuild so the selection survives.
+
+    Args:
+        adapter: A connected adapter.
+        before_feature: The read before the fillet or chamfer. Inside
+            ``execute_workflow`` it may be the last feature's after summary,
+            and read nothing (``summary_reuse``).
 
     Returns:
         dict[str, Any] | None: ``get_model_geometry_summary``'s data, or None
         when it can't be read.
     """
-    summary = await adapter.get_model_geometry_summary()
+    summary = await read_summary(adapter, before_feature=before_feature)
     data = summary.data if summary.is_success else None
     return data if isinstance(data, dict) else None
 

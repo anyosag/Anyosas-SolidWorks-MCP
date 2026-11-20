@@ -370,7 +370,7 @@ async def register_engineering_data_tools(
         """
         _supports("set_equations")
         input_data = normalize_input(input_data, SetEquationsInput)
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.set_equations(input_data.equations)
         require_success(result, context="Failed to set equations")
         reply = _with_change(result, before, await _read_summary(adapter))
@@ -403,7 +403,7 @@ async def register_engineering_data_tools(
         """
         _supports("delete_equation")
         input_data = normalize_input(input_data, DeleteEquationInput)
-        before = await _read_summary(adapter)
+        before = await _read_summary(adapter, before_feature=True)
         result = await adapter.delete_equation(input_data.equation)
         require_success(result, context="Failed to delete the equation")
         reply = _with_change(result, before, await _read_summary(adapter))

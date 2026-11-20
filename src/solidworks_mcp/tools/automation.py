@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..adapters.base import SolidWorksAdapter
 from ..adapters.solidworks import limits
 from ..adapters.solidworks.sketch_points import POINT_GETTERS
+from ..adapters.solidworks.summary_reuse import reusing_summaries
 from .error_classifier import INVALID_INPUT, OPERATION_FAILED, Classification
 from .export import ExportImageInput, reply_picture
 from .input_compat import CompatInput
@@ -41,6 +42,7 @@ from .tool_boundary import (
     with_content,
     with_tool_boundary,
 )
+from .tool_hints import TOOL_HINTS
 
 # Input schemas using Python 3.14 built-in types
 
@@ -268,6 +270,41 @@ _UNTRACKED_STEPS = frozenset(
         "close_model",
     }
 )
+
+
+#: The steps that can't change a solid body, so the last feature's after
+#: summary still describes the part when the next feature reads its before
+#: (``summary_reuse``): a new sketch and what is drawn in it, reference
+#: geometry, a rename, a selection, and every tool ``tool_hints`` marks
+#: read-only. Not edit_sketch: closing an edited sketch rebuilds the features
+#: on it. Any other step, failed step or step on its own document drops the
+#: summary, so the next feature reads the part again.
+_KEEPS_SOLIDS = frozenset(
+    {
+        "create_sketch",
+        "exit_sketch",
+        *ENTITY_STEP_TOOLS,
+        "add_polygon",
+        "add_ellipse",
+        "add_spline",
+        "add_sketch_text",
+        "add_outlines",
+        "add_sketch_geometry",
+        "add_sketch_constraint",
+        "add_sketch_dimension",
+        "sketch_linear_pattern",
+        "sketch_circular_pattern",
+        "sketch_mirror",
+        "sketch_offset",
+        "create_reference_plane",
+        "create_axis",
+        "create_reference_point",
+        "rename_feature",
+        "select_edges",
+        "select_face_edges",
+        "select_feature",
+    }
+) | frozenset(name for name, hints in TOOL_HINTS.items() if hints.read_only)
 
 
 #: The fields of a step in its long form; any other key is a short form's tool.
@@ -1400,6 +1437,10 @@ End Sub
             else:
                 entry = _summary(entry, reply, own)
             done.append(entry)
+            summaries.finish_step(
+                keeps_solids=planned.tool in _KEEPS_SOLIDS,
+                valid=not failed and planned.call["document"] is None,
+            )
             if failed:
                 data: dict[str, Any] = {
                     "steps": done,
@@ -1439,39 +1480,47 @@ End Sub
         # it drew fewer steps than it had, the last a success (the step gives
         # model coordinates, or input its tool refuses). Runs resume after it.
         alone = False
-        while index < total:
-            planned = plan[index]
-            if limits.client_gone():
-                raise ToolOperationError(
-                    f"Workflow '{name}' stopped before step {index + 1} of {total} "
-                    f"({planned.tool}): the MCP client disconnected, so nothing "
-                    "would read the result.",
-                    data={
-                        "steps": done,
-                        "completed": index,
-                        "failed_step": None,
-                        "warnings": listed_warnings(),
-                    },
-                )
-            # Consecutive sketch-entity steps drawn in one SolidWorks operation
-            # pay one settle gap, not one each (1,433 gaps in the speed sample).
-            run = [] if alone else _entity_run(plan, index, replies)
-            if len(run) > 1:
-                await report(
-                    index,
-                    f"Steps {index + 1}-{index + len(run)} of {total}: sketch entities",
-                )
-                drawn = await draw_entity_steps(adapter, run)
-                for offset, reply in enumerate(drawn):
-                    await record(index + offset, reply, run[offset][1])
-                index += len(drawn)
-                alone = len(drawn) < len(run)
-                continue
-            alone = False
-            await report(index, f"Step {index + 1} of {total}: {planned.tool}")
-            reply, arguments = await _run_step(index, planned, replies)
-            await record(index, reply, arguments)
-            index += 1
+        # A feature's after summary stands for the next feature's before while
+        # only steps that can't change a solid ran between (_KEEPS_SOLIDS),
+        # within this call alone: the user may edit the part between calls.
+        with reusing_summaries() as summaries:
+            while index < total:
+                planned = plan[index]
+                if limits.client_gone():
+                    raise ToolOperationError(
+                        f"Workflow '{name}' stopped before step {index + 1} of "
+                        f"{total} ({planned.tool}): the MCP client disconnected, "
+                        "so nothing would read the result.",
+                        data={
+                            "steps": done,
+                            "completed": index,
+                            "failed_step": None,
+                            "warnings": listed_warnings(),
+                        },
+                    )
+                # Consecutive sketch-entity steps drawn in one SolidWorks
+                # operation pay one settle gap, not one each (1,433 gaps in
+                # the speed sample).
+                run = [] if alone else _entity_run(plan, index, replies)
+                if len(run) > 1:
+                    await report(
+                        index,
+                        f"Steps {index + 1}-{index + len(run)} of {total}: "
+                        "sketch entities",
+                    )
+                    drawn = await draw_entity_steps(adapter, run)
+                    for offset, reply in enumerate(drawn):
+                        await record(index + offset, reply, run[offset][1])
+                    index += len(drawn)
+                    alone = len(drawn) < len(run)
+                    continue
+                alone = False
+                await report(index, f"Step {index + 1} of {total}: {planned.tool}")
+                # Not on another document: the summary is the active one's.
+                summaries.start_step(offer=planned.call["document"] is None)
+                reply, arguments = await _run_step(index, planned, replies)
+                await record(index, reply, arguments)
+                index += 1
         # No progress notice after the last step: the reply says the same, and
         # a notice that lands after it is one the client no longer expects.
         sent = list(asked_pictures)
