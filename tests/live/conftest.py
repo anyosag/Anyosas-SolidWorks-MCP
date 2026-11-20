@@ -77,9 +77,13 @@ _LIVE_PACING_DEFAULTS = {
     "SOLIDWORKS_MCP_DOC_SETTLE_SECONDS": "2.5",
     "SW_TEST_PACE_SECONDS": "8",
 }
-# Minimum SolidWorks process age before the first live test. Nearly every
-# crash landed 2-5 minutes after launch, while 3DEXPERIENCE finishes signing in
-# and re-lays-out the CommandManager tabs. ``SW_TEST_WARMUP_SECONDS=0`` skips.
+# Upper bound on the SolidWorks process age the run waits for before its first
+# test. Nearly every crash landed 2-5 minutes after launch, while 3DEXPERIENCE
+# finishes signing in and re-lays-out the CommandManager tabs. The run starts
+# sooner once SolidWorks has been idle and answering for
+# ``SW_TEST_WARMUP_SETTLE_SECONDS`` (``tests/live/readiness.py``).
+# ``SW_TEST_WARMUP_SECONDS=0`` skips the wait; ``SW_TEST_WARMUP_FIXED=1``
+# waits the whole time, as before.
 _DEFAULT_WARMUP_SECONDS = 480
 
 
@@ -209,30 +213,50 @@ def _snapshot_run_baseline() -> None:
         _RUN_BASELINE = None
 
 
+def _com_answers() -> bool:
+    """One cheap COM read on the running SolidWorks (never launches it)."""
+    app = _running_solidworks_app()
+    return app is not None and bool(_call(app, "RevisionNumber"))
+
+
+def _env_seconds(name: str, default: float) -> float:
+    """A number of seconds from the environment, else ``default``."""
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        return float(default)
+
+
+def _warm_up() -> None:
+    """Wait for a freshly started SolidWorks: until it is ready, at most to its warm-up age."""
+    import sys
+
+    from tests.live import readiness
+
+    warmup = _env_seconds("SW_TEST_WARMUP_SECONDS", _DEFAULT_WARMUP_SECONDS)
+    pid = _solidworks_pid()
+    age = _solidworks_age_seconds(pid) if pid is not None and warmup > 0 else None
+    if pid is None:
+        return
+    readiness.warm_up(
+        age,
+        warmup,
+        lambda: readiness.SolidWorksReadiness(pid, _com_answers),
+        fixed=os.getenv("SW_TEST_WARMUP_FIXED", "").strip().lower() in _TRUTHY,
+        settle=_env_seconds(
+            "SW_TEST_WARMUP_SETTLE_SECONDS", readiness.DEFAULT_SETTLE_SECONDS
+        ),
+        log=lambda line: print(line, file=sys.stderr, flush=True),
+    )
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Apply live pacing defaults, wait for SolidWorks to warm up, note open documents."""
     if not _REAL_ENABLED or platform.system() != "Windows":
         return
     for name, value in _LIVE_PACING_DEFAULTS.items():
         os.environ.setdefault(name, value)
-    try:
-        warmup = float(os.getenv("SW_TEST_WARMUP_SECONDS", _DEFAULT_WARMUP_SECONDS))
-    except ValueError:
-        warmup = float(_DEFAULT_WARMUP_SECONDS)
-    pid = _solidworks_pid()
-    age = _solidworks_age_seconds(pid) if pid is not None and warmup > 0 else None
-    if age is not None and age < warmup:  # pragma: no cover - live only
-        import sys
-        import time
-
-        wait = warmup - age
-        print(
-            f"[live] SolidWorks started {age:.0f}s ago; waiting {wait:.0f}s for it "
-            "to finish warming up (SW_TEST_WARMUP_SECONDS)...",
-            file=sys.stderr,
-            flush=True,
-        )
-        time.sleep(wait)
+    _warm_up()
     _snapshot_run_baseline()
 
 
