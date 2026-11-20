@@ -6,7 +6,7 @@ reviewed, then implemented, signed off live where it touches SolidWorks,
 and archived after its PR merges. Update this file when an item is done
 or the order changes.
 
-Last updated 2026-11-09.
+Last updated 2026-11-19.
 
 | # | Item | Issue | OpenSpec change | State |
 | --- | --- | --- | --- | --- |
@@ -28,6 +28,13 @@ Last updated 2026-11-09.
 | 15 | Skills that improve the agent's results, measured on the U-joint prompt | #207 | not yet written | Tabled 2026-11-09: needs research first (what "better" means, a harness to run and score sessions). See `openspec/research/agent-skill-evaluation.md` |
 | 16 | Keep SolidWorks minimized while tools run: sticky minimized state, screenshots while minimized, assembly saves without the Save Modified Documents dialog, a dialog watchdog, a window tool | none (fork) | `keep-solidworks-minimized` | Implemented 2026-11-10 on `feat/keep-minimized` (fork `anyosag/SolidworksMCP-python`); mock suite green; live sign-off pending |
 | 17 | Cellvis dish rack gaps: set a component's transform and fixed state, clearance between components and section pictures, a resin print-orientation check, replace a fillet's or chamfer's edges | none (fork) | `cellvis-assembly-and-print-checks` | Implemented 2026-11-13 on `cellvis-gaps` (from `dishrack-fixes`); mock suite green; 13 live tests and 107 related live tests pass; not merged into main |
+| 18 | Equations and global variables: `list_equations`, `set_equations` (all or nothing, one rebuild), `delete_equation`; `list_model_dimensions` shows `driven_by` and `set_dimension` refuses a driven dimension. First of the tools ported from hjbaard's `solidworks-mcp` | none (fork) | `parametric-equations` | Spec written 2026-11-19 on `feat/parametric-equations` (from `main`); probes not run. After item 7 unless reordered |
+| 19 | Shell, rib and full-round fillet: `create_shell` (replaces the VBA-only route), `create_rib`, `add_full_round` | none (fork) | `shell-rib-full-round` | Spec written 2026-11-19 with item 18; probes not run |
+| 20 | Mesh sections: `slice_mesh` (STL/3MF, no SolidWorks needed) and `compare_with_mesh` (the active part against a reference mesh, through a temporary STL) | none (fork) | `mesh-sections` | Spec written 2026-11-19 with item 18; no COM probes needed. Item 24 builds on it |
+| 21 | Hole Wizard holes and modeled ISO threads: `create_hole_wizard_hole`, `create_thread` | none (fork) | `hole-wizard-and-threads` | Spec written 2026-11-19 with item 18; probes not run. The most probing of the ported changes |
+| 22 | Pocket a face to its outline less a rim: `cut_offset_pocket`, and `sketch_from_face_loop` (half of upstream #77) | none (fork) | `face-outline-pocket` | Spec written 2026-11-19 with item 18; probes not run |
+| 23 | Replace a component and colour parts or components: `replace_component`, `set_appearance` | none (fork) | `components-replace-and-appearance` | Spec written 2026-11-19 with item 18; probes not run |
+| 24 | What a moving component sweeps through, and joint checks over a range: `swept_region`, `check_motion` | none (fork) | `joint-swept-region` | Spec written 2026-11-19 with item 18; probes not run. Needs item 20 first |
 
 ## Tools that can't run yet (item 10)
 
