@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 203,
+  "total": 205,
   "by_level": {
    "stable": 109,
    "beta": 0,
-   "experimental": 55,
+   "experimental": 57,
    "planned": 39
   },
   "list": [
@@ -436,6 +436,13 @@
     "summary": "Extrude the sketch you just closed into a solid boss, added to the active part."
    },
    {
+    "name": "create_hole_wizard_hole",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Make an ISO metric hole with SolidWorks' Hole Wizard: clearance, counterbore, countersink or tapped."
+   },
+   {
     "name": "create_loft",
     "family": "modeling",
     "level": "stable",
@@ -511,6 +518,13 @@
     "level": "planned",
     "reason": "no adapter implements it yet.",
     "summary": "Create a part, assembly or drawing template file (.prtdot, .asmdot, .drwdot) with standard settings."
+   },
+   {
+    "name": "create_thread",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Cut a real, printable ISO metric thread (SolidWorks' Thread feature) from a circular edge."
    },
    {
     "name": "delete_equation",
@@ -1434,11 +1448,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 295,
+   "covered": 298,
    "total": 2838
   },
   "api": {
-   "covered": 378,
+   "covered": 384,
    "total": 5985
   },
   "interfaces": [
@@ -1674,6 +1688,8 @@
    {
     "name": "IFeatureManager",
     "covered": [
+     "CreateDefinition",
+     "CreateFeature",
      "CreateSaveBodyFeature",
      "EditRollback",
      "FeatureCircularPattern5",
@@ -1686,6 +1702,7 @@
      "FeatureLinearPattern5",
      "FeatureRevolve2",
      "GetFeatureCount",
+     "HoleWizard5",
      "InsertCombineFeature",
      "InsertDeleteBody2",
      "InsertFeatureChamfer",

@@ -1,13 +1,13 @@
 # Tool Catalog — All 101 Tools
 
-This reference documents all **203 MCP tools** registered by the SolidWorks MCP server.
+This reference documents all **205 MCP tools** registered by the SolidWorks MCP server.
 Each section covers one functional category with parameter tables and copy-paste sample calls.
 
 ## Quick Navigation
 
 | Category | Count | Description |
 |----------|-------|-------------|
-| [Modeling Tools](modeling.md) | 42 | Create and manipulate SolidWorks parts, assemblies, and drawings. These are the … |
+| [Modeling Tools](modeling.md) | 44 | Create and manipulate SolidWorks parts, assemblies, and drawings. These are the … |
 | [Sketching Tools](sketching.md) | 25 | Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge… |
 | [Bodies Tools](bodies.md) | 8 | Work with the solid bodies of a multibody part: list them, insert another part a… |
 | [Drawing Tools](drawing.md) | 14 | Create and edit 2-D technical drawings: add projected/section/detail views, plac… |
