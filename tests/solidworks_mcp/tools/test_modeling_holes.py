@@ -77,6 +77,24 @@ async def test_a_thread_through_the_mock(mcp_server, mock_adapter) -> None:
     assert "note" in reply["data"]["measured_change"]
 
 
+async def test_an_offset_thread_through_the_mock(mcp_server, mock_adapter) -> None:
+    await mock_adapter.create_part()
+    mock_adapter.mock_add_round_edge([0, 1.77, 0], 29.5, axis=[0, 1, 0])
+    tools = await _tools(mcp_server, mock_adapter)
+    call = {"size": "M30x1", "edge_point": [14.75, 1.77, 0], "length_mm": 5}
+
+    refused = await tools["create_thread"](call)
+    reply = await tools["create_thread"](
+        call | {"diameter_offset_mm": -0.5, "start_offset_mm": 0.5}
+    )
+
+    assert refused["error_type"] == "invalid_input" and "Ø30 rod" in refused["message"]
+    assert reply["status"] == "success", reply
+    thread = reply["data"]["thread"]
+    assert thread["cut_major_diameter_mm"] == 29.5
+    assert thread["start_offset_mm"] == 0.5
+
+
 async def test_a_refused_thread_is_invalid_input(mcp_server, mock_adapter) -> None:
     await mock_adapter.create_part()
     mock_adapter.mock_add_round_edge([15, 15, 20], 8.5)

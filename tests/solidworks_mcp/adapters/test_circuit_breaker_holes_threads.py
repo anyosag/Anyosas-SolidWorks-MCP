@@ -21,8 +21,24 @@ class _Stub:
             return AdapterResult(status=AdapterResultStatus.ERROR, error=self.error)
         return AdapterResult(status=AdapterResultStatus.SUCCESS, data=name)
 
-    async def create_thread(self, size, edge_point, length_mm, internal=False):
-        return self._record("create_thread", size, edge_point, length_mm, internal)
+    async def create_thread(
+        self,
+        size,
+        edge_point,
+        length_mm,
+        internal=False,
+        diameter_offset_mm=None,
+        start_offset_mm=None,
+    ):
+        return self._record(
+            "create_thread",
+            size,
+            edge_point,
+            length_mm,
+            internal,
+            diameter_offset_mm,
+            start_offset_mm,
+        )
 
     async def create_hole_wizard_hole(
         self,
@@ -51,14 +67,16 @@ async def test_both_are_forwarded_with_every_argument() -> None:
     stub = _Stub()
     breaker = CircuitBreakerAdapter(adapter=stub)
 
-    assert (await breaker.create_thread("M30x1", [14.85, 1.77, 0], 5.5)).is_success
+    assert (
+        await breaker.create_thread("M30x1", [14.75, 1.77, 0], 5.5, False, -0.5, 0.5)
+    ).is_success
     assert (
         await breaker.create_hole_wizard_hole(
             "tapped", "M3", [20, 10, 10], "+Z", 8.0, None, "modeled"
         )
     ).is_success
     assert stub.calls == [
-        ("create_thread", ("M30x1", [14.85, 1.77, 0], 5.5, False)),
+        ("create_thread", ("M30x1", [14.75, 1.77, 0], 5.5, False, -0.5, 0.5)),
         (
             "create_hole_wizard_hole",
             ("tapped", "M3", [20, 10, 10], "+Z", 8.0, None, "modeled"),

@@ -952,6 +952,10 @@ class CreateThreadInput(CompatInput):
         edge_point (list[float]): A point on the circular edge, mm.
         length_mm (float): How far the thread runs into the material, mm.
         internal (bool): True for a thread in a hole.
+        diameter_offset_mm (float | None): How far the edge's diameter is
+            from the one the size needs (print clearance), mm.
+        start_offset_mm (float | None): How far before the edge the thread
+            starts, mm.
     """
 
     size: str = Field(
@@ -967,6 +971,22 @@ class CreateThreadInput(CompatInput):
     )
     internal: bool = Field(
         default=False, description="True for a thread in a hole (Metric Tap profile)"
+    )
+    diameter_offset_mm: float | None = Field(
+        default=None,
+        description=(
+            "Print clearance: the edge is this much off the diameter the size "
+            "needs (e.g. -0.5 for M30 on a Ø29.5 shaft, +0.3 for an oversized "
+            "bore); the thread is cut on the edge's own diameter. Within one pitch."
+        ),
+    )
+    start_offset_mm: float | None = Field(
+        default=None,
+        description=(
+            "Start the thread this far back out of the material, before the "
+            "edge (through a chamfer or lead-in beside it); negative starts it "
+            "further in. The length stays length_mm."
+        ),
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -4761,21 +4781,25 @@ async def register_modeling_tools(
         """Cut a real, printable ISO metric thread (SolidWorks' Thread feature) from a circular edge.
 
         Use it for a screw thread on a rod or in a hole of the active part; for
-        a standard tapped hole in one call, use `create_hole_wizard_hole` with
-        `thread: "modeled"`. `edge_point` is a point on the edge where the
-        thread starts (centre plus radius), so a rod end and its chamfer's edge
-        are told apart. The size must be in SolidWorks' thread library (`Metric
-        Die` outside, `Metric Tap` inside). An external thread needs a rod of
-        the nominal diameter; an internal one a hole of the ISO basic minor
-        diameter (D - 1.0825 P), so drill that first. A modeled thread slows
-        every later rebuild, so long fine threads are refused. Needs: an open
-        part. Changes: adds a Thread feature; a refused call changes nothing.
-        Returns: `data` with `feature`, `thread` (`size`, `pitch_mm`, major and
-        minor diameters, `length_mm`, `internal`), `edge` and `measured_change`.
+        a tapped hole in one call, use `create_hole_wizard_hole` with `thread:
+        "modeled"`. `edge_point` is a point on the edge where the thread starts
+        (not its centre); the thread runs into the material, and its groove
+        reaches about 0.875 P (outside) or 0.75 P (inside) past `length_mm`.
+        The pitch must be in SolidWorks' thread library; a size it lacks
+        (M30x1) takes a same-pitch profile. An external thread needs a rod of
+        the nominal diameter, an internal one a hole of the basic minor
+        diameter (D - 1.0825 P): drill that first. `diameter_offset_mm` allows
+        an undersized rod or oversized bore; `start_offset_mm` starts it
+        before the edge, through a chamfer. Long fine threads are refused
+        (they slow rebuilds). Needs: an open part. Changes: adds a Thread
+        feature; a refused call changes nothing. Returns: `data` with
+        `feature`, `thread`, `edge`, `profile`, `extent` (its range along the
+        axis) and `measured_change`.
 
         Args:
             input_data: The thread. `size` (e.g. 'M10x1.5'), `edge_point` (mm)
-                and `length_mm` are required; `internal` is false.
+                and `length_mm` are required; `internal` is false and both
+                offsets 0.
 
         Returns:
             dict[str, Any]: The thread made.
@@ -4787,6 +4811,8 @@ async def register_modeling_tools(
             list(input_data.edge_point),
             input_data.length_mm,
             input_data.internal,
+            input_data.diameter_offset_mm,
+            input_data.start_offset_mm,
         )
         require_success(result, context="Failed to create the thread")
         after = await _read_summary(adapter) if before is not None else None

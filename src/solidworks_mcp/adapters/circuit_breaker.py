@@ -2677,11 +2677,20 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         edge_point: list[float],
         length_mm: float,
         internal: bool = False,
+        diameter_offset_mm: float | None = None,
+        start_offset_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Make a modeled thread through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "create_thread",
-            lambda: self.adapter.create_thread(size, edge_point, length_mm, internal),
+            lambda: self.adapter.create_thread(
+                size,
+                edge_point,
+                length_mm,
+                internal,
+                diameter_offset_mm,
+                start_offset_mm,
+            ),
             input_dict={"size": size, "edge_point": edge_point, "length_mm": length_mm},
         )
 

@@ -311,6 +311,35 @@ async def test_a_through_modeled_hole_threads_its_whole_length() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_through_tapped_hole_reads_its_drill_from_the_mouth() -> None:
+    from .fake_holes import FakeWizardData
+
+    through = FakeWizardData(TapDrillDiameter=0.0, ThreadDepth=0.0)
+    part, adapter = _setup(data=through)
+    _with_bore(part, 2.5, None)
+    part.body.faces[0].edges.append(FakeEdge([20, 14, 10], 5.0))
+    part.body.faces[0].edges.append(FakeEdge([25, 14, 10], 1.0))
+
+    result = await adapter.create_hole_wizard_hole("tapped", "M3", [20, 14, 10])
+
+    assert result.is_success, result.error
+    assert result.data["hole"]["tap_drill_diameter_mm"] == 2.5
+    assert result.data["hole"]["thread_depth_mm"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_through_tapped_hole_with_no_mouth_is_removed() -> None:
+    from .fake_holes import FakeWizardData
+
+    part, adapter = _setup(data=FakeWizardData(TapDrillDiameter=0.0))
+
+    result = await adapter.create_hole_wizard_hole("tapped", "M3", [20, 14, 10])
+
+    assert "gave no tap_drill_diameter_mm" in result.error
+    assert len(part.features) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_refused_thread_removes_the_hole() -> None:
     part, adapter = _setup()
     _with_bore(part, 2.4587, 8)

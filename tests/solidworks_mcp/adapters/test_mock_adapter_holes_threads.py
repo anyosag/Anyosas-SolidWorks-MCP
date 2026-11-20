@@ -60,7 +60,9 @@ async def test_mock_thread_refusals(mock: MockSolidWorksAdapter) -> None:
         _kind((await mock.create_thread("1/4-20", [0, 0, 0], 5)).error)
         == "invalid_input"
     )
-    assert "over the limit" in (await mock.create_thread("M3x0.5", [0, 0, 0], 80)).error
+    assert (
+        "over the limit" in (await mock.create_thread("M3x0.5", [0, 0, 0], 110)).error
+    )
     mock._current_model = None
     assert (await mock.create_thread("M3x0.5", [0, 0, 0], 5)).is_error
 

@@ -2842,6 +2842,8 @@ class SolidWorksAdapter(ABC):
         edge_point: list[float],
         length_mm: float,
         internal: bool = False,
+        diameter_offset_mm: float | None = None,
+        start_offset_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Make a modeled ISO metric thread from the circular edge at ``edge_point``.
 

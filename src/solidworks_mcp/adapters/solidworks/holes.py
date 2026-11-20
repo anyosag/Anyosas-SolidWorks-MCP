@@ -28,15 +28,15 @@ rebuilds, and checks that the feature count and the volume are as they were
 The sizes come from SolidWorks' tables: this module holds the enum values
 and the value vectors, and no size table (D5).
 
-Unprobed (tasks section 1, probes 1.1 to 1.11): every ``HoleWizard5`` value
-vector below is hjbaard's, and agrees with the API help's Remarks for
-``HoleWizard5`` (clearance: fit in ``Value1``; counterbore and countersink:
-fit in ``Value4``; straight tap: cosmetic thread in ``Value7``, thread end in
-``Value8``). Where the Hole Wizard puts the point, whether its position
-sketch can be dimensioned this way, which ``IWizardHoleFeatureData2``
-properties hold which sizes, how a through thread's length is read and
-whether the cosmetic thread stays beside a modeled one are all for the
-probes.
+Probed on SOLIDWORKS 2026 SP4.1 (probes 1.1 to 1.10, pitfall #62): the
+value vectors below (hjbaard's; clearance: fit in ``Value1``; counterbore
+and countersink: fit in ``Value4``; straight tap: cosmetic thread in
+``Value7``, thread end in ``Value8``) removed exactly the hand volumes; the
+hole lands on the picked point and its position sketch takes the origin
+dimensions; the clearance diameter reads from ``HoleDiameter``; a through
+tapped hole reads ``TapDrillDiameter`` 0, so its drill is read from the
+mouth edge (:func:`mouth_diameter`); the through length reads from the far
+edge; the cosmetic thread stays beside a modeled one.
 
 Credit: hjbaard's ``solidworks-mcp`` (MIT, (c) 2026 Henk Jan Baard),
 ``session.py`` ``add_hole_wizard``, is the reference for the call order and
@@ -647,6 +647,32 @@ def _circles_near_axis(
     return found
 
 
+def mouth_diameter(adapter: Any, point_mm: list[float], normal: Any) -> float | None:
+    """The smallest circle centred on ``point_mm`` in the face's plane (mm), or None.
+
+    A through tapped hole reads ``TapDrillDiameter`` 0 (probe 1.4, SOLIDWORKS
+    2026 SP4.1), so its drill is read from the bore's mouth edge instead.
+    """
+    from .edge_index import index_for
+
+    index = index_for(adapter)
+    n = _unit(normal)
+    found: list[float] = []
+    for body in index.bodies():
+        for edge in index.body_edges(body):
+            limits.check("finding the hole's mouth")
+            info = index.describe(edge)
+            if info.get("curve") != "circular" or not info.get("radius_mm"):
+                continue
+            offset = [
+                float(c) - float(p)
+                for c, p in zip(info["center_mm"], point_mm, strict=True)
+            ]
+            if math.sqrt(_dot(offset, offset)) <= 0.01 and abs(_dot(offset, n)) <= 0.01:
+                found.append(2.0 * float(info["radius_mm"]))
+    return round(min(found), 4) if found else None
+
+
 def mouth_and_length(
     adapter: Any,
     point_mm: list[float],
@@ -772,6 +798,12 @@ def make_hole(
     try:
         limits.check("reading the hole's sizes")
         block = hole_block(request, read_sizes(adapter, feature))
+        if request["kind"] == "tapped" and block.get("tap_drill_diameter_mm") is None:
+            _flag(adapter, model, "ForceRebuild3")
+            _attempt(adapter, lambda: model.ForceRebuild3(False))
+            block["tap_drill_diameter_mm"] = mouth_diameter(
+                adapter, face_point, face.normal
+            )
         missing = missing_sizes(block)
         if missing:
             raise RuntimeError(
@@ -792,7 +824,7 @@ def make_hole(
             warning = (
                 "The hole was made, but its position could not be dimensioned "
                 f"from the origin ({error}); it sits where the Hole Wizard put "
-                "it, within about 0.05 mm of face_point."
+                "it, on face_point (as measured on SOLIDWORKS 2026)."
             )
         made_thread = None
         if modeled and thread_size is not None and drill is not None:

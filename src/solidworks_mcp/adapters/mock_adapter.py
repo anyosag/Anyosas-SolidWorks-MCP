@@ -7507,18 +7507,29 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 del self._features[key]
 
     def _mock_thread(
-        self, size: str, edge_point: list[float], length_mm: float, internal: bool
+        self,
+        size: str,
+        edge_point: list[float],
+        length_mm: float,
+        internal: bool,
+        diameter_offset_mm: float | None = None,
+        start_offset_mm: float | None = None,
     ) -> dict[str, Any]:
         """The live adapter's checks and payload, on the mock's own edges.
 
         Raises:
-            ValueError: ``Invalid request``: size, length, turns or diameter.
+            ValueError: ``Invalid request``: size, length, turns, offsets or
+                diameter.
         """
         from .solidworks import threads
 
-        diameter, pitch = threads.check_request(size, length_mm)
+        diameter, pitch = threads.check_request(
+            size, length_mm, diameter_offset_mm, start_offset_mm
+        )
+        offset = threads.check_offset(diameter_offset_mm, pitch)
+        start = threads.check_start(start_offset_mm, length_mm)
         edge = self._mock_round_edge_at(list(edge_point))
-        needed = threads.needed_diameter(diameter, pitch, internal)
+        needed = threads.needed_diameter(diameter, pitch, internal, offset)
         note = None
         if edge is None:
             note = (
@@ -7526,14 +7537,16 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 f"edge of the Ø{needed:g} the thread needs"
             )
             edge = {"center_mm": list(edge_point), "diameter_mm": needed}
-        threads.check_diameter(diameter, pitch, internal, edge["diameter_mm"])
+        threads.check_diameter(diameter, pitch, internal, edge["diameter_mm"], offset)
         count = sum(1 for f in self._features.values() if f.type == "Thread") + 1
         name = self._mock_add_named_feature(
             f"Thread{count}", "Thread", size=size, length_mm=length_mm
         )
         reply: dict[str, Any] = {
             "feature": name,
-            "thread": threads.thread_block(diameter, pitch, length_mm, internal),
+            "thread": threads.thread_block(
+                diameter, pitch, length_mm, internal, offset, start
+            ),
             "edge": {
                 "center_mm": edge["center_mm"],
                 "diameter_mm": edge["diameter_mm"],
@@ -7553,6 +7566,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         edge_point: list[float],
         length_mm: float,
         internal: bool = False,
+        diameter_offset_mm: float | None = None,
+        start_offset_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock a modeled thread: the live checks and payload, no geometry (D13)."""
         guard = self._mock_doc_error({"Part"}, "create_thread")
@@ -7561,7 +7576,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         await asyncio.sleep(self._delays["feature_operation"] / 4)
         self._operation_count += 1
         try:
-            data = self._mock_thread(size, edge_point, length_mm, internal)
+            data = self._mock_thread(
+                size,
+                edge_point,
+                length_mm,
+                internal,
+                diameter_offset_mm,
+                start_offset_mm,
+            )
         except ValueError as exc:
             return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
         return AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)

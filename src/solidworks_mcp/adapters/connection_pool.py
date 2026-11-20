@@ -2254,12 +2254,19 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         edge_point: list[float],
         length_mm: float,
         internal: bool = False,
+        diameter_offset_mm: float | None = None,
+        start_offset_mm: float | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Make a modeled thread using pool."""
         return await self._execute_with_pool(
             "create_thread",
             lambda adapter: adapter.create_thread(
-                size, edge_point, length_mm, internal
+                size,
+                edge_point,
+                length_mm,
+                internal,
+                diameter_offset_mm,
+                start_offset_mm,
             ),
         )
 

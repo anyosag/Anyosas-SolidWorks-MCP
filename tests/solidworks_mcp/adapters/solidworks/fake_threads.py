@@ -158,6 +158,8 @@ class FakeThreadData:
         self.EndCondition = None
         self.BlindDepth = None
         self.RightHanded = None
+        self.DiameterOverride = False
+        self.Diameter = None
 
     def InitializeThreadData(self) -> None:  # noqa: N802 - COM name
         self.initialized = True
@@ -193,6 +195,23 @@ class FakeFeature:
     def GetTypeName2(self) -> str:  # noqa: N802 - COM name
         return self.kind
 
+    def GetFaces(self) -> list[Any]:  # noqa: N802 - COM name
+        return self.extra.get("faces", [])
+
+
+def _thread_faces(data: FakeThreadData) -> list[FakeFace]:
+    """One face spanning ``BlindDepth`` from the edge, toward -axis (into a rod's end)."""
+    edge = data.Edge
+    if edge is None or data.BlindDepth is None:
+        return []
+    c = [v / MM for v in edge.center]
+    r, depth = edge.radius / MM, float(data.BlindDepth) / MM
+    end = [ci - depth * a for ci, a in zip(c, edge.axis, strict=True)]
+    sides = list(zip(c, end, edge.axis, strict=True))
+    low = [min(a, b) - (r if ax == 0 else 0) for a, b, ax in sides]
+    high = [max(a, b) + (r if ax == 0 else 0) for a, b, ax in sides]
+    return [FakeFace(low + high, surface="helix")]
+
 
 class FakeFeatureManager:
     def __init__(self, part: FakePart) -> None:
@@ -218,7 +237,10 @@ class FakeFeatureManager:
             return None
         count = sum(1 for f in self.part.features if f.kind == "Thread") + 1
         return self.part.add_feature(
-            FakeFeature(f"Thread{count}", "Thread", self.part), self.part.thread_volume
+            FakeFeature(
+                f"Thread{count}", "Thread", self.part, faces=_thread_faces(data)
+            ),
+            self.part.thread_volume,
         )
 
     def GetFeatureCount(self, _top_only: bool) -> int:  # noqa: N802 - COM name

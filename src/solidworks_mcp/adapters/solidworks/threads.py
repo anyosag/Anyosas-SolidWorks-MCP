@@ -32,14 +32,14 @@ What the type library and the API help (SOLIDWORKS 2026 SP4.1) say:
 - ``Type`` takes the library name without a path or extension; SolidWorks
   looks in File Locations > Thread Profiles and assumes ``.sldlfp``.
 - ``Edge``'s Remarks say to select the edge with ``SelectByRay`` and
-  ``Mark = 1``; this code sets the property directly, as hjbaard does.
-  Probe 1.5 settles which works.
+  ``Mark = 1``; setting the property directly works (probe 1.5).
 
-Unprobed (tasks section 1): the library spellings (``M10x1.0`` or
-``M10x1``), the direction the thread runs from the edge, what a refused
-``CreateFeature`` leaves in the tree, and the turn limit. The code compares
-sizes as numbers so either spelling passes, and removes anything a refused
-``CreateFeature`` left.
+Probed on SOLIDWORKS 2026 SP4.1 (pitfall #62): the libraries spell sizes
+``M10x1.0`` (compared as numbers here); ``Diameter`` reads the edge's own
+diameter and the profile is set on it; the thread runs from its edge into
+the material and its groove reaches one profile width past the length; a
+refused ``CreateFeature`` leaves nothing (``remove_extra`` stays as a
+guard); each turn costs about 14 ms on every later rebuild.
 
 Credit: hjbaard's ``solidworks-mcp`` (MIT, (c) 2026 Henk Jan Baard),
 ``session.py`` ``add_thread``, is the reference for the call order. This code
@@ -74,9 +74,13 @@ MINOR_FACTOR = 5.0 * math.sqrt(3.0) / 8.0
 EDGE_TOLERANCE_MM = 0.01
 #: The most turns a thread may have (``length_mm / pitch``).
 #:
-#: Provisional until probe 1.8 times the rebuilds (D9): 100 turns is M3x0.5 at
-#: 50 mm, or M10x1.5 at 150 mm.
-MAX_THREAD_TURNS = 100
+#: Probe 1.8 (SOLIDWORKS 2026 SP4.1): each turn adds about 14 ms to every
+#: rebuild of the part (M3x0.5: 0.27 s at 20 turns, 0.95 s at 100, 2.9 s at
+#: 200, 4.3 s at 300), and making one takes 6 to 13 s. 200 turns (M3x0.5 at
+#: 100 mm, M10x1.5 at 300 mm) keeps a rebuild near 3 s.
+MAX_THREAD_TURNS = 200
+#: How far ``diameter_offset_mm`` may move the profile, in pitches.
+MAX_OFFSET_PITCHES = 1.0
 
 _SIZE = re.compile(r"^\s*M(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*$")
 _DIAMETER = re.compile(r"^\s*M(\d+(?:\.\d+)?)\s*$")
@@ -185,24 +189,72 @@ def coarse_size(size: str | float, library_sizes: Iterable[Any]) -> str | None:
     return size_name(diameter, max(pitches)) if pitches else None
 
 
-def needed_diameter(diameter: float, pitch: float, internal: bool) -> float:
-    """The edge diameter a thread needs: nominal outside, basic minor inside."""
-    return minor_diameter(diameter, pitch) if internal else diameter
+def needed_diameter(
+    diameter: float, pitch: float, internal: bool, offset: float = 0.0
+) -> float:
+    """The edge diameter a thread needs: nominal outside, basic minor inside.
+
+    ``offset`` (mm, on the diameter) moves it. SolidWorks puts the profile on
+    the edge's own diameter (probe ``overrides``), so an M30 thread on a
+    Ø29.5 shaft is the M30 profile moved 0.25 mm in.
+    """
+    base = minor_diameter(diameter, pitch) if internal else diameter
+    return round(base + float(offset or 0.0), 4)
 
 
-def check_request(size: str, length_mm: Any) -> tuple[float, float]:
-    """Steps 1 and 7 of D6: the size's form, the length and the turn limit.
+def check_offset(offset: Any, pitch: float) -> float:
+    """``diameter_offset_mm``: a number within one pitch of 0 (mm).
+
+    Raises:
+        ValueError: ``Invalid request``: not a number, or too far.
+    """
+    if offset is None:
+        return 0.0
+    if isinstance(offset, bool) or not isinstance(offset, int | float):
+        raise _invalid(f"diameter_offset_mm must be a number (got {offset!r}).")
+    if abs(float(offset)) > MAX_OFFSET_PITCHES * pitch + 1e-9:
+        raise _invalid(
+            f"diameter_offset_mm {float(offset):g} mm is more than the pitch "
+            f"({pitch:g} mm) from 0; that is no longer this thread."
+        )
+    return float(offset)
+
+
+def check_start(start: Any, length_mm: float) -> float:
+    """``start_offset_mm``: a number no longer than the thread (mm).
+
+    Raises:
+        ValueError: ``Invalid request``: not a number, or past the thread.
+    """
+    if start is None:
+        return 0.0
+    if isinstance(start, bool) or not isinstance(start, int | float):
+        raise _invalid(f"start_offset_mm must be a number (got {start!r}).")
+    if abs(float(start)) >= float(length_mm):
+        raise _invalid(
+            f"start_offset_mm {float(start):g} mm moves the start by the whole "
+            f"{float(length_mm):g} mm thread or more; shorten it."
+        )
+    return float(start)
+
+
+def check_request(
+    size: str, length_mm: Any, offset: Any = None, start: Any = None
+) -> tuple[float, float]:
+    """Steps 1 and 7 of D6: the size's form, the length, the offsets and the turns.
 
     Raises:
         ValueError: ``Invalid request``, naming what is wrong.
     """
     diameter, pitch = parse_thread_size(size)
+    check_offset(offset, pitch)
     if (
         isinstance(length_mm, bool)
         or not isinstance(length_mm, int | float)
         or length_mm <= 0
     ):
         raise _invalid(f"length_mm must be above 0 mm (got {length_mm!r}).")
+    check_start(start, length_mm)
     turns = thread_turns(length_mm, pitch)
     if turns > MAX_THREAD_TURNS:
         raise _invalid(
@@ -224,6 +276,10 @@ def check_library(size: str, library: str, library_sizes: list[Any]) -> str:
     found = library_size(size, library_sizes)
     if found is not None:
         return found
+    raise _invalid(_not_in_library(size, library, library_sizes) + ".")
+
+
+def _not_in_library(size: str, library: str, library_sizes: list[Any]) -> str:
     diameter, _pitch = parse_thread_size(size)
     same = sizes_for(diameter, library_sizes)
     there = (
@@ -231,24 +287,68 @@ def check_library(size: str, library: str, library_sizes: list[Any]) -> str:
         if same
         else f"it has no M{diameter:g} size at all"
     )
-    raise _invalid(
+    return (
         f"SolidWorks' {library!r} thread library has no {size}; {there}. "
-        "SolidWorks would cut a meaningless groove for a size it doesn't hold."
+        "SolidWorks would cut a meaningless groove for a size it doesn't hold"
+    )
+
+
+def choose_profile(
+    size: str, library: str, library_sizes: list[Any]
+) -> tuple[str, bool]:
+    """The library size whose profile cuts ``size``, and whether it is borrowed.
+
+    The ISO basic profile (ISO 68-1) depends on the pitch alone, so a size the
+    library lacks (``M30x1``: SOLIDWORKS 2026 holds only ``M30x2.0`` and
+    ``M30x3.5``) is cut with the profile of a size of the same pitch
+    (``M10x1.0``), set on the edge's diameter with ``DiameterOverride``.
+    The nearest diameter of that pitch is taken. Probe ``borrowed`` measured
+    the volumes against the basic groove.
+
+    Raises:
+        ValueError: ``Invalid request``: no size of that pitch either.
+    """
+    found = library_size(size, library_sizes)
+    if found is not None:
+        return found, False
+    diameter, pitch = parse_thread_size(size)
+    same_pitch = [
+        (abs(d - diameter), name)
+        for name, d, p in _parsed(library_sizes)
+        if _same(p, pitch)
+    ]
+    if same_pitch:
+        return min(same_pitch)[1], True
+    raise _invalid(
+        f"{_not_in_library(size, library, library_sizes)}, and it has no size "
+        f"of pitch {pitch:g} to take the profile from."
     )
 
 
 def check_diameter(
-    diameter: float, pitch: float, internal: bool, edge_diameter: float
+    diameter: float,
+    pitch: float,
+    internal: bool,
+    edge_diameter: float,
+    offset: float = 0.0,
 ) -> None:
     """Step 6 of D6: the edge must have the diameter the thread needs.
 
     Raises:
         ValueError: ``Invalid request`` naming the diameter needed and found.
     """
-    needed = needed_diameter(diameter, pitch, internal)
+    needed = needed_diameter(diameter, pitch, internal, offset)
     if abs(edge_diameter - needed) <= EDGE_TOLERANCE_MM:
         return
     size = size_name(diameter, pitch)
+    if offset:
+        where = "hole" if internal else "rod"
+        base = needed_diameter(diameter, pitch, internal)
+        raise _invalid(
+            f"an {'internal' if internal else 'external'} {size} thread with "
+            f"diameter_offset_mm {offset:g} needs a Ø{needed:.3f} {where} "
+            f"(Ø{base:.3f} {offset:+g}), but the edge is Ø{edge_diameter:.3f}."
+        )
     if internal:
         raise _invalid(
             f"an internal {size} thread needs a Ø{needed:.3f} hole (the ISO "
@@ -274,10 +374,15 @@ def revision_text(revision: Any) -> str:
 
 
 def thread_block(
-    diameter: float, pitch: float, length_mm: float, internal: bool
+    diameter: float,
+    pitch: float,
+    length_mm: float,
+    internal: bool,
+    offset: float = 0.0,
+    start: float = 0.0,
 ) -> dict[str, Any]:
-    """The reply's ``thread`` (D11)."""
-    return {
+    """The reply's ``thread`` (D11); with an offset, the diameters cut as well."""
+    block: dict[str, Any] = {
         "size": size_name(diameter, pitch),
         "pitch_mm": pitch,
         "major_diameter_mm": diameter,
@@ -286,6 +391,15 @@ def thread_block(
         "internal": bool(internal),
         "right_handed": True,
     }
+    if offset:
+        block["diameter_offset_mm"] = float(offset)
+        block["cut_major_diameter_mm"] = round(diameter + offset, 4)
+        block["cut_minor_diameter_mm"] = round(
+            minor_diameter(diameter, pitch) + offset, 4
+        )
+    if start:
+        block["start_offset_mm"] = float(start)
+    return block
 
 
 def edge_label(info: dict[str, Any]) -> str:
@@ -463,6 +577,53 @@ def _missing_edge(
     )
 
 
+def thread_extent(adapter: Any, feature: Any, info: dict[str, Any]) -> Any:
+    """Where the thread's faces lie along the edge's axis, or None.
+
+    Each face's box corners (``IFace2.GetBox``) are measured along the axis,
+    so the range is exact for an axis along X, Y or Z and a little wide for
+    another. The axis is turned so its largest part is positive: for a Y axis
+    the range is in model Y.
+
+    Probe ``start`` (SOLIDWORKS 2026 SP4.1): the thread starts at its edge
+    and runs into the material (from a rod's end inward, from the edge
+    between a chamfer and its cylinder into the cylinder), and its groove
+    reaches one profile width past ``length_mm``: 0.875 P for a die, 0.75 P
+    for a tap.
+
+    Returns:
+        dict | None: ``axis`` (unit), ``range_mm`` ([low, high] along it,
+        model coordinates) and ``edge_at_mm`` (the edge's place on it).
+    """
+    axis = info.get("axis")
+    if not axis or len(axis) < 3:
+        return None
+    length = math.sqrt(sum(float(a) * float(a) for a in axis[:3])) or 1.0
+    unit = [float(a) / length for a in axis[:3]]
+    if max(unit, key=abs) < 0:
+        unit = [-u for u in unit]
+    _flag(adapter, feature, "GetFaces")
+    along: list[float] = []
+    for face in as_list(_attempt(adapter, lambda: feature.GetFaces())):
+        _flag(adapter, face, "GetBox")
+        box = [float(v) for v in as_list(_attempt(adapter, lambda f=face: f.GetBox()))]
+        if len(box) < 6:
+            continue
+        for x in (box[0], box[3]):
+            for y in (box[1], box[4]):
+                for z in (box[2], box[5]):
+                    along.append((x * unit[0] + y * unit[1] + z * unit[2]) * 1000.0)
+    if not along:
+        return None
+    centre = [float(c) for c in info.get("center_mm") or [0.0, 0.0, 0.0]]
+    return {
+        "axis": [round(u, 6) + 0.0 for u in unit],
+        "range_mm": [round(min(along), 4) + 0.0, round(max(along), 4) + 0.0],
+        "edge_at_mm": round(sum(c * u for c, u in zip(centre, unit, strict=True)), 4)
+        + 0.0,
+    }
+
+
 def feature_count(adapter: Any, model: Any) -> int | None:
     manager = _attempt(adapter, lambda: model.FeatureManager)
     _flag(adapter, manager, "GetFeatureCount")
@@ -493,39 +654,69 @@ def make_thread(
     edge_point: list[float],
     length_mm: float,
     internal: bool = False,
+    diameter_offset_mm: float | None = None,
+    start_offset_mm: float | None = None,
 ) -> dict[str, Any]:
     """Make a right-handed modeled thread from a circular edge (D6).
+
+    ``diameter_offset_mm`` moves the diameter the edge must have (an
+    undersized shaft or an oversized bore, for print clearance); the profile
+    is then set on the edge's diameter (``DiameterOverride``).
+    ``start_offset_mm`` moves where the thread starts along its axis:
+    positive starts it that far back out of the material, before the edge
+    (through a chamfer or lead-in next to it), negative that far in.
+    SolidWorks keeps the length (``Offset``, ``OffsetDistance``;
+    ``ReverseOffset`` true moves the start out of the material, probe
+    ``start``).
 
     Returns:
         dict[str, Any]: ``feature``, ``thread`` (:func:`thread_block`),
         ``edge`` (``center_mm``, ``diameter_mm``), ``library`` (the profile
-        file) and ``failing_features``.
+        file), ``profile`` (the library size cut, and whether it was
+        borrowed), ``extent`` (:func:`thread_extent`) and
+        ``failing_features``.
 
     Raises:
         ValueError: ``Invalid request``: the size, the length, the turns, the
-            library, two edges or the diameter.
+            offset, the library, two edges or the diameter.
         LookupError: No circular edge at ``edge_point``.
         RuntimeError: ``does not support`` (D8), or SolidWorks made no thread.
     """
     from .equations import failing_features
 
-    diameter, pitch = check_request(size, length_mm)
+    diameter, pitch = check_request(
+        size, length_mm, diameter_offset_mm, start_offset_mm
+    )
+    offset = check_offset(diameter_offset_mm, pitch)
+    start = check_start(start_offset_mm, length_mm)
     model = adapter.currentModel
     data, file, sizes = open_library(adapter, model, internal)
     library = INTERNAL_LIBRARY if internal else EXTERNAL_LIBRARY
-    spelled = check_library(size_name(diameter, pitch), library, sizes)
+    spelled, borrowed = choose_profile(size_name(diameter, pitch), library, sizes)
     edge, info = find_circular_edge(adapter, edge_point)
     edge_diameter = 2.0 * float(info["radius_mm"])
-    check_diameter(diameter, pitch, internal, edge_diameter)
+    check_diameter(diameter, pitch, internal, edge_diameter, offset)
     limits.check("making the thread")
-    for name, value in (
+    settings: list[tuple[str, Any]] = [
         ("Edge", edge),
         ("ThreadMethod", THREAD_METHOD_CUT),
         ("Size", spelled),
         ("EndCondition", THREAD_END_BLIND),
         ("BlindDepth", float(length_mm) / 1000.0),
         ("RightHanded", True),
-    ):
+    ]
+    if borrowed or offset:
+        settings += [
+            ("DiameterOverride", True),
+            ("Diameter", edge_diameter / 1000.0),
+        ]
+    if start:
+        settings += [
+            ("Offset", True),
+            ("OffsetDistance", abs(start) / 1000.0),
+            ("ReverseOffset", start > 0),
+        ]
+    for name, value in settings:
         _attempt(adapter, lambda n=name, v=value: setattr(data, n, v))
     count_before = feature_count(adapter, model)
     manager = _attempt(adapter, lambda: model.FeatureManager)
@@ -544,12 +735,18 @@ def make_thread(
     name = _attempt(adapter, lambda: feature.Name)
     return {
         "feature": str(name) if name else None,
-        "thread": thread_block(diameter, pitch, length_mm, internal),
+        "thread": thread_block(diameter, pitch, length_mm, internal, offset, start),
         "edge": {
             "center_mm": [round(float(c), 4) + 0.0 for c in info["center_mm"]],
             "diameter_mm": round(edge_diameter, 4),
         },
         "library": file,
+        "profile": {
+            "library_size": spelled,
+            "borrowed": borrowed,
+            "diameter_mm": round(edge_diameter, 4),
+        },
+        "extent": thread_extent(adapter, feature, info),
         "failing_features": failing_features(adapter, model),
     }
 
@@ -580,17 +777,19 @@ class SolidWorksThreadsMixin:
         edge_point: list[float],
         length_mm: float,
         internal: bool = False,
+        diameter_offset_mm: float | None = None,
+        start_offset_mm: float | None = None,
     ) -> Any:
         """Make a modeled ISO metric thread from a circular edge.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``feature``, ``thread``, ``edge``,
-            ``library`` and ``failing_features``.
+            ``library``, ``profile``, ``extent`` and ``failing_features``.
         """
         from ..base import AdapterResult, AdapterResultStatus
 
         try:
-            check_request(size, length_mm)
+            check_request(size, length_mm, diameter_offset_mm, start_offset_mm)
         except ValueError as exc:
             return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
         refused = part_guard(self, "create_thread")
@@ -598,5 +797,13 @@ class SolidWorksThreadsMixin:
             return AdapterResult(status=AdapterResultStatus.ERROR, error=refused)
         return self._handle_com_operation(  # type: ignore[attr-defined]
             "create_thread",
-            lambda: make_thread(self, size, edge_point, length_mm, internal),
+            lambda: make_thread(
+                self,
+                size,
+                edge_point,
+                length_mm,
+                internal,
+                diameter_offset_mm,
+                start_offset_mm,
+            ),
         )

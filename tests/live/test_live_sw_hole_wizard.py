@@ -44,12 +44,14 @@ POINT = 1.0 / math.tan(math.radians(59.0))
 async def _tools(adapter: Any) -> dict[str, Any]:
     from fastmcp import FastMCP
 
+    from solidworks_mcp.tools.file_management import register_file_management_tools
     from solidworks_mcp.tools.modeling import register_modeling_tools
     from solidworks_mcp.tools.sketching import register_sketching_tools
 
     mcp = FastMCP("hole-wizard-live")
     await register_sketching_tools(mcp, adapter, {})
     await register_modeling_tools(mcp, adapter, {})
+    await register_file_management_tools(mcp, adapter, {})
     return {t.name: t.fn for t in await mcp.list_tools()}
 
 
@@ -347,7 +349,7 @@ async def test_thread_refusals_change_nothing(scratch) -> None:
 
     garbage = await call("M10x1.3", [5, 0, 40])
     air = await call("M10x1.5", [30, 30, 40])
-    turns = await call("M3x0.5", [5, 0, 40], 60)
+    turns = await call("M3x0.5", [5, 0, 40], 110)
 
     evidence("size, air and turns", {"size": garbage, "air": air, "turns": turns})
     assert garbage["error_type"] == "invalid_input" and "M10x1.5" in garbage["message"]

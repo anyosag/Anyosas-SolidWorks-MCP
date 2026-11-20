@@ -84,8 +84,9 @@ def test_library_spelling_is_matched_as_numbers() -> None:
 def test_turns_and_the_turn_limit() -> None:
     assert th.thread_turns(20, 1.5) == pytest.approx(13.333, abs=1e-3)
     assert th.check_request("M30x1", 6) == (30.0, 1.0)
-    with pytest.raises(ValueError, match=r"has 120 turns, over the limit of 100"):
-        th.check_request("M3x0.5", 60)
+    assert th.check_request("M3x0.5", 100) == (3.0, 0.5)
+    with pytest.raises(ValueError, match=r"has 220 turns, over the limit of 200"):
+        th.check_request("M3x0.5", 110)
     with pytest.raises(ValueError, match="length_mm must be above 0"):
         th.check_request("M3x0.5", 0)
     with pytest.raises(ValueError, match="length_mm"):
@@ -113,6 +114,66 @@ def test_diameter_check_names_needed_and_found() -> None:
         th.check_diameter(10, 1.5, False, 9.9)
     assert "Ø10 rod" in str(outside.value) and "Ø9.900" in str(outside.value)
     assert _kind(str(outside.value)) == "invalid_input"
+
+
+def test_an_offset_moves_the_diameter_needed() -> None:
+    assert th.needed_diameter(30, 1, False, -0.5) == 29.5
+    assert th.needed_diameter(30, 1, True, 0.5) == 29.4175
+    th.check_diameter(30, 1, False, 29.5, -0.5)
+    with pytest.raises(ValueError) as raised:
+        th.check_diameter(30, 1, False, 30.0, -0.5)
+    text = str(raised.value)
+    assert "diameter_offset_mm -0.5 needs a Ø29.500 rod (Ø30.000 -0.5)" in text
+    assert "Ø30.000." in text and _kind(text) == "invalid_input"
+    with pytest.raises(ValueError, match="offset_mm 0.2 needs a Ø29.1"):
+        th.check_diameter(30, 1, True, 29.0, 0.2)
+
+
+def test_the_offset_is_a_number_within_a_pitch() -> None:
+    assert th.check_offset(None, 1.0) == 0.0
+    assert th.check_offset(-1, 1.0) == -1.0
+    with pytest.raises(ValueError, match="more than the pitch"):
+        th.check_offset(1.2, 1.0)
+    with pytest.raises(ValueError, match="must be a number"):
+        th.check_offset(True, 1.0)
+    with pytest.raises(ValueError, match="more than the pitch"):
+        th.check_request("M30x1", 5, -1.5)
+
+
+def test_the_start_offset_is_a_number_shorter_than_the_thread() -> None:
+    assert th.check_start(None, 5) == 0.0
+    assert th.check_start(0.54, 5) == 0.54
+    with pytest.raises(ValueError, match="must be a number"):
+        th.check_start("far", 5)
+    with pytest.raises(ValueError, match="whole 5 mm thread"):
+        th.check_start(-5, 5)
+    with pytest.raises(ValueError, match="start_offset_mm"):
+        th.check_request("M30x1", 5, None, 6)
+    assert th.thread_block(30, 1, 5, True, 0.0, 0.54)["start_offset_mm"] == 0.54
+
+
+def test_a_size_missing_from_the_library_borrows_a_same_pitch_profile() -> None:
+    assert th.choose_profile("M10x1.5", "Metric Die", LIBRARY) == ("M10x1.5", False)
+    assert th.choose_profile("M30x1", "Metric Die", LIBRARY) == ("M30x1.0", False)
+    no_m30x1 = [s for s in LIBRARY if s != "M30x1.0"]
+    assert th.choose_profile("M30x1", "Metric Die", no_m30x1) == ("M10x1.0", True)
+    assert th.choose_profile("M12x1.25", "Metric Die", no_m30x1) == (
+        "M10x1.25",
+        True,
+    )
+    with pytest.raises(ValueError) as raised:
+        th.choose_profile("M10x1.3", "Metric Die", LIBRARY)
+    text = str(raised.value)
+    assert "M10x1.5, M10x1.25, M10x1.0" in text
+    assert "no size of pitch 1.3 to take the profile from" in text
+    assert _kind(text) == "invalid_input"
+
+
+def test_the_thread_block_with_an_offset() -> None:
+    block = th.thread_block(30, 1, 5.5, False, -0.5)
+    assert block["diameter_offset_mm"] == -0.5
+    assert block["cut_major_diameter_mm"] == 29.5
+    assert block["cut_minor_diameter_mm"] == 28.4175
 
 
 def test_revision_text() -> None:
@@ -153,7 +214,97 @@ async def test_an_external_thread_on_a_rod() -> None:
     assert sent.Edge is part.body.faces[0].edges[0]
     assert (sent.ThreadMethod, sent.EndCondition, sent.RightHanded) == (0, 0, True)
     assert sent.BlindDepth == pytest.approx(0.02)
+    assert sent.DiameterOverride is False
     assert part.rebuilds == 1
+    assert data["profile"] == {
+        "library_size": "M10x1.5",
+        "borrowed": False,
+        "diameter_mm": 10.0,
+    }
+    assert data["extent"] == {
+        "axis": [0.0, 0.0, 1.0],
+        "range_mm": [20.0, 40.0],
+        "edge_at_mm": 40.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_offset_thread_on_an_undersized_rod() -> None:
+    part = rod_part(29.5)
+    adapter = _adapter(part)
+
+    refused = await adapter.create_thread("M30x1", [14.75, 0, 40], 5.5)
+    assert _kind(refused.error) == "invalid_input" and "Ø30 rod" in refused.error
+
+    result = await adapter.create_thread(
+        "M30x1", [14.75, 0, 40], 5.5, diameter_offset_mm=-0.5
+    )
+
+    assert result.is_success, result.error
+    sent = part.FeatureManager.created[0]
+    assert (sent.Size, sent.DiameterOverride) == ("M30x1.0", True)
+    assert sent.Diameter == pytest.approx(0.0295)
+    assert result.data["thread"]["cut_major_diameter_mm"] == 29.5
+
+
+@pytest.mark.asyncio
+async def test_a_start_offset_sets_the_offset_both_ways() -> None:
+    for start, reverse in ((0.5, True), (-0.5, False)):
+        part = rod_part()
+        result = await _adapter(part).create_thread(
+            "M10x1.5", [5, 0, 40], 20, start_offset_mm=start
+        )
+        assert result.is_success, result.error
+        sent = part.FeatureManager.created[0]
+        assert (sent.Offset, sent.ReverseOffset) == (True, reverse)
+        assert sent.OffsetDistance == pytest.approx(0.0005)
+        assert result.data["thread"]["start_offset_mm"] == start
+
+
+@pytest.mark.asyncio
+async def test_an_axis_pointing_down_is_turned_up() -> None:
+    from .fake_threads import FakeEdge
+
+    part = rod_part()
+    old = part.body.faces[0].edges[0]
+    new = FakeEdge([0, 0, 40], 10.0, axis=(0, 0, -1))
+    for face in part.body.faces:
+        face.edges = [new if e is old else e for e in face.edges]
+    result = await _adapter(part).create_thread("M10x1.5", [5, 0, 40], 20)
+
+    assert result.is_success, result.error
+    assert result.data["extent"]["axis"] == [0.0, 0.0, 1.0]
+    assert result.data["extent"]["range_mm"] == [40.0, 60.0]
+
+
+@pytest.mark.asyncio
+async def test_a_size_the_library_lacks_borrows_the_profile() -> None:
+    part = rod_part(30.0)
+    adapter = _adapter(part, [s for s in LIBRARY if s != "M30x1.0"])
+
+    result = await adapter.create_thread("M30x1", [15, 0, 40], 5)
+
+    assert result.is_success, result.error
+    sent = part.FeatureManager.created[0]
+    assert (sent.Size, sent.DiameterOverride) == ("M10x1.0", True)
+    assert sent.Diameter == pytest.approx(0.030)
+    assert result.data["profile"]["borrowed"] is True
+    assert result.data["thread"]["size"] == "M30x1"
+
+
+@pytest.mark.asyncio
+async def test_a_feature_without_faces_has_no_extent() -> None:
+    part = rod_part()
+    adapter = _adapter(part)
+    result = await adapter.create_thread("M10x1.5", [5, 0, 40], 20)
+    feature = part.features[-1]
+
+    assert th.thread_extent(adapter, feature, {"axis": None}) is None
+    from .fake_threads import FakeFace
+
+    feature.extra["faces"] = [FakeFace([])]
+    assert th.thread_extent(adapter, feature, {"axis": [0, 0, 2]}) is None
+    assert result.is_success
 
 
 @pytest.mark.asyncio
@@ -293,7 +444,7 @@ async def test_the_turn_limit_is_checked_before_solidworks() -> None:
     adapter = _adapter(part)
     adapter.currentModel = None
 
-    result = await adapter.create_thread("M3x0.5", [1.5, 0, 40], 60)
+    result = await adapter.create_thread("M3x0.5", [1.5, 0, 40], 110)
 
     assert _kind(result.error) == "invalid_input"
     assert "over the limit" in result.error

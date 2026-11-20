@@ -915,8 +915,23 @@ class TestConnectionPoolAdapterExtras:
             async def get_selected_entities(self):
                 return _ok("selection")
 
-            async def create_thread(self, size, edge_point, length_mm, internal=False):
-                return _ok({"size": size, "length_mm": length_mm, "internal": internal})
+            async def create_thread(
+                self,
+                size,
+                edge_point,
+                length_mm,
+                internal=False,
+                diameter_offset_mm=None,
+                start_offset_mm=None,
+            ):
+                return _ok(
+                    {
+                        "size": size,
+                        "length_mm": length_mm,
+                        "internal": internal,
+                        "offsets": (diameter_offset_mm, start_offset_mm),
+                    }
+                )
 
             async def create_hole_wizard_hole(
                 self,
@@ -963,11 +978,14 @@ class TestConnectionPoolAdapterExtras:
             assert shown.data == {"components": ["cover-1"], "visible": False}
             assert (await wrapped.add_chamfer(1.0, ["Edge1"])).is_success
             assert (await wrapped.get_selected_entities()).is_success
-            threaded = await wrapped.create_thread("M30x1", [14.85, 1.77, 0], 5.5, True)
+            threaded = await wrapped.create_thread(
+                "M30x1", [14.75, 1.77, 0], 5.5, True, 0.5, -0.2
+            )
             assert threaded.data == {
                 "size": "M30x1",
                 "length_mm": 5.5,
                 "internal": True,
+                "offsets": (0.5, -0.2),
             }
             holed = await wrapped.create_hole_wizard_hole(
                 "tapped", "M3", [20, 10, 10], "+Z", 8.0, None, "modeled"

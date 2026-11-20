@@ -39,8 +39,8 @@ Scratch parts (each step builds its own): a 40 x 20 x 10 mm block on Front
     ``HoleWizard5`` do; the API help says the Thread feature data is
     "SOLIDWORKS 2018 FCS, Revision Number 26.0" and ``HoleWizard5`` 2014.
 1.8 Rebuild time: ``create_thread`` and the next ``ForceRebuild3`` for
-    M3x0.5 at 10, 50 and 100 mm and M10x1.5 at 20 and 100 mm (sets
-    ``MAX_THREAD_TURNS``, now a provisional 100).
+    M3x0.5 at 10, 50 and 100 mm and M10x1.5 at 20 and 100 mm (set
+    ``MAX_THREAD_TURNS`` to 200; ``overrides`` times 200 and 300 turns).
 1.9 A modeled tapped hole: M3 blind and M4 through; the start edge, the
     length (``ThreadDepth`` or the through length), whether the cosmetic
     thread stays beside the modeled one, the volume at the plate's ends.
@@ -57,6 +57,15 @@ chamber The imaging-chamber threads, on scratch copies of the geometry only
     ``Diameter`` 29.7 mm, and with ``Offset``/``OffsetDistance`` 0.15 mm, set
     by hand on the definition (the spec doesn't take them; this measures what
     an extension would do); an internal M30x1 in a Ø28.92 bore 6 mm deep.
+overrides ``IThreadFeatureData`` set by hand on M30x2.0: the default
+    ``Diameter`` on Ø30 and Ø29.5 rods, ``DiameterOverride``, ``PitchOverride``
+    to 1 mm, ``Offset`` both ways, ``ReverseDirection``; internal in Ø27.835
+    and Ø28.9175 bores; 200 and 300 turns of M3x0.5.
+borrowed M30x1 through ``create_thread`` (a borrowed ``M10x1.0`` profile)
+    on Ø30 and, with ``diameter_offset_mm``, Ø29.5; inside Ø28.9175 and
+    Ø29.4175; what a refused ``CreateFeature`` leaves.
+start ``Offset``, ``ReverseOffset`` and ``ReverseDirection`` from an edge with
+    material on both sides (a chamfered rod end, a bore with a lead-in).
 
 It only touches the documents it creates, closes them without saving, and
 writes the report under ``tests/.generated/probe_hole_wizard/``.
@@ -109,6 +118,7 @@ async def _tools(adapter: PyWin32Adapter) -> dict[str, Any]:
     from fastmcp import FastMCP
 
     from solidworks_mcp.tools.drawing import register_drawing_tools
+    from solidworks_mcp.tools.file_management import register_file_management_tools
     from solidworks_mcp.tools.modeling import register_modeling_tools
     from solidworks_mcp.tools.sketching import register_sketching_tools
 
@@ -116,6 +126,7 @@ async def _tools(adapter: PyWin32Adapter) -> dict[str, Any]:
     await register_sketching_tools(mcp, adapter, {})
     await register_modeling_tools(mcp, adapter, {})
     await register_drawing_tools(mcp, adapter, {})
+    await register_file_management_tools(mcp, adapter, {})
     return {t.name: t.fn for t in await mcp.list_tools()}
 
 
@@ -147,11 +158,15 @@ async def rod(adapter: Any, tools: dict[str, Any], diameter: float = 10.0) -> No
     await tools["create_extrusion"]({"depth": 40.0})
 
 
-async def drilled_block(adapter: Any, tools: dict[str, Any], hole: float) -> None:
-    """A 30 x 30 x 20 block with a Ø``hole`` hole through it at (15, 15)."""
+async def drilled_block(
+    adapter: Any, tools: dict[str, Any], hole: float, margin: float = 0.0
+) -> None:
+    """A 30 x 30 x 20 block (``margin`` wider each side) with a Ø``hole`` hole at (15, 15)."""
     await _part(adapter, tools)
     await tools["create_sketch"]({"plane": "Front"})
-    await tools["add_rectangle"]({"x1": 0, "y1": 0, "x2": 30, "y2": 30})
+    await tools["add_rectangle"](
+        {"x1": -margin, "y1": -margin, "x2": 30 + margin, "y2": 30 + margin}
+    )
     await tools["exit_sketch"]()
     await tools["create_extrusion"]({"depth": 20.0})
     await tools["create_sketch"]({"plane": "Front"})
@@ -295,8 +310,9 @@ async def face_pick(adapter, tools, report: Report) -> None:
     await tools["create_hole_wizard_hole"](
         {"kind": "countersink", "size": "M3", "face_point": [20, 10, 10]}
     )
+    # On the 90° cone: Ø6.72 at z = 10, so r = 2.5 is 0.86 mm down.
     second = await tools["create_hole_wizard_hole"](
-        {"kind": "clearance", "size": "M3", "face_point": [22.5, 10, 10]}
+        {"kind": "clearance", "size": "M3", "face_point": [22.5, 10, 9.14]}
     )
     report.record(
         "1.2.in_countersink",
@@ -364,6 +380,37 @@ async def wizard_sizes(adapter, tools, report: Report) -> None:
             feature = holes.wizard_hole(adapter, model, request, None)
             raw = holes.read_sizes(adapter, feature) if feature is not None else None
             report.record(f"1.4.{size}.{kind}", "IWizardHoleFeatureData2 (m, rad)", raw)
+    for size in ("M3", "M4"):
+        await block(adapter, tools)
+        model = _model(adapter)
+        face = holes.find_face(adapter, [20, 10, 10], None)
+        holes.pick_face(adapter, model, [20, 10, 10], face.normal)
+        request = holes.check_hole_input("tapped", size, None)
+        feature = holes.wizard_hole(adapter, model, request, None)
+        raw = holes.read_sizes(adapter, feature) if feature is not None else None
+        extra = None
+        if feature is not None:
+            data = feature.GetDefinition()
+            extra = {
+                name: _try(lambda n=name, d=data: getattr(d, n))
+                for name in (
+                    "Type",
+                    "Standard",
+                    "FastenerType",
+                    "FastenerSize",
+                    "EndCondition",
+                    "Depth",
+                    "ThreadEndCondition",
+                    "ThreadDepth",
+                    "TapDrillDiameter",
+                    "TapDrillDepth",
+                )
+            }
+        report.record(
+            f"1.4.{size}.tapped.through",
+            "what a through tapped hole reads back",
+            {"feature": feature is not None, "raw": raw, "more": extra},
+        )
     await block(adapter, tools)
     unknown = await tools["create_hole_wizard_hole"](
         {"kind": "clearance", "size": "M3.3", "face_point": [20, 10, 10]}
@@ -540,6 +587,21 @@ async def cleanup(adapter, tools, report: Report) -> None:
             "count_after": threads.feature_count(adapter, _model(adapter)),
         },
     )
+    await rod(adapter, tools)
+    count = threads.feature_count(adapter, _model(adapter))
+    before = await _volume(adapter)
+    longer = await tools["create_thread"](
+        {"size": "M10x1.5", "edge_point": [5, 0, 40], "length_mm": 60}
+    )
+    report.record(
+        "1.10.longer_than_rod",
+        "a 60 mm thread on a 40 mm rod: refused, or clipped?",
+        {
+            "reply": longer,
+            "count": (count, threads.feature_count(adapter, _model(adapter))),
+            "removed": (before or 0) - (await _volume(adapter) or 0),
+        },
+    )
     await block(adapter, tools)
     before = await _volume(adapter)
     count = threads.feature_count(adapter, _model(adapter))
@@ -678,6 +740,343 @@ async def chamber(adapter, tools, report: Report) -> None:
     )
 
 
+async def _raw_thread(
+    adapter: Any,
+    report: Report,
+    label: str,
+    internal: bool,
+    size: str,
+    edge_point: list[float],
+    length: float,
+    settings: dict[str, Any],
+    expected: float | None = None,
+) -> None:
+    """One thread straight through ``IThreadFeatureData``, with extra settings."""
+    from solidworks_mcp.adapters.solidworks import threads
+    from solidworks_mcp.adapters.solidworks.com_utils import flag
+
+    model = _model(adapter)
+    data, _file, _sizes = threads.open_library(adapter, model, internal=internal)
+    edge, info = threads.find_circular_edge(adapter, edge_point)
+    for name, value in {
+        "Edge": edge,
+        "ThreadMethod": 0,
+        "Size": size,
+        "EndCondition": 0,
+        "BlindDepth": length / 1000.0,
+        "RightHanded": True,
+    }.items():
+        _try(lambda n=name, v=value, d=data: setattr(d, n, v))
+    defaults = {
+        n: _try(lambda n=n, d=data: getattr(d, n))
+        for n in ("Diameter", "Pitch", "ReverseDirection", "ThreadStartAngle")
+    }
+    for name, value in settings.items():
+        _try(lambda n=name, v=value, d=data: setattr(d, n, v))
+    before = await _volume(adapter)
+    manager = model.FeatureManager
+    flag(adapter, manager, "CreateFeature")
+    feature = _try(lambda: manager.CreateFeature(data))
+    made = feature.get("value")
+    removed = (before or 0) - (await _volume(adapter) or 0)
+    report.record(
+        f"overrides.{label}",
+        f"expected about {expected} mm³" if expected else "what it does",
+        {
+            "made": made is not None,
+            "raised": feature.get("raised"),
+            "removed": round(removed, 4),
+            "defaults": defaults,
+            "extent": threads.thread_extent(adapter, made, info) if made else None,
+            "edge": info.get("center_mm"),
+        },
+    )
+
+
+async def overrides(adapter, tools, report: Report) -> None:
+    """The extension's settings: diameter and pitch overrides, start offset, turns."""
+    from solidworks_mcp.adapters.solidworks import threads
+
+    def groove(external: bool, diameter: float, pitch: float, length: float) -> float:
+        """The basic groove (die or tap trapezoid) swept for ``length``, mm³."""
+        height = 5 * math.sqrt(3) / 16 * pitch
+        if external:
+            area = (pitch / 4 + 7 * pitch / 8) / 2 * height
+            radius = diameter / 2 - 0.22 * pitch
+        else:
+            area = (3 * pitch / 4 + pitch / 8) / 2 * height
+            radius = threads.minor_diameter(diameter, pitch) / 2 + 0.2 * pitch
+        return round(area * 2 * math.pi * radius * length / pitch, 1)
+
+    cases = [
+        ("ext.30.M30x2", 30.0, "M30x2.0", {}, groove(True, 30, 2, 10)),
+        ("ext.29.5.M30x2", 29.5, "M30x2.0", {}, None),
+        (
+            "ext.29.5.M30x2.diam29.5",
+            29.5,
+            "M30x2.0",
+            {"DiameterOverride": True, "Diameter": 0.0295},
+            groove(True, 29.5, 2, 10),
+        ),
+        (
+            "ext.29.5.M30x2.diam30",
+            29.5,
+            "M30x2.0",
+            {"DiameterOverride": True, "Diameter": 0.030},
+            None,
+        ),
+        (
+            "ext.30.M30x2.pitch1",
+            30.0,
+            "M30x2.0",
+            {"PitchOverride": True, "Pitch": 0.001},
+            groove(True, 30, 1, 10),
+        ),
+        (
+            "ext.29.5.M30x2.pitch1.diam29.5",
+            29.5,
+            "M30x2.0",
+            {
+                "PitchOverride": True,
+                "Pitch": 0.001,
+                "DiameterOverride": True,
+                "Diameter": 0.0295,
+            },
+            groove(True, 29.5, 1, 10),
+        ),
+        (
+            "ext.30.M30x2.offset0.5",
+            30.0,
+            "M30x2.0",
+            {"Offset": True, "OffsetDistance": 0.0005},
+            None,
+        ),
+        (
+            "ext.30.M30x2.offset0.5.reverse",
+            30.0,
+            "M30x2.0",
+            {"Offset": True, "OffsetDistance": 0.0005, "ReverseOffset": True},
+            None,
+        ),
+        (
+            "ext.30.M30x2.reverse_direction",
+            30.0,
+            "M30x2.0",
+            {"ReverseDirection": True},
+            None,
+        ),
+    ]
+    for label, diameter, size, settings, expected in cases:
+        await rod(adapter, tools, diameter)
+        await _raw_thread(
+            adapter, report, label, False, size, [diameter / 2, 0, 40], 10,
+            settings, expected,
+        )  # fmt: skip
+    for label, hole, settings, expected in (
+        ("int.27.835.M30x2", 27.835, {}, groove(False, 30, 2, 10)),
+        (
+            "int.28.9175.M30x2.pitch1",
+            28.9175,
+            {"PitchOverride": True, "Pitch": 0.001},
+            groove(False, 30, 1, 10),
+        ),
+        (
+            "int.28.9175.M30x2.pitch1.offset0.5",
+            28.9175,
+            {
+                "PitchOverride": True,
+                "Pitch": 0.001,
+                "Offset": True,
+                "OffsetDistance": 0.0005,
+            },
+            None,
+        ),
+    ):
+        await _part(adapter, tools)
+        await tools["create_sketch"]({"plane": "Front"})
+        await tools["add_rectangle"]({"x1": -25, "y1": -25, "x2": 25, "y2": 25})
+        await tools["exit_sketch"]()
+        await tools["create_extrusion"]({"depth": 20.0})
+        await tools["create_sketch"]({"plane": "Front"})
+        await tools["add_circle"]({"center_x": 0, "center_y": 0, "radius": hole / 2})
+        await tools["exit_sketch"]()
+        await tools["create_cut_extrude"](
+            {"depth": 20.0, "end_condition": "ThroughAll"}
+        )
+        await _raw_thread(
+            adapter, report, label, True, "M30x2.0", [hole / 2, 0, 20], 10,
+            settings, expected,
+        )  # fmt: skip
+    # Turns: 200 and 300 of M3x0.5, past the provisional limit.
+    original = threads.MAX_THREAD_TURNS
+    threads.MAX_THREAD_TURNS = 400
+    try:
+        for length in (100, 150):
+            await _part(adapter, tools)
+            await tools["create_sketch"]({"plane": "Front"})
+            await tools["add_circle"]({"center_x": 0, "center_y": 0, "radius": 1.5})
+            await tools["exit_sketch"]()
+            await tools["create_extrusion"]({"depth": float(length) + 5})
+            started = time.perf_counter()
+            reply = await tools["create_thread"](
+                {"size": "M3x0.5", "edge_point": [1.5, 0, length + 5],
+                 "length_mm": length}
+            )  # fmt: skip
+            made = time.perf_counter() - started
+            started = time.perf_counter()
+            _model(adapter).ForceRebuild3(False)
+            report.record(
+                f"overrides.turns.{length * 2}",
+                "make and rebuild seconds past 100 turns",
+                {
+                    "status": reply.get("status"),
+                    "make_s": round(made, 2),
+                    "rebuild_s": round(time.perf_counter() - started, 2),
+                },
+            )
+    finally:
+        threads.MAX_THREAD_TURNS = original
+
+
+def _groove(external: bool, diameter: float, pitch: float, length: float) -> float:
+    """The basic groove (die or tap trapezoid) swept for ``length``, mm³.
+
+    ``diameter`` is the major for a die and the nominal for a tap. M30x2.0
+    measured 559.19 against 557.1 (die) and 426.10 against 426.0 (tap).
+    """
+    from solidworks_mcp.adapters.solidworks import threads
+
+    height = 5 * math.sqrt(3) / 16 * pitch
+    if external:
+        area = (pitch / 4 + 7 * pitch / 8) / 2 * height
+        radius = diameter / 2 - 0.22 * pitch
+    else:
+        area = (3 * pitch / 4 + pitch / 8) / 2 * height
+        radius = threads.minor_diameter(diameter, pitch) / 2 + 0.2 * pitch
+    return round(area * 2 * math.pi * radius * length / pitch, 1)
+
+
+async def borrowed(adapter, tools, report: Report) -> None:
+    """M30x1 through the tool: a borrowed same-pitch profile, and the offset."""
+    from solidworks_mcp.adapters.solidworks import threads
+
+    for diameter, offset, expected in (
+        (30.0, None, _groove(True, 30, 1, 10)),
+        (29.5, -0.5, _groove(True, 29.5, 1, 10)),
+        (29.5, None, None),
+    ):
+        await rod(adapter, tools, diameter)
+        reply = await tools["create_thread"](
+            {"size": "M30x1", "edge_point": [diameter / 2, 0, 40], "length_mm": 10}
+            | ({"diameter_offset_mm": offset} if offset is not None else {})
+        )
+        data = reply.get("data") or {}
+        report.record(
+            f"borrowed.external.{diameter}.{offset}",
+            f"about {expected} mm³ (refused without the offset on Ø29.5)",
+            {
+                "status": reply.get("status"),
+                "message": reply.get("message"),
+                "removed": (data.get("measured_change") or {}).get("volume_delta_mm3"),
+                "thread": data.get("thread"),
+                "profile": data.get("profile"),
+                "extent": data.get("extent"),
+            },
+        )
+    for hole, offset, expected in (
+        (28.9175, None, _groove(False, 30, 1, 10)),
+        (29.4175, 0.5, _groove(False, 30.5, 1, 10)),
+    ):
+        await drilled_block(adapter, tools, hole, margin=10.0)
+        reply = await tools["create_thread"](
+            {
+                "size": "M30x1",
+                "edge_point": [15 + hole / 2, 15, 20],
+                "length_mm": 10,
+                "internal": True,
+            }
+            | ({"diameter_offset_mm": offset} if offset is not None else {})
+        )
+        data = reply.get("data") or {}
+        report.record(
+            f"borrowed.internal.{hole}.{offset}",
+            f"about {expected} mm³",
+            {
+                "status": reply.get("status"),
+                "message": reply.get("message"),
+                "removed": (data.get("measured_change") or {}).get("volume_delta_mm3"),
+                "profile": data.get("profile"),
+                "extent": data.get("extent"),
+            },
+        )
+    # A refused CreateFeature (pitch override on a coarse profile): what's left?
+    await rod(adapter, tools, 30.0)
+    count = threads.feature_count(adapter, _model(adapter))
+    await _raw_thread(
+        adapter, report, "refused.pitch1", False, "M30x2.0", [15, 0, 40], 10,
+        {"PitchOverride": True, "Pitch": 0.001},
+    )  # fmt: skip
+    report.record(
+        "borrowed.refused.count",
+        "the tree after a CreateFeature that returned None",
+        (count, threads.feature_count(adapter, _model(adapter))),
+    )
+
+
+async def start(adapter, tools, report: Report) -> None:
+    """Which way a thread runs from an edge with material on both sides, and Offset.
+
+    A Ø30 rod with a 0.5 mm chamfer on its end (the edge at z = 39.5 has the
+    cone above and the cylinder below), and a Ø28.9175 bore with a 0.54 mm
+    lead-in (its edge at z = 19.46 has the cone above and the bore below):
+    the chamber's two edges.
+    """
+    borrowed_profile = {"DiameterOverride": True}
+    for label, settings in (
+        ("default", {}),
+        ("offset0.5", {"Offset": True, "OffsetDistance": 0.0005}),
+        (
+            "offset0.5.reverse",
+            {"Offset": True, "OffsetDistance": 0.0005, "ReverseOffset": True},
+        ),
+        ("reverse_direction", {"ReverseDirection": True}),
+    ):
+        await rod(adapter, tools, 30.0)
+        await tools["add_chamfer"]({"distance": 0.5, "edge_names": ["0.015,0,0.04"]})
+        await _raw_thread(
+            adapter, report, f"start.external.{label}", False, "M10x1.0",
+            [15, 0, 39.5], 5,
+            borrowed_profile | {"Diameter": 0.030} | settings,
+        )  # fmt: skip
+    for label, settings in (
+        ("default", {}),
+        ("offset0.54", {"Offset": True, "OffsetDistance": 0.00054}),
+        (
+            "offset0.54.reverse",
+            {"Offset": True, "OffsetDistance": 0.00054, "ReverseOffset": True},
+        ),
+    ):
+        await _part(adapter, tools)
+        await tools["create_sketch"]({"plane": "Front"})
+        await tools["add_rectangle"]({"x1": -25, "y1": -25, "x2": 25, "y2": 25})
+        await tools["exit_sketch"]()
+        await tools["create_extrusion"]({"depth": 20.0})
+        await tools["create_sketch"]({"plane": "Front"})
+        await tools["add_circle"]({"center_x": 0, "center_y": 0, "radius": 28.9175 / 2})
+        await tools["exit_sketch"]()
+        await tools["create_cut_extrude"](
+            {"depth": 20.0, "end_condition": "ThroughAll"}
+        )
+        await tools["add_chamfer"](
+            {"distance": 0.54, "edge_names": ["0.01445875,0,0.02"]}
+        )
+        await _raw_thread(
+            adapter, report, f"start.internal.{label}", True, "M10x1.0",
+            [28.9175 / 2, 0, 19.46], 5,
+            borrowed_profile | {"Diameter": 0.0289175} | settings,
+        )  # fmt: skip
+
+
 STEPS = {
     "1.1": hole_wizard_signature,
     "1.2": face_pick,
@@ -691,6 +1090,9 @@ STEPS = {
     "1.10": cleanup,
     "1.11": drawing_import,
     "chamber": chamber,
+    "overrides": overrides,
+    "borrowed": borrowed,
+    "start": start,
 }
 
 
