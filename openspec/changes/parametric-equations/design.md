@@ -63,7 +63,7 @@ Every COM call stays on the connect thread through `_handle_com_operation`, whic
 ### D4. All or nothing: a journal and one rebuild
 
 - **Order:** all left sides are checked first (D2, D3). Then `AutomaticSolveOrder` is turned on, and its old value is remembered so it can be reported.
-- **Applying:** each equation is applied in order. An add uses `Add3`, or `Add2` if probe 1.1 shows `Add3` is missing, at index `GetCount()` without solving. A replace uses `SetEquation`.
+- **Applying:** each equation is applied in order. An add uses `Add2(-1, text, False)`: appended, without solving (probe 1.1: `Add3` returns -1 on a part with one configuration). `Add3` is used only where `Add2` is missing. A replace uses `SetEquation`.
 - **Refusal:** an add that returns a negative index is refused. So is a replace whose read-back text differs from the input after whitespace and case are normalised (hjbaard's finding).
 - **Undo:** on the first refusal the journal is undone in reverse (`Delete` the added ones, `SetEquation` the old text back). Then one `ForceRebuild3(False)`, and the call fails with `invalid_input`, naming the refused equation and SolidWorks' reason where `Status` gives one.
 - **Success:** one `ForceRebuild3(False)`, then `failing_features` from `rebuild_inspector`. A rebuild with failing features is still a success, with a `warning`: the equations are in, and the agent decides what to fix.
@@ -71,8 +71,8 @@ Every COM call stays on the connect thread through `_handle_com_operation`, whic
 
 ### D5. All configurations
 
-- `Add3` takes `swAllConfiguration` (`config_option = 2` per `swInConfigurationOpts_e` in `data/swconst_enums.json`; probe 1.1 confirms it on SolidWorks).
-- `Add2` has no option and applies to all configurations, which is the same result.
+- `Add2` has no option and applies to all configurations: probe 1.1 adds `"W" = 45mm` with `Add2`, adds a second configuration, and the equation reads there.
+- `Add3` with `swAllConfiguration` (`config_option = 2`) is kept only as the fallback where `Add2` is missing. Its Remarks say it "only works for parts having multiple configurations"; probe 1.1 measured -1 on a one-configuration part, and on a two-configuration part it put each equation at index 0 and lost one.
 
 ### D6. Broken equations
 
@@ -132,7 +132,12 @@ This mirrors the payload shapes, not SolidWorks' solver.
 
 ## Probe results
 
-To fill in after task group 1.
+`tests/scripts/probe_equations.py`, SOLIDWORKS 2026 SP4.1, 2026-11-19 (runs `20261119-231200` before the fix, `20261119-232216` and `20261119-232849` after; pitfall #60):
+
+- **1.1 The manager.** `Equation(i)`, `Value(i)` and `GlobalVariable(i)` read the same through a plain call, `get_indexed` (`IDispatch.Invoke`) and `InvokeTypes`; the first run read them empty only because nothing had been added. `Add3` returned -1 for every equation on a one-configuration part (`Status` -1, `GetCount` 0); `Add2(-1, text, solve)` appends and returns the index. An `Add2` equation reads in a second configuration (D5). The equation manager needs no re-read after `GetEquationMgr`, and no rebuild before an add.
+- **1.2 Units.** Unit suffixes are accepted. A bare number is in document units: `"D1@Sketch1" = 25` on an inch part gives 0.635 m; `= 25mm` gives 0.025 m and `Value(i)` 0.984 (inches); `= 1in` gives 0.0254 m. This install's default part template is in inches, so `document_units` matters (D2).
+- **1.3 Refusals.** `Add2` of `"D1@NoSuchSketch" = 5` returns -1 with `Status` -1 and nothing added; an `Add2` of a left side that already has an equation returns -1 too. `SetEquation` with `"H" = 6 +` keeps `"H" = 5` without an error (the read-back check catches it). `Delete(99)` returns -1. SolidWorks rewrites some texts it stores (`"W" = 45` reads back `"W"= 45` once a configuration is added); `same_equation` ignores the whitespace.
+- **1.4 Broken.** After `delete_feature` on Sketch2, `Parameter("D1@Sketch2")` is null, the equation survives, and `list_equations` marks it `broken`.
 
 ## Live results
 

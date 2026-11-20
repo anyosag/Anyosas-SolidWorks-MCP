@@ -8,14 +8,14 @@ what it got; the report keeps everything.
     ``GetEquationMgr()``, ``GetCount()``; ``Equation(0)``, ``Value(0)`` and
     ``GlobalVariable(0)`` read three ways: a plain call, after
     ``flagged(eqmgr, "IEquationMgr")``, and ``_oleobj_.InvokeTypes`` with
-    gen_py's DISPIDs (8, 7, 22). ``Add3`` with ``swAllConfiguration`` (2) on
-    a part with two configurations: the equation reads in both. Settles D4's
-    add call and D5.
+    gen_py's DISPIDs (8, 7, 22). ``Add3`` on the one-configuration part
+    (-1, pitfall #60), then ``Add2(-1, ...)``; a second configuration: the
+    equation reads in it. Settles D4's add call and D5.
 1.2 Units: on an mm part and an inch part, ``"D1@Sketch1" = 25``, ``= 25mm``
     and ``= 1in``; each one's ``Value(i)`` and the dimension's
     ``SystemValue``. Settles D2: suffixes accepted, and what a bare number
     means.
-1.3 Refusals: ``Add3`` with ``"D1@NoSuchSketch" = 5`` (the index and
+1.3 Refusals: ``Add2`` with ``"D1@NoSuchSketch" = 5`` (the index and
     ``Status``); ``SetEquation`` with a bad expression (is the old text
     kept?); ``Delete`` out of range. Settles D4's refusal rules.
 1.4 Broken: ``"D1@Boss-Extrude1" = 2 * "<circle diameter>@Sketch2"``, then
@@ -89,8 +89,9 @@ async def _tools(adapter: PyWin32Adapter) -> dict[str, Any]:
 async def _block(adapter: Any, tools: dict[str, Any], units: str = "mm") -> dict:
     """A 40 x 20 x 10 mm block; the width dimension's name and the boss's."""
     await adapter.create_part()
-    if units != "mm":
-        await tools["set_units"]({"unit_system": units})
+    # Always: this install's default part template is in inches (run
+    # 20261119-232216), and a bare number in an equation is in document units.
+    await tools["set_units"]({"unit_system": units})
     sketch = await tools["create_sketch"]({"plane": "Front"})
     corners = [(-20, -10), (20, -10), (20, 10), (-20, 10)]
     lines = []
@@ -121,12 +122,17 @@ async def manager_calls(adapter: Any, tools: dict[str, Any], report: Report) -> 
     model = adapter.currentModel
     mgr = _manager(adapter)
     report.record("1.1.count_empty", "GetCount", _try(lambda: mgr.GetCount()))
-    added = _try(lambda: mgr.Add3(0, '"W" = 45mm', False, 2, None))
-    report.record("1.1.add3", "Add3 with swAllConfiguration", added)
-    if "raised" in added:
-        report.record(
-            "1.1.add2", "Add2 fallback", _try(lambda: mgr.Add2(0, '"W" = 45mm', False))
-        )
+    # Run 20261119-231200: Add3 returned -1 on this one-configuration part
+    # (its Remarks: "only works for parts having multiple configurations").
+    report.record(
+        "1.1.add3",
+        "Add3 with swAllConfiguration on one configuration (-1 expected)",
+        _try(lambda: mgr.Add3(-1, '"V" = 1', False, 2, None)),
+    )
+    added = _try(lambda: mgr.Add2(-1, '"W" = 45mm', False))
+    report.record(
+        "1.1.add2", "Add2(-1, ...) appends", added, ok=added.get("value") == 0
+    )
     for name, (dispid, vt) in DISPIDS.items():
         report.record(
             f"1.1.{name}.plain", "a plain call", _try(lambda n=name: getattr(mgr, n)(0))
@@ -164,9 +170,16 @@ async def manager_calls(adapter: Any, tools: dict[str, Any], report: Report) -> 
         _try(lambda: model.AddConfiguration3("Second", "", "", 0)),
     )
     report.record(
+        "1.1.show_second",
+        "activate the second configuration",
+        _try(lambda: model.ShowConfiguration2("Second")),
+    )
+    second = _try(lambda: get_indexed(_manager(adapter), "Equation", 0))
+    report.record(
         "1.1.second_config",
         "the equation in the second configuration",
-        _try(lambda: get_indexed(_manager(adapter), "Equation", 0)),
+        second,
+        ok=isinstance(second.get("value"), str) and '"W"' in second["value"],
     )
     report.record("1.1.block", "the block's names", block)
 
@@ -177,11 +190,18 @@ async def units(adapter: Any, tools: dict[str, Any], report: Report) -> None:
     for unit in ("mm", "in"):
         block = await _block(adapter, tools, units=unit)
         mgr = _manager(adapter)
+        from solidworks_mcp.adapters.solidworks import equations as eq
+
+        report.record(
+            f"1.2.{unit}.document_units",
+            "swUnitsLinear after set_units",
+            eq.document_units(adapter, adapter.currentModel),
+        )
         name = block["width"]
         for right in ("25", "25mm", "1in"):
             text = f'"{name}" = {right}'
             count = mgr.GetCount()
-            index = _try(lambda m=mgr, t=text, c=count: m.Add3(c, t, True, 2, None))
+            index = _try(lambda m=mgr, t=text: m.Add2(-1, t, True))
             adapter.currentModel.ForceRebuild3(False)
             report.record(
                 f"1.2.{unit}.{right}",
@@ -208,15 +228,15 @@ async def refusals(adapter: Any, tools: dict[str, Any], report: Report) -> None:
     mgr = _manager(adapter)
     report.record(
         "1.3.add_missing",
-        "Add3 of a missing dimension: index and Status",
+        "Add2 of a missing dimension: index and Status",
         {
-            "index": _try(lambda: mgr.Add3(0, '"D1@NoSuchSketch" = 5', False, 2, None)),
+            "index": _try(lambda: mgr.Add2(-1, '"D1@NoSuchSketch" = 5', False)),
             "status": _try(lambda: mgr.Status),
             "count": _try(lambda: mgr.GetCount()),
         },
     )
     count = mgr.GetCount()
-    mgr.Add3(count, '"H" = 5', False, 2, None)
+    mgr.Add2(-1, '"H" = 5', False)
     put = _try(lambda: put_indexed(mgr, "Equation", count, '"H" = 6 +'))
     report.record(
         "1.3.bad_set",

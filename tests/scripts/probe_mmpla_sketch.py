@@ -255,7 +255,12 @@ async def points(tools: dict[str, Any], _adapter: Any, report: Report) -> None:
         _centre(summary, 0),
     )
     report.check(
-        "1g.second", "the centre on the origin", ([0.0, 0.0], 1.0), _centre(summary, 2)
+        # Index 1, not 2: run 20261119-232612 read GetSketchSegments as the
+        # two circles, then the centreline, not in the order they were drawn.
+        "1g.second",
+        "the centre on the origin",
+        ([0.0, 0.0], 1.0),
+        _centre(summary, 1),
     )
     report.check(
         "1g.state",

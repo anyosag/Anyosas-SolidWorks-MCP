@@ -56,8 +56,9 @@ async def _volume(adapter: Any) -> float:
 async def _block(adapter: Any, tools: dict[str, Any], units: str = "mm") -> dict:
     """A 40 x 20 x 10 mm block on Front; the width dimension and the boss."""
     assert (await adapter.create_part()).is_success
-    if units != "mm":
-        assert (await tools["set_units"]({"unit_system": units}))["status"] == "success"
+    # Always: the default part template can be in inches (pitfall #60), and a
+    # bare number in an equation is in document units.
+    assert (await tools["set_units"]({"unit_system": units}))["status"] == "success"
     sketch = await tools["create_sketch"]({"plane": "Front"})
     assert sketch["status"] == "success", sketch
     corners = [(-20, -10), (20, -10), (20, 10), (-20, 10)]

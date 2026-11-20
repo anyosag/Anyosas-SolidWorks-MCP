@@ -1698,6 +1698,46 @@ From The Dipper build; `tests/scripts/probe_r2_views.py` (2026-11-17):
   volume: `set_density` reported 0.016 g for an 18.4 g block. Mass is read
   first now (`density._mass_facts`, `get_mass_properties`).
 
+## 60. Equations, full circles and sketch patterns: measured
+
+`tests/scripts/probe_equations.py`, `probe_mmpla_sketch.py` and
+`probe_mmpla_params.py` (SOLIDWORKS 2026 SP4.1, 2026-11-19):
+
+- **`IEquationMgr.Add3` returns -1 on a part with one configuration**, for
+  every equation, even `"D1@Sketch1" = 25`, with `Status` -1 and `GetCount`
+  still 0. Its Remarks say so: it "only works for parts having multiple
+  configurations". On a part with two it returned 0 for each add with index
+  -1 and one of two equations went missing. `Add2(-1, text, solve)` appends
+  and returns the index, and an `Add2` equation reads in a second
+  configuration added later. `set_equations` adds with `Add2(-1, ...)`;
+  `Add3` is only the fallback where `Add2` is missing.
+- **The indexed reads were never the problem.** `Equation(i)`, `Value(i)`
+  and `GlobalVariable(i)` read the same through a plain call, `get_indexed`
+  and `InvokeTypes`; they were empty because nothing had been added.
+- **Units:** suffixes are accepted (`25mm`, `1in`), and a bare number is in
+  document units. This install's default part template is in inches:
+  `"D1@Sketch1" = 25` made the block 635 mm wide. Probes and live tests call
+  `set_units` even for mm.
+- **Refusals:** `Add2` returns -1 for a missing dimension and for a left side
+  that already has an equation; `Equation(i) = "H" = 6 +` keeps the old text
+  without an error; `Delete(99)` returns -1. SolidWorks may store `"W"= 45`
+  for `"W" = 45`.
+- **`ISketchArc.IsCircle()` is a long, 1 or 0, not a bool** (the API help:
+  "1 if a complete circle, 0 if a partial arc"). The code compared it with
+  `is True`, so every full circle read as an `arc`: `get_sketch` counted
+  `{"arc": 30}` with no circle centres, and `add_sketch_constraint`
+  coincident to `Origin` put the origin on the arc's curve instead of at its
+  centre, which left a sketch under-defined. `com_utils.reads_as_circle`
+  takes 1 (and True). `ICurve.IsCircle` is a real bool.
+- **`GetSketchSegments` is not drawing order:** a circle, a centreline, a
+  circle came back as both circles, then the centreline.
+- **Sketch pattern copies do follow the seed.** Setting a circular pattern's
+  seed diameter from 3 to 4 mm gave all 12 copies r 2. The earlier "copies
+  don't follow" was the probe: it matched the seed's dimension on `value`,
+  which `list_model_dimensions` gives in document units (0.118 in on the
+  inch template, while `units` says `mm`, the unit `set_dimension` takes),
+  so it found none and never changed it. Match on `system_value`.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape

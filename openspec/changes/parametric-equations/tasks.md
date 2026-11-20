@@ -1,21 +1,21 @@
 ## 1. Probes (SolidWorks, scratch documents, each with the user's OK)
 
-- [ ] 1.1 `tests/scripts/probe_equations.py`: the manager through late binding.
-  - Script written (steps 1.1-1.5, 1.5 the tools end to end); not run yet.
+- [x] 1.1 `tests/scripts/probe_equations.py`: the manager through late binding.
+  - Run 2026-11-19 (`20261119-232216`; `20261119-232849` with `set_units` mm, every check ok): `Add3` returns -1 on one configuration, so the add is `Add2(-1, ...)`; results in design.md "Probe results" and pitfall #60.
   - On a new part, get `GetEquationMgr()` and read `GetCount()`.
   - Call `Equation(0)`, `Value(0)` and `GlobalVariable(0)` three ways: plain, after `flagged(eqmgr, "IEquationMgr")`, and through `_oleobj_.InvokeTypes` with gen_py's DISPIDs. Record which works.
   - Check `Add3` exists and that `config_option = 2` (`swAllConfiguration`) applies the equation to two configurations. Otherwise fall back to `Add2`.
   - Record the results in design.md under "Probe results" and settle D4's add call and D5.
-- [ ] 1.2 Units.
+- [x] 1.2 Units.
   - On an mm part and an inch part (`set_units`), add `"D1@Sketch1" = 25`, `= 25mm` and `= 1in`.
   - Read each one's `Value(i)` and the dimension's `SystemValue`.
   - Settle D2: are unit suffixes accepted, and what does a bare number mean?
-- [ ] 1.3 Refusals.
+- [x] 1.3 Refusals.
   - `Add3` with `"D1@NoSuchSketch" = 5`: record the index returned and `Status`.
   - `SetEquation` with a bad expression: confirm the old text is kept.
   - `Delete` on an out-of-range index.
   - Settle the refusal rules in D4.
-- [ ] 1.4 Broken equations.
+- [x] 1.4 Broken equations.
   - Make `"D1@Boss" = 2 * "D1@Sketch2"`, then delete `Sketch2` with the fork's `delete_feature`.
   - Confirm `IModelDoc2.Parameter("D1@Sketch2")` is null and the equation survives.
   - Settle D6.
@@ -57,7 +57,7 @@
 - [x] 6.2 Agent skill:
   - `references/workflows.md` gains "Parametric parts with equations": variables first, link dimensions, change a variable, check `measured_change`.
   - `references/errors-and-limits.md` gains the `set_dimension` refusal.
-- [ ] 6.3 `docs/agents/com-api-pitfalls.md`: entries for what probes 1.1–1.3 found (indexed properties, units, silent refusals).
+- [x] 6.3 `docs/agents/com-api-pitfalls.md`: entries for what probes 1.1–1.3 found (indexed properties, units, silent refusals).
 - [ ] 6.4 `.\dev-commands.ps1 dev-docs-strict`.
 
 ## 7. Live

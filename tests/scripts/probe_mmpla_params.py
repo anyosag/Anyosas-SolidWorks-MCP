@@ -107,15 +107,22 @@ class Report:
 
 
 def _circles(reply: dict[str, Any]) -> list[tuple[list[float], float]]:
-    """Each full circle of a ``get_sketch`` reply: its centre and radius (mm)."""
+    """Each full circle of a ``get_sketch`` reply: its centre and radius (mm).
+
+    A full circle reads as ``type`` ``circle`` with ``center_mm`` and
+    ``radius_mm``; before pitfall #60 was fixed it read as an ``arc`` whose
+    start and end are the same point, which is still taken.
+    """
     out = []
     for seg in (reply.get("sketch") or {}).get("segments") or []:
-        start, end, centre = (
-            seg.get("start_mm"),
-            seg.get("end_mm"),
-            seg.get("center_mm"),
-        )
-        if not (start and end and centre) or seg.get("construction"):
+        if seg.get("construction"):
+            continue
+        centre = seg.get("center_mm")
+        if seg.get("type") == "circle" and centre and seg.get("radius_mm"):
+            out.append((centre, float(seg["radius_mm"])))
+            continue
+        start, end = seg.get("start_mm"), seg.get("end_mm")
+        if not (start and end and centre):
             continue
         if math.dist(start, end) > TOLERANCE:
             continue  # an arc, not a circle
@@ -146,14 +153,26 @@ async def _seed(
 
 
 async def _seed_dimension(
-    tools: dict[str, Any], sketch: str, value: float, skip: set[str]
+    tools: dict[str, Any],
+    sketch: str,
+    value: float,
+    skip: set[str],
+    report: Report | None = None,
 ) -> str | None:
+    """The sketch's dimension of ``value`` mm that isn't one of ``skip``.
+
+    Matched on ``system_value`` (metres): ``value`` is in document units,
+    which on an inch template is not mm.
+    """
     listed = await tools["list_model_dimensions"]({"feature_name": sketch})
+    if report is not None:
+        report.keep(f"listed.{sketch}", listed)
     return next(
         (
             d["full_name"]
             for d in listed.get("data") or []
-            if d["full_name"] not in skip and abs(float(d["value"] or 0) - value) < 1e-6
+            if d["full_name"] not in skip
+            and abs(float(d.get("system_value") or 0) * 1000 - value) < 1e-6
         ),
         None,
     )
@@ -217,7 +236,7 @@ async def circular(tools: dict[str, Any], adapter: Any, report: Report) -> None:
         ),
     )
     await ring("1.radius25", 12, 25.0, 1.5)
-    seed_dim = await _seed_dimension(tools, sketch, 3.0, pattern_names)
+    seed_dim = await _seed_dimension(tools, sketch, 3.0, pattern_names, report)
     report.keep("1.seed_dimension", seed_dim)
     report.keep(
         "1.set_seed",
