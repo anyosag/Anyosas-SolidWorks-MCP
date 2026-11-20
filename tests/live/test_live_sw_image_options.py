@@ -59,12 +59,15 @@ async def test_a_clean_picture_and_a_close_up(scratch, tmp_path: Path) -> None:
     assert (await tools["create_extrusion"]({"depth": 10}))["status"] == "success"
     before = _shown(adapter.currentModel)
     clean, close = tmp_path / "clean.png", tmp_path / "corner.png"
+    # Small pictures: nothing here reads their pixels (default 1920 x 1080).
+    size = {"width": 640, "height": 360}
 
     first = await tools["export_image"](
         {
             "file_path": str(clean),
             "view_orientation": "isometric",
             "hide": ["planes", "sketches", "origins"],
+            **size,
         }
     )
     second = await tools["export_image"](
@@ -72,6 +75,7 @@ async def test_a_clean_picture_and_a_close_up(scratch, tmp_path: Path) -> None:
             "file_path": str(close),
             "view_orientation": "isometric",
             "zoom_box_mm": [0, 0, -5, 10, 10, 5],
+            **size,
         }
     )
     after = _shown(adapter.currentModel)

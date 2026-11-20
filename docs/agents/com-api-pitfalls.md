@@ -874,8 +874,10 @@ Found 2026-10-13 building `rebuild_model` diagnostics (#106).
   8 s between tests. `_handle_com_operation` now pauses after every operation
   (`SOLIDWORKS_MCP_COM_SETTLE_SECONDS`, default 0.25;
   `SOLIDWORKS_MCP_DOC_SETTLE_SECONDS`, default 1.0). The live suite applies the
-  slower values and waits until SolidWorks is `SW_TEST_WARMUP_SECONDS` (480)
-  old before its first test.
+  slower values and, before its first test, waits until a freshly started
+  SolidWorks has been idle and answering for `SW_TEST_WARMUP_SETTLE_SECONDS`
+  (20), at most until it is `SW_TEST_WARMUP_SECONDS` (480) old
+  (`tests/live/readiness.py`; `SW_TEST_WARMUP_FIXED=1` waits the whole time).
 - **Did not help:** `ISldWorks.CommandInProgress` (crashed sooner),
   `SketchManager.AddToDB`, leaving sketch-edit mode before `CloseDoc`,
   unloading the 3DEXPERIENCE add-ins, resetting SolidWorks settings, hidden

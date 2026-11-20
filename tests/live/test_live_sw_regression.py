@@ -58,48 +58,9 @@ def _test_assembly_path() -> str:
     return os.environ.get(_TEST_ASSEMBLY_ENV_VAR, "").strip()
 
 
-# ---- ComExecutor unit tests (don't need SW) ----
-# These still run only under the live suite gate (see tests/live/conftest.py)
-# because they import pywin32.
-
-
-def test_com_executor_start_stop_idempotent() -> None:
-    """ComExecutor.start() and stop() can be called repeatedly."""
-    from solidworks_mcp.adapters.com_executor import ComExecutor
-
-    ex = ComExecutor(name="test-idempotent")
-    ex.start()
-    ex.start()  # second call is a no-op
-    assert ex._thread is not None and ex._thread.is_alive()
-    ex.stop()
-    ex.stop()  # safe to call again
-    assert ex._thread is None
-
-
-def test_com_executor_propagates_exceptions() -> None:
-    """Exceptions raised inside a submitted callable reach the caller."""
-    from solidworks_mcp.adapters.com_executor import ComExecutor
-
-    with ComExecutor(name="test-exc") as ex:
-        with pytest.raises(ZeroDivisionError):
-            ex.run(lambda: 1 / 0)
-
-
-def test_com_executor_runs_on_dedicated_thread() -> None:
-    """All callables run on the same (non-caller) thread."""
-    from solidworks_mcp.adapters.com_executor import ComExecutor
-
-    caller = threading.current_thread().name
-    with ComExecutor(name="test-thread") as ex:
-        worker_name = ex.run(lambda: threading.current_thread().name)
-        worker_name2 = ex.run(lambda: threading.current_thread().name)
-
-    assert worker_name != caller, (
-        "executor must run callables on a thread other than the caller"
-    )
-    assert worker_name == worker_name2, (
-        "all callables must run on the same worker thread"
-    )
+# The ComExecutor start/stop, exception and worker-thread checks need only
+# pywin32, not SolidWorks; they run in the unit suite, in
+# tests/solidworks_mcp/adapters/test_com_executor_real_pythoncom.py.
 
 
 # ---- sw_type_info unit tests ----
