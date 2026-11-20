@@ -76,6 +76,13 @@ _LIVE_PACING_DEFAULTS = {
     "SOLIDWORKS_MCP_COM_SETTLE_SECONDS": "1",
     "SOLIDWORKS_MCP_DOC_SETTLE_SECONDS": "2.5",
     "SW_TEST_PACE_SECONDS": "8",
+    # Safety timeouts, shorter than the server's (5 s and 30 s), so a test
+    # that opens a dialog, or finds SolidWorks stuck, gives up sooner. Both
+    # still apply; the environment overrides them. Only the blocking-dialog
+    # test (test_live_sw_keep_minimized.py) meets a dialog on purpose, and it
+    # asks for the cancel within 15 s, not for 5 s.
+    "SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS": "2",
+    "SOLIDWORKS_MCP_BUSY_WAIT_SECONDS": "5",
 }
 # Upper bound on the SolidWorks process age the run waits for before its first
 # test. Nearly every crash landed 2-5 minutes after launch, while 3DEXPERIENCE
