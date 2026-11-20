@@ -222,3 +222,47 @@ async def test_the_flag_reaches_the_adapter(part: Any) -> None:
     await tools["delete_feature"]({"name": "Cut1", "delete_absorbed": True})
 
     adapter.delete_feature.assert_awaited_once_with("Cut1", True)
+
+
+def _deleted(data: dict[str, Any]) -> AsyncMock:
+    return AsyncMock(
+        return_value=AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)
+    )
+
+
+async def test_features_that_went_unnamed_are_said_with_the_dependents(
+    part: Any,
+) -> None:
+    adapter, tools = part
+    adapter.delete_feature = _deleted(  # type: ignore[method-assign]
+        {
+            "deleted": "Boss1",
+            "removed_features": ["Boss1", "Fillet1"],
+            "removed_unnamed": 2,
+            "absorbed_sketches": [],
+        }
+    )
+
+    result = await tools["delete_feature"]({"name": "Boss1"})
+
+    assert result["message"] == (
+        "Deleted Boss1 and its dependents: Fillet1; 2 more feature(s) went that "
+        "could not be named (list_features shows what is left)"
+    )
+    assert result["dependents"] == ["Fillet1"]
+    assert result["warning"].startswith("Deleting Boss1 also deleted Fillet1.")
+
+
+async def test_features_that_went_unnamed_alone_still_warn(part: Any) -> None:
+    adapter, tools = part
+    adapter.delete_feature = _deleted(  # type: ignore[method-assign]
+        {"deleted": "Boss1", "removed_features": ["Boss1"], "removed_unnamed": 1}
+    )
+
+    result = await tools["delete_feature"]({"name": "Boss1"})
+
+    assert "dependents" not in result
+    assert result["warning"] == (
+        "Deleting Boss1 also deleted 1 other feature(s) that could not be named; "
+        "list_features shows what is left. Tell the user; `undo` restores them."
+    )

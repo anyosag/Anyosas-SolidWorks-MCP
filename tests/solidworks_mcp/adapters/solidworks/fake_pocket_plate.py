@@ -228,6 +228,10 @@ class Body(Dispatch):
         self.count("GetEdges")
         return list(self.edges)
 
+    def GetEdgeCount(self) -> int:  # noqa: N802
+        self.count("GetEdgeCount")
+        return len(self.edges)
+
 
 class SelectionManager(Dispatch):
     def __init__(self, log: Log) -> None:

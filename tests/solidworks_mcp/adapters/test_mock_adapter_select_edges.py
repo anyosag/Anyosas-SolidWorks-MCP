@@ -189,3 +189,32 @@ async def test_one_body_by_its_name(part: MockSolidWorksAdapter) -> None:
     assert (missing.error or "").startswith(
         "No solid body named 'Body-Move/Copy1'; the part's bodies are"
     )
+
+
+@pytest.mark.parametrize("box", [None, [[-1, -1, -1], [11, 11, 11]]])
+async def test_a_scan_over_the_limit_is_refused_as_live(
+    part: MockSolidWorksAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    box: list[list[float]] | None,
+) -> None:
+    monkeypatch.setenv("SOLIDWORKS_MCP_EDGE_SCAN_LIMIT", "5")
+    rule: dict[str, Any] = {"parallel_to": "z"}
+    if box is not None:
+        rule["inside_box"] = box
+
+    refused = await part.select_edges(rule)
+    selected_after_refusal = list(part._selection)
+    sourced = await part.select_edges({"side": "top"})
+    whole = await part.select_edges({**rule, "scan_whole_part": True})
+
+    assert refused.is_error
+    assert "over the edge scan limit of 5" in (refused.error or "")
+    assert refused.data == {
+        "edges_to_read": 12,
+        "estimated_s": 1,
+        "scan_limit": 5,
+        "source": "the part",
+        "inside_box": box is not None,
+    }
+    assert selected_after_refusal == []
+    assert sourced.is_success and whole.is_success, whole.error

@@ -50,15 +50,20 @@ nearly all of it, and the stops only shorten the measuring after. So:
 
 * a face's twin is read only when one of its pairs is measured, which
   halves the reading;
-* with ``coarse`` or ``timeout_s``, ``ClosestDistance`` is first given the
-  two components themselves. On two 20 mm blocks 10 mm apart it gave
-  10 mm and the two nearest points in one call. That answer is exact
-  (``complete``, ``method: components``), and has no faces
-  (``face_a`` and ``face_b`` None, ``pairs_checked`` 0). When it gives no
-  distance, the face search runs as above (``method: face_pairs``).
+* ``ClosestDistance`` is first given the two components themselves. On
+  two 20 mm blocks 10 mm apart it gave 10 mm and the two nearest points in
+  one call. That answer is exact (``complete``, ``method: components``),
+  and has no faces (``face_a`` and ``face_b`` None, ``pairs_checked`` 0).
+  When it gives no distance, the face search runs as above
+  (``method: face_pairs``).
 
-On the same plates the full search then took 36 s, and ``coarse`` and
-``timeout_s`` 1 each 0.43 s, all reading 0.4 mm.
+On the same plates the full search then took 36 s, and the components
+call 0.43 s, all reading 0.4 mm. That call was first tried only with
+``coarse`` or ``timeout_s``; a session's sample then had 57 of 58 calls
+run the whole face search (8.5 s on average). So it is tried first on
+every call now, and ``faces`` asks for the face search instead, for the
+nearest faces' kind and box. ``coarse`` and ``timeout_s`` still bound
+that search.
 
 The pure pieces (transforms, box distances, the search) are separate from
 the COM walk so they can be tested without SolidWorks.
@@ -471,17 +476,26 @@ def measure_clearance(
     component_b: str,
     coarse: bool = False,
     timeout_s: float | None = None,
+    faces: bool = False,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """The minimum distance between two top-level components of the active assembly.
+
+    The two components are measured whole first, in one ``ClosestDistance``
+    call (``method: components``); the face search runs when that gives no
+    distance, or when ``faces`` asks for the nearest faces.
 
     Args:
         adapter: A connected adapter with an assembly as ``currentModel``.
         component_a: An instance name, as ``list_components`` reports it.
         component_b: Another one.
-        coarse: Measure at most :data:`COARSE_PAIRS` pairs (module docstring).
-        timeout_s: Stop measuring pairs once this many seconds have passed
-            since the call began; None for no limit but the operation's own.
+        coarse: Measure at most :data:`COARSE_PAIRS` face pairs (module
+            docstring).
+        timeout_s: Stop measuring face pairs once this many seconds have
+            passed since the call began; None for no limit but the
+            operation's own.
+        faces: Run the face search without measuring the components whole
+            first, so the reply names the nearest faces.
         clock: The monotonic clock (tests pass a fake).
 
     Returns:
@@ -512,7 +526,7 @@ def measure_clearance(
     assembly = _sw_type_info.flagged(model, "IAssemblyDoc")
     found = _find_components(adapter, assembly, [component_a, component_b])
     _flag(adapter, model, "ClosestDistance")
-    if coarse or timeout_s is not None:
+    if not faces:
         for role, name in (("component_a", component_a), ("component_b", component_b)):
             _solid_bodies(adapter, found[name], f"{role} {name!r}")
         whole = _whole(

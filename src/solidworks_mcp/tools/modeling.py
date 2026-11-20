@@ -1380,6 +1380,8 @@ class SelectEdgesInput(CompatInput):
         body (str | None): Keep only this body's edges.
         convexity (str | None): Keep convex, concave or tangent edges.
         with_ids (bool): Also return an id for each selected edge.
+        scan_whole_part (bool): Read every edge a query with no source
+            reaches, however many.
         append (bool): Add to the current selection instead of replacing it.
     """
 
@@ -1476,6 +1478,14 @@ class SelectEdgesInput(CompatInput):
             "add_fillet and add_chamfer"
         ),
     )
+    scan_whole_part: bool = Field(
+        default=False,
+        description=(
+            "Read every edge a query with no source reaches, however many. "
+            "Without it, more than 500 edges to read (about 0.1 s each) is "
+            "refused as edge_scan_too_large, with the count"
+        ),
+    )
     any_of: list[dict[str, Any]] | None = Field(
         default=None,
         min_length=1,
@@ -1503,10 +1513,14 @@ class SelectEdgesInput(CompatInput):
             raise ValueError(problem)
 
     def query(self) -> dict[str, Any]:
-        """The rules as the adapter's ``select_edges`` takes them (``with_ids`` when on)."""
-        query = self.model_dump(exclude={"append", "with_ids"}, exclude_none=True)
+        """The rules as the adapter's ``select_edges`` takes them, options when on."""
+        query = self.model_dump(
+            exclude={"append", "with_ids", "scan_whole_part"}, exclude_none=True
+        )
         if self.with_ids:
             query["with_ids"] = True
+        if self.scan_whole_part:
+            query["scan_whole_part"] = True
         return query
 
 
@@ -2423,6 +2437,9 @@ class MeasureClearanceInput(CompatInput):
     Attributes:
         component_a (str): One component's instance name.
         component_b (str): The other's.
+        coarse (bool): Bound the face search to the nearest pairs.
+        timeout_s (float | None): Bound the face search in time.
+        faces (bool): Measure face pairs and name the nearest faces.
     """
 
     component_a: str = Field(
@@ -2434,8 +2451,8 @@ class MeasureClearanceInput(CompatInput):
     coarse: bool = Field(
         default=False,
         description=(
-            "Measure only the 12 nearest face pairs by box, for a fast answer in "
-            "a sweep: clearance_mm is then at most the gap's true value and "
+            "Measure at most the 12 nearest face pairs by box, when face pairs "
+            "are measured. clearance_mm is then at most the gap's true value and "
             "at_least_mm what it is at least; complete says when they agree"
         ),
     )
@@ -2444,8 +2461,16 @@ class MeasureClearanceInput(CompatInput):
         gt=0,
         le=900,
         description=(
-            "Stop measuring face pairs after this many seconds and return the "
-            "best found so far, with at_least_mm and complete: false"
+            "Stop measuring face pairs after this many seconds, with the best "
+            "found so far. at_least_mm then bounds the gap and complete is false"
+        ),
+    )
+    faces: bool = Field(
+        default=False,
+        description=(
+            "Measure face pairs to name the nearest faces (face_a, face_b), "
+            "slower. By default the two components are measured whole in one "
+            "call, exact but without faces"
         ),
     )
 
@@ -3846,9 +3871,16 @@ async def register_modeling_tools(
         own = input_data.name.split("@", 1)[0]
         dependents = [n for n in removed if n != own and n not in absorbed]
         left = data.get("absorbed_sketches_left") or []
+        # Features the count says went that the delete couldn't name.
+        unnamed = int(data.get("removed_unnamed") or 0)
         message = f"Deleted {input_data.name}"
         if dependents:
             message += f" and its dependents: {', '.join(dependents)}"
+        if unnamed:
+            message += (
+                f"; {unnamed} more feature(s) went that could not be named "
+                "(list_features shows what is left)"
+            )
         if absorbed and not left:
             message += f"; its sketch {', '.join(sorted(absorbed))} went with it"
         if left:
@@ -3865,6 +3897,12 @@ async def register_modeling_tools(
         if dependents:
             reply["dependents"] = dependents
             reply["warning"] = dependents_warning([(input_data.name, dependents)])
+        elif unnamed:
+            reply["warning"] = (
+                f"Deleting {input_data.name} also deleted {unnamed} other "
+                "feature(s) that could not be named; list_features shows what is "
+                "left. Tell the user; `undo` restores them."
+            )
         return reply
 
     @mcp.tool()
@@ -4020,8 +4058,10 @@ async def register_modeling_tools(
         `parallel_to` (x, y, z or a direction), `inside_box` (mm),
         `min_length`/`max_length` (mm), `convexity`. Faces outside an `inside_box` are
         not read, and what was read is kept until the next rebuild; give several
-        rules as `any_of` in one call. `with_ids` adds `edge_ids` that last across
-        rebuilds. Needs: an open part. Changes: the selection only, all or nothing.
+        rules as `any_of` in one call. With no source, over 500 edges is refused
+        (`edge_scan_too_large`) unless `scan_whole_part`. `with_ids` adds
+        `edge_ids` that last across rebuilds. Needs: an open part. Changes: the
+        selection only, all or nothing.
         Returns: `data` with `source`, `matched` (edges left after each rule, per rule
         with `any_of`; an error names the rule that removed them), `edges` (up to
         50 described; more selected adds `truncated` and `full_count`),
@@ -4036,7 +4076,8 @@ async def register_modeling_tools(
         """
         input_data = normalize_input(input_data, SelectEdgesInput)
         result = await adapter.select_edges(input_data.query(), input_data.append)
-        require_success(result)
+        # A scan refused as too large returns its count and estimate as data.
+        require_success(result, with_data=True)
         data = result.data if isinstance(result.data, dict) else {}
         described = data.get("edges")
         if isinstance(described, list) and len(described) < int(
@@ -4696,22 +4737,24 @@ async def register_modeling_tools(
 
         Use it to check a fit's clearance, such as a latch in its slot or a pin in
         its hole, where `check_interference` only reports overlaps. It measures the
-        components' solid faces pair by pair, nearest first, a cylinder to its
-        surface (not its axis), and gives where the gap is. Touching or overlapping
-        components read 0 with `touching: true`; for an overlap's volume, use
-        `check_interference`. For speed in a sweep, `coarse` or `timeout_s`
-        first measure the two components whole in one call (`method:
-        components`: exact, but `face_a`/`face_b` null), else stop the face
-        search early with bounds. Needs: an open assembly whose two components
-        are unsuppressed and hold a solid body. Read-only. Returns: `data` with
-        `clearance_mm`, `at_least_mm`, `complete`, `touching`, `point_a_mm` and
-        `point_b_mm` (assembly coordinates), `face_a` and `face_b` (`kind`,
-        `box_mm`), `pairs_checked`, `pairs_total` and `method`.
+        two components whole in one call (`method: components`: exact, with where
+        the gap is, but `face_a`/`face_b` null), a cylinder to its surface (not its
+        axis). `faces: true` measures their solid faces pair by pair instead,
+        nearest first, and names the nearest faces (`method: face_pairs`; slower);
+        a call the one-call measure can't answer falls back to it. `coarse` or
+        `timeout_s` stop that face search early, with bounds. Touching or
+        overlapping components read 0 with `touching: true`; for an overlap's
+        volume, use `check_interference`. Needs: an open assembly whose two
+        components are unsuppressed and hold a solid body. Read-only. Returns:
+        `data` with `clearance_mm`, `at_least_mm`, `complete`, `touching`,
+        `point_a_mm` and `point_b_mm` (assembly coordinates), `face_a` and
+        `face_b` (`kind`, `box_mm`), `pairs_checked`, `pairs_total` and `method`.
 
         Args:
             input_data: The two components, by instance name as `list_components`
                 reports them: `component_a` and `component_b`, both required and
-                different; `coarse` (off) and `timeout_s` (none) have defaults.
+                different; `faces` (off), `coarse` (off) and `timeout_s` (none)
+                have defaults.
 
         Returns:
             dict[str, Any]: The clearance found.
@@ -4722,6 +4765,7 @@ async def register_modeling_tools(
             input_data.component_b,
             input_data.coarse,
             input_data.timeout_s,
+            input_data.faces,
         )
         require_success(result, context="Failed to measure the clearance")
         data = result.data if isinstance(result.data, dict) else {}

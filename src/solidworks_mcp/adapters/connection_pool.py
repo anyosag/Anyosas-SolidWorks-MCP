@@ -2039,12 +2039,13 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         component_b: str,
         coarse: bool = False,
         timeout_s: float | None = None,
+        faces: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the clearance between two components using pool."""
         return await self._execute_with_pool(
             "measure_clearance",
             lambda adapter: adapter.measure_clearance(
-                component_a, component_b, coarse, timeout_s
+                component_a, component_b, coarse, timeout_s, faces
             ),
         )
 

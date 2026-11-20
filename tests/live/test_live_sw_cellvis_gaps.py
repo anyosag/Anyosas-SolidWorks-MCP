@@ -373,17 +373,27 @@ async def test_a_pin_and_a_tongue_are_a_quarter_millimetre_clear(
     tongue = await tools["measure_clearance"](
         {"component_a": "cg_tongue-1", "component_b": "cg_plate-1"}
     )
+    pin_faces = await tools["measure_clearance"](
+        {"component_a": "cg_pin-1", "component_b": "cg_plate-1", "faces": True}
+    )
 
-    evidence("a pin in a hole and a tongue in a slot", {"pin": pin, "tongue": tongue})
-    for reply in (pin, tongue):
+    evidence(
+        "a pin in a hole and a tongue in a slot",
+        {"pin": pin, "tongue": tongue, "pin_faces": pin_faces},
+    )
+    for reply in (pin, tongue, pin_faces):
         assert reply["status"] == "success", reply
         assert reply["data"]["clearance_mm"] == pytest.approx(0.25, abs=1e-3)
         assert reply["data"]["touching"] is False
         a, b = reply["data"]["point_a_mm"], reply["data"]["point_b_mm"]
         gap = sum((p - q) ** 2 for p, q in zip(a, b, strict=True)) ** 0.5
         assert gap == pytest.approx(0.25, abs=1e-3)
-    # On the cylinders, not their axes.
-    assert pin["data"]["face_a"]["kind"] == "cylinder"
+    # By default the components are measured whole, in one call.
+    assert pin["data"]["method"] == "components"
+    assert tongue["data"]["method"] == "components"
+    # With faces: on the cylinders, not their axes.
+    assert pin_faces["data"]["method"] == "face_pairs"
+    assert pin_faces["data"]["face_a"]["kind"] == "cylinder"
 
 
 @pytest.mark.asyncio

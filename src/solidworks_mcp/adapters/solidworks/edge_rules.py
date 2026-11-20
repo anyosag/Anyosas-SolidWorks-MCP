@@ -13,7 +13,9 @@ pieces:
   faces share, edges by persistent id, or every body's edges - each once,
   read through the part's :class:`edge_index.PartIndex`, which leaves out
   what ``inside_box`` rules out before reading it and keeps what it read
-  until the next rebuild.
+  until the next rebuild. Given a scan limit (``select_edges``), a rule with
+  no source that would describe more edges than it is refused before any
+  is described (:class:`ScanTooLarge`).
 
 The selection itself is :meth:`FaceEdgeSelector.select`: all or nothing.
 """
@@ -29,6 +31,7 @@ from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
 from .edge_convexity import CONVEXITIES, ConvexityReader
 from .edge_index import (
+    SECONDS_PER_EDGE,
     Box,
     IndexedBody,
     IndexedFace,
@@ -99,7 +102,7 @@ RULE_KEYS = (
 )
 
 #: Keys of a query that are options of the call, not of a rule.
-OPTION_KEYS = ("with_ids",)
+OPTION_KEYS = ("with_ids", "scan_whole_part")
 
 #: The most rules one ``any_of`` takes.
 MAX_RULES = 20
@@ -637,6 +640,63 @@ def edge_key(info: dict[str, Any]) -> tuple[Any, ...] | None:
     )
 
 
+class ScanTooLarge(Exception):
+    """A rule with no source would describe more edges than the scan limit.
+
+    Raised before any edge is described, so nothing is selected. The
+    message names the count, the estimate and what to do; the classifier
+    reads "over the edge scan limit" as ``edge_scan_too_large``.
+
+    Attributes:
+        source: The rule's source in words (:func:`describe_source`).
+        edges: The edges it would still describe.
+        limit: The scan limit (``SOLIDWORKS_MCP_EDGE_SCAN_LIMIT``).
+        boxed: An ``inside_box`` narrowed the count (its face boxes are read
+            and kept).
+    """
+
+    def __init__(self, source: str, edges: int, limit: int, boxed: bool) -> None:
+        self.source, self.edges, self.limit, self.boxed = source, edges, limit, boxed
+        seconds = estimated_seconds(edges)
+        if boxed:
+            found = f"inside_box reaches {edges} edges of {source} to read"
+            then = (
+                "Nothing was selected; the face boxes read are kept. Give a "
+                "tighter inside_box, or a feature, face_point, side or plane source"
+            )
+        else:
+            found = f"{source} has {edges} edges to read"
+            then = (
+                "Nothing was read or selected. Take the edges from a feature, "
+                "face_point, side or plane, or narrow the scan with inside_box"
+            )
+        super().__init__(
+            f"Not scanned: {found}, over the edge scan limit of {limit} "
+            f"(SOLIDWORKS_MCP_EDGE_SCAN_LIMIT); describing them would take about "
+            f"{seconds} s. {then}; scan_whole_part: true reads them all."
+        )
+
+    def data(self) -> dict[str, Any]:
+        """The numbers behind the message, for the error's ``data``."""
+        return {
+            "edges_to_read": self.edges,
+            "estimated_s": estimated_seconds(self.edges),
+            "scan_limit": self.limit,
+            "source": self.source,
+            "inside_box": self.boxed,
+        }
+
+
+def estimated_seconds(edges: int) -> int:
+    """About how long describing ``edges`` edges takes, whole seconds."""
+    return round(edges * SECONDS_PER_EDGE)
+
+
+def has_source(rule: dict[str, Any]) -> bool:
+    """Whether a rule names a source; without one it scans the part (or ``body``)."""
+    return any(rule.get(source) not in (None, "") for source in EDGE_SOURCES)
+
+
 class EdgeList(list[tuple[Any, dict[str, Any]]]):
     """A source's ``(edge, description)`` pairs.
 
@@ -656,13 +716,21 @@ class EdgeRuleSelector:
         adapter: A connected ``PyWin32Adapter``.
         index: The part's index; by default the one kept on the adapter
             while the part is unchanged (:func:`edge_index.index_for`).
+        scan_limit: Refuse a rule with no source that would describe more
+            edges than this (:class:`ScanTooLarge`); None or 0 never refuses.
     """
 
-    def __init__(self, adapter: Any, index: PartIndex | None = None) -> None:
+    def __init__(
+        self,
+        adapter: Any,
+        index: PartIndex | None = None,
+        scan_limit: int | None = None,
+    ) -> None:
         self._adapter = adapter
         self._faces = FaceEdgeSelector(adapter)
         self.index = index if index is not None else index_for(adapter)
         self._convexity = ConvexityReader(adapter, self.index.flag_once)
+        self._scan_limit = scan_limit
         # (feature, body) -> its faces: rules with other boxes share one read.
         self._feature_reads: dict[tuple[str, str | None], list[IndexedFace]] = {}
 
@@ -672,6 +740,8 @@ class EdgeRuleSelector:
         Raises:
             LookupError: The feature, face, plane, body or an edge id isn't
                 there, or the part has no edges.
+            ScanTooLarge: A rule with no source would describe more edges
+                than the scan limit.
         """
         body = self.index.body_named(str(query["body"])) if query.get("body") else None
         bodies = None if body is None else [body]
@@ -703,7 +773,7 @@ class EdgeRuleSelector:
             return self._from_faces(
                 [IndexedFace(face.handle) for face in resolved], box, bodies
             )
-        return self._whole(bodies, box)
+        return self._whole(bodies, box, describe_source(query))
 
     def convexity(self, edge: Any, info: dict[str, Any]) -> str | None:
         """An edge's convexity (``edge_convexity``), read once and kept in ``info``."""
@@ -716,20 +786,52 @@ class EdgeRuleSelector:
             return None
         return [round(c * 1000.0, 9) for c in located[0]]
 
-    def _whole(self, bodies: list[IndexedBody] | None, box: Box | None) -> EdgeList:
-        """Every edge of the part (or ``bodies``), or those a box can hold."""
+    def _whole(
+        self, bodies: list[IndexedBody] | None, box: Box | None, source: str
+    ) -> EdgeList:
+        """Every edge of the part (or ``bodies``), or those a box can hold.
+
+        With a scan limit, the edges still to describe are counted first:
+        without a box from ``GetEdgeCount`` (:meth:`PartIndex.edges_to_describe`),
+        with one after its face boxes are read (they cost a fraction of the
+        edges and are kept). Over the limit, nothing is described.
+
+        Raises:
+            LookupError: The part has no solid body edges.
+            ScanTooLarge: Over the scan limit.
+        """
         every = self.index.bodies() if bodies is None else bodies
         if not every:
             raise LookupError("The active part has no solid body edges.")
         if box is None:
+            self._within_limit(
+                lambda: self.index.edges_to_describe(every), source, boxed=False
+            )
             handles = [edge for body in every for edge in self.index.body_edges(body)]
             if not handles:
                 raise LookupError("The active part has no solid body edges.")
             return self._listed(handles)
         reach = self.index.edges_in_reach(box, every)
+        self._within_limit(
+            lambda: self.index.undescribed(reach.edges), source, boxed=True
+        )
         out = self._listed(reach.edges)
         out.pruned, out.faces_left_out = True, reach.faces_left_out
         return out
+
+    def _within_limit(
+        self, count: Callable[[], int], source: str, *, boxed: bool
+    ) -> None:
+        """Raise :class:`ScanTooLarge` when ``count()`` is over the scan limit.
+
+        Without a limit nothing is counted.
+        """
+        limit = self._scan_limit
+        if not limit:
+            return
+        edges = count()
+        if edges > limit:
+            raise ScanTooLarge(source, edges, limit, boxed)
 
     def _from_faces(
         self,

@@ -2341,18 +2341,20 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         component_b: str,
         coarse: bool = False,
         timeout_s: float | None = None,
+        faces: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the clearance between two components through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "measure_clearance",
             lambda: self.adapter.measure_clearance(
-                component_a, component_b, coarse, timeout_s
+                component_a, component_b, coarse, timeout_s, faces
             ),
             input_dict={
                 "component_a": component_a,
                 "component_b": component_b,
                 "coarse": coarse,
                 "timeout_s": timeout_s,
+                "faces": faces,
             },
         )
 

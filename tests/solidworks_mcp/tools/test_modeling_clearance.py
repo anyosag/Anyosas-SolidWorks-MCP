@@ -115,22 +115,55 @@ def test_the_input_strips_the_names() -> None:
     assert (parsed.component_a, parsed.component_b) == ("tongue-1", "slot-1")
 
 
-async def test_the_mock_reply_is_complete_and_bounded(latch: Any) -> None:
+@pytest.mark.parametrize("ask", [{}, {"coarse": True}, {"timeout_s": 5}])
+async def test_the_components_answer_whole_by_default(
+    latch: Any, ask: dict[str, Any]
+) -> None:
     _adapter, tool = latch
 
     result = await tool.fn(
-        {"component_a": "component-1", "component_b": "component-2", "coarse": True}
+        {"component_a": "component-1", "component_b": "component-2", **ask}
     )
 
     assert result["data"]["complete"] is True
     assert result["data"]["at_least_mm"] == pytest.approx(0.25)
-    # Asked for speed, the mock answers as the components measured whole.
     assert result["data"]["method"] == "components"
     assert result["data"]["face_a"] is None and result["data"]["pairs_total"] is None
+    assert "warning" not in result
 
-    full = await tool.fn({"component_a": "component-1", "component_b": "component-2"})
-    assert full["data"]["method"] == "face_pairs"
-    assert full["data"]["face_a"]["kind"] == "plane"
+
+async def test_faces_name_the_nearest_faces(latch: Any) -> None:
+    _adapter, tool = latch
+
+    result = await tool.fn(
+        {"component_a": "component-1", "component_b": "component-2", "faces": True}
+    )
+
+    assert result["status"] == "success", result
+    assert result["data"]["method"] == "face_pairs"
+    assert result["data"]["face_a"]["kind"] == "plane"
+    assert result["message"] == (
+        "Clearance between component-1 and component-2: 0.25 mm"
+    )
+
+
+async def test_faces_reach_the_adapter(latch: Any) -> None:
+    adapter, tool = latch
+    mock = AsyncMock(
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"clearance_mm": 0.25, "complete": True, "method": "face_pairs"},
+        )
+    )
+    adapter.measure_clearance = mock  # type: ignore[method-assign]
+
+    await tool.fn({"component_a": "a-1", "component_b": "b-1", "faces": True})
+    await tool.fn({"component_a": "a-1", "component_b": "b-1"})
+
+    assert [c.args for c in mock.await_args_list] == [
+        ("a-1", "b-1", False, None, True),
+        ("a-1", "b-1", False, None, False),
+    ]
 
 
 async def test_a_coarse_answer_gives_both_bounds(latch: Any) -> None:
@@ -160,7 +193,7 @@ async def test_a_coarse_answer_gives_both_bounds(latch: Any) -> None:
         }
     )
 
-    mock.assert_awaited_once_with("component-1", "component-2", True, 5.0)
+    mock.assert_awaited_once_with("component-1", "component-2", True, 5.0, False)
     assert result["message"] == (
         "Clearance between component-1 and component-2: at most 0.6 mm and at "
         "least 0.2 mm (12 of 2304 face pairs measured)"

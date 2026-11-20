@@ -16,6 +16,8 @@ from solidworks_mcp.adapters.solidworks.features import (
     _delete_feature_impl,
 )
 
+from .fake_feature_tree import FakeTree
+
 
 class _Sub:
     """One sub-feature in the chain ``GetFirstSubFeature`` starts."""
@@ -89,29 +91,46 @@ def test_delete_absorbed_adds_swdelete_absorbed(
 
 
 @pytest.mark.parametrize(
-    ("removed", "left"),
+    ("delete_absorbed", "removed", "left"),
     # removed_features is in tree order: the sketch sits above its cut.
-    [(["Cut-Extrude1"], ["Sketch4"]), (["Sketch4", "Cut-Extrude1"], [])],
+    [
+        (False, ["Cut-Extrude1"], ["Sketch4"]),
+        (True, ["Sketch4", "Cut-Extrude1"], []),
+    ],
 )
 async def test_the_sketches_left_are_those_still_in_the_tree(
-    monkeypatch: pytest.MonkeyPatch, removed: list[str], left: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    delete_absorbed: bool,
+    removed: list[str],
+    left: list[str],
 ) -> None:
     adapter = _adapter(monkeypatch)
-    adapter.currentModel = MagicMock()
-    tree = [{"name": n} for n in ("Sketch4", "Cut-Extrude1", "Fillet1")]
-    adapter.list_features = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[
-            AdapterResult(status=AdapterResultStatus.SUCCESS, data=tree),
-            AdapterResult(
-                status=AdapterResultStatus.SUCCESS,
-                data=[f for f in tree if f["name"] not in removed],
-            ),
-        ]
-    )
-    calls: list[tuple[Any, ...]] = []
+    tree = FakeTree()
+    tree.add("Sketch4", "ProfileFeature")
+    tree.add("Cut-Extrude1", "Cut", sketch="Sketch4")
+    tree.add("Sketch5", "ProfileFeature")
+    tree.add("Fillet1", "Fillet")
+    adapter.currentModel = tree
+    adapter.list_features = AsyncMock()  # type: ignore[method-assign]
 
-    def fake_delete(*args: Any) -> AdapterResult[dict[str, Any]]:
-        calls.append(args)
+    result = await adapter.delete_feature("Cut-Extrude1", delete_absorbed)
+
+    assert result.is_success, result.error
+    assert result.data["removed_features"] == removed
+    assert result.data["absorbed_sketches"] == ["Sketch4"]
+    assert result.data["absorbed_sketches_left"] == left
+    assert tree.present == [*left, "Sketch5", "Fillet1"]
+    adapter.list_features.assert_not_awaited()
+
+
+async def test_the_delete_is_handed_its_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter(monkeypatch)
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def fake_delete(*args: Any, **options: Any) -> AdapterResult[dict[str, Any]]:
+        calls.append((args, options))
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={"deleted": "Cut-Extrude1", "absorbed_sketches": ["Sketch4"]},
@@ -119,8 +138,7 @@ async def test_the_sketches_left_are_those_still_in_the_tree(
 
     monkeypatch.setattr(features, "_delete_feature_impl", fake_delete)
 
-    result = await adapter.delete_feature("Cut-Extrude1", True)
+    await adapter.delete_feature("Cut-Extrude1", True)
 
-    assert calls[0][1:] == ("Cut-Extrude1", True)
-    assert result.data["removed_features"] == removed
-    assert result.data["absorbed_sketches_left"] == left
+    assert calls[0][0][1:] == ("Cut-Extrude1", True)
+    assert calls[0][1] == {"name_removed": True}

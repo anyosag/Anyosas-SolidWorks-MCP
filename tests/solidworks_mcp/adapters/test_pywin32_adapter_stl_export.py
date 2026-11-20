@@ -245,3 +245,99 @@ async def test_mesh_settings_and_the_one_file_option_are_reported_together(
             "restored": False,
         },
     }
+
+
+# ---- SaveAs2's arguments ---------------------------------------------------------
+
+
+def _is_null_dispatch(value: Any) -> bool:
+    """``VARIANT(VT_DISPATCH, None)``, or its stand-in without pywin32."""
+    try:
+        import pythoncom
+    except ImportError:
+        return value is not None and "null callout" in repr(value)
+    return getattr(value, "varianttype", None) == pythoncom.VT_DISPATCH and (
+        value.value is None
+    )
+
+
+def _is_byref_long(value: Any) -> bool:
+    try:
+        import pythoncom
+    except ImportError:
+        return value == 0
+    return getattr(value, "varianttype", None) == pythoncom.VT_BYREF | pythoncom.VT_I4
+
+
+class _Extension:
+    """``IModelDocExtension.SaveAs2``: notes its arguments; ``refuse`` raises first."""
+
+    def __init__(self, refuse: int = 0) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+        self.refuse = refuse
+
+    def SaveAs2(self, path: str, *args: Any) -> bool:  # noqa: N802
+        self.calls.append((path, *args))
+        if len(self.calls) <= self.refuse:
+            raise RuntimeError("(-2147352571, 'Type mismatch.', None, 4)")
+        _one_file(path)
+        return True
+
+
+def test_saveas2_gets_the_arguments_its_type_library_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Name, Version, Options, ExportData, prefix text, AddTextAsPrefix, two outs."""
+    adapter = _adapter(monkeypatch, _App(), SimpleNamespace())
+    ext = _Extension()
+    out = str(tmp_path / "bracket.stl")
+
+    assert adapter._save_stl_with_extension(ext, None, out) is True
+
+    [(path, version, options, export_data, text, as_prefix, errors, warnings)] = (
+        ext.calls
+    )
+    assert (path, version, options) == (out, 0, pywin32_adapter._EXPORT_OPTIONS)
+    # Not Python None, which marshals as VT_NULL: a null IDispatch.
+    assert _is_null_dispatch(export_data)
+    assert (text, as_prefix) == ("", False)
+    assert _is_byref_long(errors) and _is_byref_long(warnings)
+
+
+def test_without_export_data_a_refused_call_is_not_repeated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    adapter = _adapter(monkeypatch, _App(), SimpleNamespace())
+    ext = _Extension(refuse=1)
+
+    assert adapter._save_stl_with_extension(ext, None, str(tmp_path / "a.stl")) is False
+    assert len(ext.calls) == 1  # the same call again would fail the same way
+
+
+def test_refused_export_data_is_retried_as_a_null(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    adapter = _adapter(monkeypatch, _App(), SimpleNamespace())
+    ext = _Extension(refuse=1)
+    data = object()
+
+    assert adapter._save_stl_with_extension(ext, data, str(tmp_path / "a.stl"))
+    assert ext.calls[0][3] is data  # ExportData, the fourth argument
+    assert _is_null_dispatch(ext.calls[1][3])
+
+
+@pytest.mark.parametrize(("doc_type", "prepared"), [(PART, 1), (ASSEMBLY, 0)])
+async def test_an_assembly_is_exported_without_export_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, doc_type: int, prepared: int
+) -> None:
+    app = _App()
+    doc = _Doc(app, doc_type, _one_file)
+    adapter = _adapter(monkeypatch, app, doc)
+    asked: list[bool] = []
+    monkeypatch.setattr(adapter, "_prepare_stl_export_data", lambda: asked.append(True))
+
+    result = await adapter.export_file(str(tmp_path / "out.stl"), "stl")
+
+    assert result.is_success, result.error
+    assert len(asked) == prepared
+    assert doc.save_as3_calls == 0  # SaveAs2 wrote it
