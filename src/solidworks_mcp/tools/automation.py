@@ -19,11 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..adapters.base import SolidWorksAdapter
 from ..adapters.solidworks import limits
+from ..adapters.solidworks.sketch_points import POINT_GETTERS
 from .error_classifier import INVALID_INPUT, OPERATION_FAILED, Classification
 from .export import ExportImageInput, reply_picture
 from .input_compat import CompatInput
 from .modeling import dependents_warning
 from .schema_compaction import _is_alias
+from .sketching import ENTITY_STEP_TOOLS, draw_entity_steps
 from .support_levels import SUPPORT_LEVELS, SupportLevel
 from .tool_boundary import (
     InvalidInputError,
@@ -413,6 +415,11 @@ _REFERENCE_HINT = (
     "the point it stopped. Run the workflow with detail 'full' to see every "
     "step's whole reply."
 )
+#: The points of a sketch entity a reference may name one past its id, as
+#: ``add_sketch_constraint`` and ``add_sketch_dimension`` take them
+#: (``'<id>.center'``, ``.start``, ``.end``): ``$steps.c.circle.id.center``
+#: is ``"Circle_1.center"``.
+_ENTITY_POINTS = frozenset(POINT_GETTERS)
 #: The reply values a summary keeps.
 _SCALARS = (str, int, float, bool, type(None))
 
@@ -725,13 +732,21 @@ def _contents(value: Any) -> str:
 def _look_up(
     reference: _Reference, replies: list[dict[str, Any]]
 ) -> tuple[Any, str | None]:
-    """The value a reference names, or why there is none."""
+    """The value a reference names, or why there is none.
+
+    A path whose last part is a point name (:data:`_ENTITY_POINTS`) after a
+    string names that point of the entity the string is the id of:
+    ``"<id>.<point>"``. Any other part after a string names nothing.
+    """
     value: Any = replies[reference.step]
+    last = len(reference.path) - 1
     for depth, part in enumerate(reference.path):
         if isinstance(value, dict) and part in value:
             value = value[part]
         elif isinstance(value, list) and part.isdecimal() and int(part) < len(value):
             value = value[int(part)]
+        elif isinstance(value, str) and depth == last and part in _ENTITY_POINTS:
+            return f"{value}.{part}", None
         else:
             at = ".".join(("$steps", reference.name, *reference.path[:depth]))
             return None, (
@@ -762,6 +777,56 @@ def _resolve_references(
 
     resolved = _map_leaves(value, where, resolve)
     return resolved, "; ".join(problems) or None
+
+
+def _named_steps(value: Any) -> list[int]:
+    """The indices of the steps a parsed call's references name."""
+    named: list[int] = []
+
+    def note(_at: str, leaf: Any) -> Any:
+        if isinstance(leaf, _Reference):
+            named.append(leaf.step)
+        return leaf
+
+    _map_leaves(value, "", note)
+    return named
+
+
+def _entity_run(
+    plan: list[_PlannedStep], start: int, replies: list[dict[str, Any]]
+) -> list[tuple[str, dict[str, Any]]]:
+    """The run of sketch-entity steps from ``start`` to draw as one operation.
+
+    It is the consecutive steps of the tools ``draw_entity_steps`` draws
+    (:data:`ENTITY_STEP_TOOLS`) that have no ``document`` and whose
+    references all name steps before ``start``, each as ``(tool,
+    arguments)``, references resolved against ``replies``. A step that names
+    a step inside the run ends it, and so does one whose reference names
+    nothing (it runs on its own, which fails it as before).
+
+    Args:
+        plan: The workflow's steps.
+        start: The index of the run's first step.
+        replies: The replies of the steps before ``start``.
+
+    Returns:
+        list[tuple[str, dict[str, Any]]]: The run, empty when the step at
+        ``start`` can't start one.
+    """
+    run: list[tuple[str, dict[str, Any]]] = []
+    for index in range(start, len(plan)):
+        planned = plan[index]
+        if (
+            planned.tool not in ENTITY_STEP_TOOLS
+            or planned.call["document"] is not None
+            or any(step >= start for step in _named_steps(planned.call))
+        ):
+            break
+        call, problem = _resolve_references(planned.call, f"steps.{index}", replies)
+        if problem is not None:
+            break
+        run.append((planned.tool, call["arguments"]))
+    return run
 
 
 async def _run_step(
@@ -1217,7 +1282,8 @@ End Sub
             input_data: The workflow. `steps` (1 to 200) is required;
                 `workflow_name`, `rollback_on_error` (off) and `detail`
                 ("summary") have defaults.
-            ctx: The MCP request: progress before each step, and the pictures
+            ctx: The MCP request: progress before each step (once before a
+                run of sketch-entity steps drawn together), and the pictures
                 go back only to a call that came over MCP.
 
         Returns:
@@ -1274,28 +1340,38 @@ End Sub
         last_picture: tuple[int, Any, str | None] | None = None
 
         total = len(plan)
-        for index, planned in enumerate(plan):
-            if limits.client_gone():
-                raise ToolOperationError(
-                    f"Workflow '{name}' stopped before step {index + 1} of {total} "
-                    f"({planned.tool}): the MCP client disconnected, so nothing "
-                    "would read the result.",
-                    data={
-                        "steps": done,
-                        "completed": index,
-                        "failed_step": None,
-                        "warnings": listed_warnings(),
-                    },
-                )
-            if ctx is not None:
-                # Progress resets an MCP client's idle timeout, and the await
-                # lets a cancel from the client land between steps.
-                await ctx.report_progress(
-                    progress=index,
-                    total=total,
-                    message=f"Step {index + 1} of {total}: {planned.tool}",
-                )
-            reply, arguments = await _run_step(index, planned, replies)
+        # The step the last progress notice was sent before (-1: none yet).
+        # MCP wants each notice's progress above the one before it; a run
+        # that drew nothing hands its first step to that step's own tool with
+        # no work in between, so that step goes on the run's notice.
+        reported = -1
+
+        async def report(index: int, message: str) -> None:
+            """Report progress before step ``index`` (or a run from it), once."""
+            nonlocal reported
+            if ctx is None or index == reported:
+                return
+            reported = index
+            # Progress resets an MCP client's idle timeout, and the await
+            # lets a cancel from the client land between steps.
+            await ctx.report_progress(progress=index, total=total, message=message)
+
+        async def record(
+            index: int, reply: dict[str, Any], arguments: dict[str, Any]
+        ) -> None:
+            """Keep step ``index``'s reply: its entry, its warnings and its picture.
+
+            Args:
+                index: The step's index.
+                reply: Its reply, as its tool gave it.
+                arguments: The arguments it ran with, references resolved.
+
+            Raises:
+                ToolOperationError: The step failed; the workflow stops there,
+                    after the rollback when ``rollback_on_error`` asks for one.
+            """
+            nonlocal last_picture
+            planned = plan[index]
             replies.append(reply)
             parts = _warning_parts(planned.tool, reply.get("warning"))
             gone = _deleted_with_dependents(planned.tool, reply)
@@ -1357,6 +1433,45 @@ End Sub
                 if shot is not None and asked:
                     asked_pictures.append(shot)
                 last_picture = shot
+
+        index = 0
+        # Whether the step at `index` runs through its own tool: the run before
+        # it drew fewer steps than it had, the last a success (the step gives
+        # model coordinates, or input its tool refuses). Runs resume after it.
+        alone = False
+        while index < total:
+            planned = plan[index]
+            if limits.client_gone():
+                raise ToolOperationError(
+                    f"Workflow '{name}' stopped before step {index + 1} of {total} "
+                    f"({planned.tool}): the MCP client disconnected, so nothing "
+                    "would read the result.",
+                    data={
+                        "steps": done,
+                        "completed": index,
+                        "failed_step": None,
+                        "warnings": listed_warnings(),
+                    },
+                )
+            # Consecutive sketch-entity steps drawn in one SolidWorks operation
+            # pay one settle gap, not one each (1,433 gaps in the speed sample).
+            run = [] if alone else _entity_run(plan, index, replies)
+            if len(run) > 1:
+                await report(
+                    index,
+                    f"Steps {index + 1}-{index + len(run)} of {total}: sketch entities",
+                )
+                drawn = await draw_entity_steps(adapter, run)
+                for offset, reply in enumerate(drawn):
+                    await record(index + offset, reply, run[offset][1])
+                index += len(drawn)
+                alone = len(drawn) < len(run)
+                continue
+            alone = False
+            await report(index, f"Step {index + 1} of {total}: {planned.tool}")
+            reply, arguments = await _run_step(index, planned, replies)
+            await record(index, reply, arguments)
+            index += 1
         # No progress notice after the last step: the reply says the same, and
         # a notice that lands after it is one the client no longer expects.
         sent = list(asked_pictures)
