@@ -1249,6 +1249,24 @@ def test_cli_main_routes_setup_to_the_setup_app():
     mock_run.assert_not_called()
 
 
+def test_cli_main_routes_hot_reload_to_the_relay():
+    """`solidworks-mcp --hot-reload ...` runs the relay with the other args."""
+    from solidworks_mcp.server import cli_main
+
+    with (
+        patch(
+            "solidworks_mcp.server.sys.argv",
+            ["solidworks-mcp", "--year", "2026", "--hot-reload"],
+        ),
+        patch("solidworks_mcp.relay.main") as relay_main,
+        patch("solidworks_mcp.server.typer.run") as mock_run,
+    ):
+        cli_main()
+
+    relay_main.assert_called_once_with(["--year", "2026"])
+    mock_run.assert_not_called()
+
+
 def test_cli_main_routes_skill_to_the_skill_app():
     """`solidworks-mcp skill ...` installs the skill, not the server."""
     from solidworks_mcp.server import cli_main

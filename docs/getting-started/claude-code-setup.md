@@ -176,6 +176,27 @@ Claude Code can save MCP servers in different places:
 
 For beginners, `--scope project` is the easiest to understand because the config stays with the project.
 
+## Optional: Pick Up Server Updates Without Restarting Claude
+
+Add `--hot-reload` to the server's arguments, for example
+`solidworks-mcp.exe --year 2026 --hot-reload`. Claude then talks to a small
+relay that runs the server as a child process. When the server's files
+change (after a `git pull`, merge or checkout in the folder the package is
+installed from), the relay waits until no call is running, starts the new
+server, and stops the old one. Then it tells Claude the tool list changed, so
+new and changed tools show up in the same conversation.
+
+- Open SolidWorks documents stay open. The server's own session memory, such
+  as which document it was working on, starts fresh. Groups turned on with
+  `enable_tool_groups` are turned on again.
+- A new server that fails to start is dropped, and the old one keeps
+  running. Its error goes to the server log.
+- The `reload_mcp_server` tool does the same on demand.
+- `SOLIDWORKS_MCP_HOT_RELOAD_WATCH=0` stops the file watching, so only the
+  tool reloads.
+- The relay's own code (`relay.py`) is the only change that still needs a
+  Claude restart.
+
 ## Troubleshooting
 
 ### `claude` command is not found

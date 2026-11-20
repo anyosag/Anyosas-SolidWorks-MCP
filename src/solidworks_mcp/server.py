@@ -943,6 +943,11 @@ def cli_main() -> None:
     Returns:
         None: None.
     """
+    if "--hot-reload" in sys.argv[1:]:
+        from . import relay
+
+        relay.main([arg for arg in sys.argv[1:] if arg != "--hot-reload"])
+        return
     if sys.argv[1:2] == ["setup"]:
         from .setup.cli import app
 
