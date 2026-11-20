@@ -1,6 +1,6 @@
 # Tool Catalog — All 101 Tools
 
-This reference documents all **204 MCP tools** registered by the SolidWorks MCP server.
+This reference documents all **203 MCP tools** registered by the SolidWorks MCP server.
 Each section covers one functional category with parameter tables and copy-paste sample calls.
 
 ## Quick Navigation
@@ -13,7 +13,7 @@ Each section covers one functional category with parameter tables and copy-paste
 | [Drawing Tools](drawing.md) | 14 | Create and edit 2-D technical drawings: add projected/section/detail views, plac… |
 | [Drawing Analysis Tools](drawing-analysis.md) | 8 | Quality-gate your drawings. Analyse dimensions, annotations, view coverage, and … |
 | [Drawing Automation Tools](drawing-automation.md) | 7 | Put the model's dimensions on a drawing and lay them out so nothing overlaps, ad… |
-| [Engineering Data Tools](engineering-data.md) | 13 | Read and edit the data drawings, BOMs and analyses are built from: every model d… |
+| [Engineering Data Tools](engineering-data.md) | 12 | Read and edit the data drawings, BOMs and analyses are built from: every model d… |
 | [Analysis Tools](analysis.md) | 11 | Extract engineering properties from models: mass, volume, centre of mass, moment… |
 | [Export Tools](export.md) | 9 | Convert SolidWorks models to industry-standard interchange and manufacturing for… |
 | [File Management Tools](file-management.md) | 24 | Open, save, and manage SolidWorks documents. Load parts and assemblies, save-as … |

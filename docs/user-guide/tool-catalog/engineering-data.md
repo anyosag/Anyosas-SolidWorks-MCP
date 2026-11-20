@@ -4,7 +4,7 @@ Read and edit the data drawings, BOMs and analyses are built from: every model d
 
 > **Prerequisite:** An active Part (or Assembly, for dimensions and measuring) document.
 
-**Total tools in this category: 13**
+**Total tools in this category: 12**
 
 ---
 
@@ -30,7 +30,7 @@ List every dimension in the active part or assembly with its full name and value
 
 ### `list_equations`
 
-List the active part's or assembly's global variables and equations with their values.
+List the active part's or assembly's equations and global variables.
 
 **Prerequisite:** SolidWorks running
 
@@ -42,34 +42,9 @@ List the active part's or assembly's global variables and equations with their v
 
 ---
 
-### `set_global_variable`
+### `set_equations`
 
-Add a global variable to the active part or assembly, or change its value, e.g. "well_d" = 1.2mm.
-
-**Prerequisite:** SolidWorks running
-
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `name` | `str` | ✅ | `` | The variable's name, without quotes, e.g. "well_d" |
-| `value` | `float` | ✅ | `` | Its value, in `units` |
-| `units` | `Literal['mm', 'cm', 'm', 'in', 'ft', 'deg', 'rad', '']` | — | `mm` | Unit written after the number: mm, cm, m, in, ft, deg, rad, or "" for a plain number (a count) |
-
-**Sample call:**
-
-```json
-{
-  "name": "MCP_Demo_Part",
-  "value": 50.0
-}
-```
-
----
-
-### `add_equation`
-
-Drive a dimension of the active part or assembly by an equation, e.g. "D1@Sketch3" = "well_d".
+Add or replace equations and global variables in the active part or assembly.
 
 **Prerequisite:** SolidWorks running
 
@@ -77,15 +52,13 @@ Drive a dimension of the active part or assembly by an equation, e.g. "D1@Sketch
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `dimension` | `str` | ✅ | `` | The dimension's full name, e.g. "D1@Sketch3" (list_model_dimensions, or a sketch pattern's `dimensions`) |
-| `expression` | `str` | ✅ | `` | The right-hand side in SolidWorks syntax, names in double quotes: "\"well_d\"", "\"well_d\" * 2", "\"D1@Sketch1\" + 3mm". A bare global variable name is quoted for you. |
+| `equations` | `List[str]` | ✅ | `` | Equations in SolidWorks syntax, e.g. '"W" = 40mm', '"D1@Sketch1" = "W"' |
 
 **Sample call:**
 
 ```json
 {
-  "dimension": "D1@Sketch1",
-  "expression": "example"
+  "equations": []
 }
 ```
 
@@ -93,7 +66,7 @@ Drive a dimension of the active part or assembly by an equation, e.g. "D1@Sketch
 
 ### `delete_equation`
 
-Delete an equation or a global variable of the active part or assembly.
+Delete one equation or global variable of the active part or assembly.
 
 **Prerequisite:** SolidWorks running
 
@@ -101,14 +74,14 @@ Delete an equation or a global variable of the active part or assembly.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `name` | `str?` | — | `None` | What the equation sets: a global variable ("well_d") or a dimension ("D1@Sketch3") |
-| `index` | `int?` | — | `None` | Its `index` from list_equations |
-| `force` | `bool` | — | `False` | Delete a global variable that other equations read (they then fail to solve) |
+| `equation` | `str | int` | ✅ | `` | The name it sets ("W", "D1@Boss") or its list_equations index |
 
 **Sample call:**
 
 ```json
-{}
+{
+  "equation": "example"
+}
 ```
 
 ---
