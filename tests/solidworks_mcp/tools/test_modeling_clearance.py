@@ -41,8 +41,8 @@ async def test_the_gap_and_where_it_is(latch: Any) -> None:
     )
     assert result["data"]["clearance_mm"] == pytest.approx(0.25)
     assert result["data"]["point_b_mm"] == [10.25, 5.0, 5.0]
-    # Only the support level's warning: nothing touches.
-    assert result["warning"].startswith("Experimental:")
+    # Nothing touches.
+    assert "warning" not in result  # the experimental note is in the description
 
 
 async def test_touching_components_point_to_check_interference(latch: Any) -> None:

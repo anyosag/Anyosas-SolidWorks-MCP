@@ -309,7 +309,7 @@ async def test_registrar_applies_the_title_hints_and_family_tag() -> None:
     assert tool.annotations.readOnlyHint is True
     assert tool.annotations.destructiveHint is False
     assert tool.annotations.idempotentHint is True
-    assert tool.tags == {"test_tool_boundary", "level:stable"}
+    assert tool.tags == {"test_tool_boundary", "level:stable", "group:core"}
 
 
 @pytest.mark.asyncio
@@ -327,7 +327,7 @@ async def test_registrar_keeps_explicit_metadata_and_merges_tags() -> None:
     assert tool.title == "Mine"
     assert tool.annotations is not None
     assert tool.annotations.title == "Explicit"
-    assert tool.tags == {"extra", "test_tool_boundary", "level:stable"}
+    assert tool.tags == {"extra", "test_tool_boundary", "level:stable", "group:core"}
 
 
 @pytest.mark.asyncio
@@ -412,7 +412,7 @@ async def test_a_beta_tool_tags_its_level_and_warns_on_success_only() -> None:
     tags = {name: t.tags for name, t in listed.items()}
     ok = (await mcp.call_tool("body", {})).structured_content
     failed = (await mcp.call_tool("second", {})).structured_content
-    assert tags["body"] == {"test_tool_boundary", "level:beta"}
+    assert tags["body"] == {"test_tool_boundary", "level:beta", "group:core"}
     assert ok == {
         "status": "success",
         "message": "done",
@@ -420,6 +420,23 @@ async def test_a_beta_tool_tags_its_level_and_warns_on_success_only() -> None:
         "warning": "Beta: one input is ignored.",
     }
     assert failed["status"] == "error" and "warning" not in failed
+
+
+@pytest.mark.asyncio
+async def test_an_experimental_tool_says_so_once_in_its_description() -> None:
+    mcp = FastMCP("t")
+    unchecked = Support(SupportLevel.EXPERIMENTAL, "not yet checked.")
+
+    @ToolRegistrar(mcp, hints=_TEST_HINTS, levels={"body": unchecked}).tool()
+    async def body() -> dict[str, Any]:
+        """Do the thing."""
+        return {"status": "success", "message": "done"}
+
+    (listed,) = await mcp.list_tools()
+    result = (await mcp.call_tool("body", {})).structured_content
+
+    assert listed.description == "Experimental: not yet checked.\n\nDo the thing."
+    assert result == {"status": "success", "message": "done"}
 
 
 @pytest.mark.asyncio

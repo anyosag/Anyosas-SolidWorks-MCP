@@ -45,6 +45,7 @@ from .error_classifier import (
 from .input_compat import removed_inputs
 from .support_levels import SUPPORT_LEVELS, Support
 from .target_document import DOCUMENT_DESCRIPTION, takes_document
+from .tool_groups import group_for, group_tag
 from .tool_hints import TOOL_HINTS, ToolHints
 
 _INVALID_INPUT_HINT = (
@@ -429,8 +430,8 @@ class ToolRegistrar:
 
     It also gives each tool its title and behaviour hints from the hints
     table, its family tag (see :func:`tool_family`), and its support level
-    from the levels table: a ``level:<level>`` tag and, below stable, a
-    ``warning`` on success. Given the adapter, document tools take
+    from the levels table: a ``level:<level>`` tag, a ``group:<group>`` tag
+    and, for a beta tool, a ``warning`` on success. Given the adapter, document tools take
     ``document`` (see :func:`tool_boundary`). Everything else is forwarded to
     the wrapped server unchanged.
     """
@@ -469,9 +470,9 @@ class ToolRegistrar:
         """The registration kwargs with the tool's title, hints and tag added.
 
         Explicit ``title``/``annotations``/``description`` kwargs win over
-        the tables; tags are merged. A beta or experimental tool's
-        description opens with its level sentence, the same as its
-        ``warning``.
+        the tables; tags are merged and include ``group:<group>`` (see
+        ``tools/tool_groups.py``). A beta or experimental tool's
+        description opens with its level sentence.
 
         Args:
             fn: The tool function being registered.
@@ -494,15 +495,17 @@ class ToolRegistrar:
         merged.setdefault("title", hints.title)
         merged.setdefault("annotations", hints.annotations())
         support = self._support(name)
+        family = tool_family(fn)
         merged["tags"] = {
-            tool_family(fn),
+            family,
             f"level:{support.level.value}",
+            group_tag(group_for(name, family)),
             *(kwargs.get("tags") or ()),
         }
-        warning = support.warning()
-        if warning is not None and "description" not in kwargs:
+        note = support.note()
+        if note is not None and "description" not in kwargs:
             body = parse_docstring(fn).description
-            merged["description"] = "\n\n".join(filter(None, (warning, body)))
+            merged["description"] = "\n\n".join(filter(None, (note, body)))
         return merged
 
     def _wrap(self, fn: Callable[..., Awaitable[dict[str, Any]]], name: str) -> Any:

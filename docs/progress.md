@@ -10,8 +10,8 @@ of date, so it moves with every tool added or fixed.
 ## Support levels
 
 Every tool has one level. It's in the tool's tags (`level:beta`). A beta or
-experimental tool's description opens with it, and its successful results
-carry it as `warning`.
+experimental tool's description opens with it, and a beta tool's successful
+results repeat it as `warning`.
 
 | Level | Meaning |
 | --- | --- |

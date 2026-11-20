@@ -31,9 +31,8 @@ async def test_the_text_is_written_and_read_back(mcp_server, mock_adapter) -> No
     assert reply["message"] == "Added text 'MAX' at (5, 4) mm"
     assert reply["text"]["id"].startswith("Text_")
     assert reply["text"]["height_mm"] == 3
-    # Only the experimental level's sentence: nothing about the text.
-    assert reply["warning"].startswith("Experimental:")
-    assert "font" not in reply["warning"]
+    # Nothing about the text: no warning (the level is in the description).
+    assert "warning" not in reply
 
 
 async def test_without_an_open_sketch_it_says_so(mcp_server, mock_adapter) -> None:

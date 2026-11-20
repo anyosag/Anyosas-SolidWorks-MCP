@@ -54,9 +54,7 @@ CHOOSE_THEIR_OWN = frozenset(
 ALSO_TAKE_DOCUMENT = frozenset({"execute_workflow"})
 
 DOCUMENT_DESCRIPTION = (
-    "The open document to work on: its title, file name or path. The server "
-    "makes it the active document first, and the call fails if it isn't open. "
-    "Leave it out to use the active document."
+    "Open document to act on (title or path); omit for the active one"
 )
 
 

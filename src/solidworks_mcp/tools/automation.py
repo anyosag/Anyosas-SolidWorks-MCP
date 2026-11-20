@@ -1038,7 +1038,9 @@ End Sub
         input_data = normalize_input(input_data, WorkflowInput)
         if len(input_data.steps) > MAX_WORKFLOW_STEPS:
             raise InvalidInputError(too_many_steps(len(input_data.steps)))
-        registry = {tool.name: tool for tool in await mcp.list_tools()}
+        # Every registered tool, listed or not: tool groups only trim what the
+        # client lists, so a step may use a tool whose group is off.
+        registry = {tool.name: tool for tool in await mcp.local_provider.list_tools()}
         ids = _step_ids(input_data.steps)
         plan: list[_PlannedStep] = []
         for index, step in enumerate(input_data.steps):

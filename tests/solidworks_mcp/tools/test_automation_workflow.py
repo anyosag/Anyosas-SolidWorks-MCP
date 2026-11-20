@@ -14,6 +14,7 @@ from unittest.mock import ANY, AsyncMock
 
 import pytest
 from fastmcp import FastMCP
+from fastmcp.server.transforms import Visibility
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
@@ -28,7 +29,7 @@ from solidworks_mcp.tools.automation import (
 from solidworks_mcp.tools.export import register_export_tools
 from solidworks_mcp.tools.modeling import dependents_warning, register_modeling_tools
 from solidworks_mcp.tools.sketching import register_sketching_tools
-from solidworks_mcp.tools.support_levels import SUPPORT_LEVELS
+from solidworks_mcp.tools.support_levels import SUPPORT_LEVELS, Support, SupportLevel
 
 _BOX = [
     {"tool": "create_sketch", "arguments": {"plane": "Top"}},
@@ -43,7 +44,17 @@ _FILLETED = [
 ]
 _FAILING = {"tool": "select_edges", "arguments": {"feature": "Nope"}}
 _VBA = {"tool": "generate_vba_code"}
-_EXPERIMENTAL = SUPPORT_LEVELS["generate_vba_code"].warning()
+#: generate_vba_code is made a beta tool here: only a beta tool's level
+#: sentence comes back with its result, and none is beta in the real table.
+_LEVEL_SUPPORT = Support(SupportLevel.BETA, "emits a labelled skeleton.")
+_EXPERIMENTAL = _LEVEL_SUPPORT.warning()
+
+
+@pytest.fixture(autouse=True)
+def _beta_vba(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(SUPPORT_LEVELS, "generate_vba_code", _LEVEL_SUPPORT)
+
+
 _BASE = "DishRack_Base"
 
 
@@ -62,6 +73,31 @@ async def part(mock_config: Any) -> tuple[MockSolidWorksAdapter, Any]:
     await adapter.connect()
     await adapter.create_part()
     return adapter, await _server(adapter, mock_config)
+
+
+async def test_a_step_may_use_a_tool_whose_group_is_off(mock_config: Any) -> None:
+    adapter = MockSolidWorksAdapter({})
+    await adapter.connect()
+    await adapter.create_part()
+    mcp = FastMCP("workflow")
+    await register_sketching_tools(mcp, adapter, mock_config)
+    await register_modeling_tools(mcp, adapter, mock_config)
+    await register_automation_tools(mcp, adapter, mock_config)
+    mcp.add_transform(Visibility(False, tags={"group:features"}))
+    listed = {t.name: t.fn for t in await mcp.list_tools()}
+    assert "pattern_linear" not in listed
+
+    result = await listed["execute_workflow"](
+        {
+            "steps": [
+                *_BOX,
+                {"tool": "get_dimension", "arguments": {"name": "D1@Sketch1"}},
+            ]
+        }
+    )
+
+    assert result["steps"][4]["tool"] == "get_dimension"
+    assert "no tool named" not in str(result.get("message"))
 
 
 @pytest.fixture

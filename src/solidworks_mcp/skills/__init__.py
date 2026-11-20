@@ -22,8 +22,13 @@ SolidWorks MCP server: drive SolidWorks parts, assemblies and drawings.
 - Start with `get_model_info` (or `list_open_documents`) to see what is open.
 - Build in this order: `create_part`, `create_sketch`, draw (`add_rectangle`, \
 `add_circle`, ...), `exit_sketch`, then the feature (`create_extrusion`, \
-`create_cut_extrude`, `create_revolve`). Features use the sketch `sketch_name` \nnames, or the one you closed last.
-- Inputs are millimetres and degrees unless a field says metres.
+`create_cut_extrude`, `create_revolve`). Features take the sketch's \
+`sketch_name`, or use the one you closed last.
+- Inputs are millimetres and degrees unless a field says metres. Field \
+descriptions ending "..." are cut short; `describe_tool_inputs` gives them whole.
+- Tools come in groups (core, sketching, features, assembly, bodies, drawings, \
+analysis, engineering, export, files, vba, docs, templates). If a tool you need \
+isn't listed, `enable_tool_groups` turns its group on.
 - A tool's success does not prove the geometry is right: finish a build with \
 `verify_model`, giving the size, volume or counts you expect.
 - A tool whose description starts "Not available yet" returns `not_supported`; \

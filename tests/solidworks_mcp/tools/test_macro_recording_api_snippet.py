@@ -50,7 +50,7 @@ async def test_a_run_returns_the_outcome(allowed: None) -> None:
         "Snippet ran; it returned System.Collections.Generic.Dictionary"
     )
     assert reply["data"]["result"] == {"mock": True, "code_chars": 9}
-    assert reply["warning"].startswith("Experimental:")
+    assert "warning" not in reply  # the experimental note is in the description
 
 
 async def test_a_compile_only_run(allowed: None) -> None:

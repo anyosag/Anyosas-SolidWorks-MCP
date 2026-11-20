@@ -69,7 +69,7 @@ async def test_a_part_goes_as_a_glb_with_its_size_checked(
     assert manifest["units_check"]["checked"] is True
     assert manifest["import"] == {"operator": "import_scene.gltf"}
     assert manifest["blender_matrix"][0] == [1.0, 0.0, 0.0, 0.0]
-    assert result["warning"].startswith("Experimental:")  # no hand-off warning
+    assert "warning" not in result  # the experimental note is in the description
 
 
 async def test_a_part_goes_as_an_stl_in_mm_and_model_coordinates(

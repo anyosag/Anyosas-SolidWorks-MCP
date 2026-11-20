@@ -84,7 +84,7 @@ async def test_a_description_opens_with_its_level(mock_adapter) -> None:
     wrong = []
     for tool in await _tools(mock_adapter):
         text = tool.description or ""
-        warning = SUPPORT_LEVELS[tool.name].warning()
+        warning = SUPPORT_LEVELS[tool.name].note()
         if warning is not None and not text.startswith(warning):
             wrong.append(tool.name)
         if warning is None and text.startswith(("Beta:", "Experimental:")):
