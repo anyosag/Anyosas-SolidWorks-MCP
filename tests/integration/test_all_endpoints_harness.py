@@ -436,6 +436,7 @@ _SMOKE_PAYLOADS: dict[str, dict[str, Any]] = {
     "export_pdf": {"file_path": "C:\\Temp\\smoke.pdf", "format_type": "pdf"},
     "export_dwg": {"file_path": "C:\\Temp\\smoke.dwg", "format_type": "dwg"},
     "export_image": {"file_path": "C:\\Temp\\smoke.jpg", "format_type": "jpg"},
+    "export_for_blender": {"folder": "C:\\Temp\\smoke_blender"},
     "batch_export": {
         "source_directory": "C:\\Temp\\src",
         "output_directory": "C:\\Temp\\out",

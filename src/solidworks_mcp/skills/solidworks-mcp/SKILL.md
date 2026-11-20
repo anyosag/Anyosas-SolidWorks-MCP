@@ -166,6 +166,17 @@ move a body to another file, delete the feature and save it again).
 `export_assembly_parts_stl` writes
 one STL per part of an assembly.
 
+## Rendering or inspecting in Blender
+
+Blender can't open SolidWorks files, reads an STL's numbers as metres, and
+is +Z up. Don't export an STL and import it by hand: call
+`export_for_blender` (GLB with parts and colours by default, `up_axis: "z"`
+for a part modelled Z-up) and run the `blender_code` it returns with the
+Blender MCP's `execute_blender_code`; check that its result says
+`size_matches: true`. A re-export with the same name replaces the earlier
+import. The round trip, renders and what each format keeps:
+[references/blender-handoff.md](references/blender-handoff.md).
+
 ## Long sessions
 
 SolidWorks slows down as documents pile up. Close a part with `close_model`

@@ -166,6 +166,30 @@ Save a picture of the active model, in a standard view or as it is on screen, as
 
 ---
 
+### `export_for_blender`
+
+Export the active part or assembly for Blender, with the code that imports it right.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `folder` | `str?` | — | `None` | Folder for the mesh and its manifest; created if missing. Left out: a solidworks_mcp\blender\<name> folder in the system temp folder |
+| `name` | `str?` | — | `None` | Name for the files and the Blender collection. Left out: the document's name. Keep it the same on a re-export so Blender replaces the earlier import |
+| `file_format` | `Literal['glb', 'stl']` | — | `glb` | glb: SolidWorks' glTF exporter, with each component as its own object in place and its colours. stl: one mesh in model coordinates, no colours or parts |
+| `up_axis` | `Literal['y', 'z']` | — | `y` | Which model axis is up: y for SolidWorks' views, z for a part modelled Z-up. It ends up on Blender's +Z |
+| `resolution` | `Literal['coarse', 'fine']?` | — | `None` | STL only: mesh resolution for this file. Left out: the user's STL setting. A GLB uses SolidWorks' own tessellation |
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
 ### `batch_export`
 
 Export every matching SolidWorks file in a folder to one format.
