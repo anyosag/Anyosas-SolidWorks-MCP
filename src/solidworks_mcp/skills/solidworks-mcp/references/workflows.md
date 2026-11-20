@@ -284,20 +284,26 @@ that `sketch_name`.
 3. `rebuild_model`: an error names each failing feature and how to fix it.
 4. `verify_model` with the new expected size.
 
-### One parameter in several places (a well diameter, a depth)
+### Parametric parts with equations (one parameter in several places)
 
-1. `set_global_variable` with `name` ("well_d"), `value` and `units` (mm by
-   default).
-2. For each dimension it should drive, `add_equation` with the full name as
-   `dimension` ("D1@Sketch3", from `list_model_dimensions` or a sketch
-   pattern's `pattern.dimensions`) and `expression` ("well_d", or
-   "\"well_d\" * 2"; names in double quotes). The reply reads the dimension
-   back. An expression SolidWorks can't solve changes nothing and is
-   `invalid_input`.
-3. To change the design, `set_global_variable` again with the new `value`:
-   the reply's `driven` gives every dimension it moved.
-4. `list_equations` shows them all; `delete_equation` with `name` frees a
-   dimension (a variable still in use needs `force`).
+1. Variables first: `set_equations` with `equations` such as
+   `['"W" = 40mm', '"well_d" = 1.2mm']`. Write the unit: a bare number is in
+   the reply's `document_units`.
+2. Link dimensions to them in the same call or the next:
+   `'"D1@Sketch3" = "well_d"'`, `'"D1@Boss-Extrude1" = 2 * "W"'` (full names
+   from `list_model_dimensions` or a sketch pattern's `pattern.dimensions`;
+   names in double quotes). Solve order is automatic, so the order of the
+   list doesn't matter. A refused equation changes nothing (`invalid_input`
+   names it).
+3. To change the design, `set_equations` with the variable's new value
+   (`'"W" = 50mm'`): it replaces the old one in place. Check
+   `measured_change` (volume, box, bodies) and `failing_features`.
+4. `list_equations` shows them all; `broken: true` marks one that names a
+   deleted dimension. `delete_equation` with the name it sets or its
+   `index` removes it (a freed dimension keeps its value).
+
+A dimension an equation drives shows `driven_by` in `list_model_dimensions`,
+and `set_dimension` refuses it: change the equation instead.
 
 To turn a feature off without deleting it, `suppress_feature`. After
 `delete_feature`, call `list_features`: dependents may have gone too.
