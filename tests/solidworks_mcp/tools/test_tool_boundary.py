@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from fastmcp import FastMCP
@@ -129,14 +129,19 @@ def test_require_success_raises_for_errors_and_timeouts(
 
 
 @pytest.mark.asyncio
-async def test_success_payload_is_returned_unchanged() -> None:
+async def test_success_payload_comes_back_with_only_its_server_time() -> None:
     payload = {"status": "success", "message": "done", "data": {"a": 1}}
 
     @tool_boundary
     async def tool() -> dict[str, Any]:
         return payload
 
-    assert await tool() is payload
+    result = await tool()
+
+    assert result == {**payload, "server_time_s": ANY}
+    assert isinstance(result["server_time_s"], float)
+    # The tool's own dict is left as it was.
+    assert "server_time_s" not in payload
 
 
 @pytest.mark.asyncio
@@ -418,6 +423,7 @@ async def test_a_beta_tool_tags_its_level_and_warns_on_success_only() -> None:
         "message": "done",
         "data": {"x": 1},
         "warning": "Beta: one input is ignored.",
+        "server_time_s": ANY,
     }
     assert failed["status"] == "error" and "warning" not in failed
 
@@ -436,7 +442,7 @@ async def test_an_experimental_tool_says_so_once_in_its_description() -> None:
     result = (await mcp.call_tool("body", {})).structured_content
 
     assert listed.description == "Experimental: not yet checked.\n\nDo the thing."
-    assert result == {"status": "success", "message": "done"}
+    assert result == {"status": "success", "message": "done", "server_time_s": ANY}
 
 
 @pytest.mark.asyncio
@@ -461,7 +467,10 @@ async def test_a_stable_tool_result_has_no_warning() -> None:
     async def body() -> dict[str, Any]:
         return {"status": "success"}
 
-    assert (await mcp.call_tool("body", {})).structured_content == {"status": "success"}
+    assert (await mcp.call_tool("body", {})).structured_content == {
+        "status": "success",
+        "server_time_s": ANY,
+    }
 
 
 def test_registrar_forwards_other_attributes() -> None:
@@ -546,9 +555,10 @@ async def test_a_dict_is_validated_as_the_tools_model() -> None:
         return {"status": "success"}
 
     wrapped = tool_boundary(body)
+    success = {"status": "success", "server_time_s": ANY}
 
-    assert (await wrapped({"depth": 2})) == {"status": "success"}
-    assert (await wrapped(input_data={"depth": 3})) == {"status": "success"}
+    assert (await wrapped({"depth": 2})) == success
+    assert (await wrapped(input_data={"depth": 3})) == success
     assert seen == [_Payload(depth=2), _Payload(depth=3)]
 
 
@@ -598,7 +608,7 @@ async def test_a_removed_input_is_refused_before_the_tool_runs() -> None:
     for result in (from_dict, from_model):
         assert result["error_type"] == "invalid_input"
         assert "`components` is no longer an input" in result["message"]
-    assert kept == {"status": "success"}
+    assert kept == {"status": "success", "server_time_s": ANY}
     assert len(ran) == 1
 
 

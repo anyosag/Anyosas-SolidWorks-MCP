@@ -10,6 +10,13 @@ Tools contain business logic only. They:
 :func:`tool_boundary` turns anything raised into the uniform error payload -
 ``status``, ``message``, ``error_type``, ``hint`` and ``execution_time`` (the
 adapter's timing, else the tool's own wall time) - using :class:`ErrorClassifier` to name the failure.
+A successful reply also gets ``server_time_s``, the whole call's time in the
+server (``execution_time`` is the tool's own, often one COM call). Each call
+logs one line saying where that time went (``CallTiming`` in
+``adapters/pywin32_adapter.py``), and with ``SOLIDWORKS_MCP_TIMING=1`` every
+reply carries the same breakdown as ``timing``. A tool may send MCP content
+beside its reply (:func:`with_content`, e.g. a picture); the reply is still
+the structured content.
 :class:`ToolRegistrar` applies the boundary to every tool at registration, so no
 tool can forget it. It also adds each tool's support level (from
 ``support_levels.py``) to its tags and, for a beta or experimental tool, a
@@ -23,17 +30,20 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
 import time
 import types
 import typing
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from typing import Annotated, Any, cast
 
+from fastmcp.tools import ToolResult
 from fastmcp.utilities.docstring_parsing import parse_docstring
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
 from ..adapters.base import AdapterResult
+from ..adapters.pywin32_adapter import CallTiming, timed_call
 from .error_classifier import (
     INTERNAL,
     INVALID_INPUT,
@@ -131,11 +141,70 @@ def normalize_input[TModel: BaseModel](
 
 def describe_validation_error(exc: ValidationError) -> str:
     """Render a pydantic error as ``field: problem; field: problem``."""
+    return _describe_errors(exc.errors())
+
+
+def _describe_errors(errors: Collection[Any]) -> str:
+    """Render pydantic error entries as ``field: problem; field: problem``."""
     parts = []
-    for error in exc.errors():
+    for error in errors:
         field = ".".join(str(p) for p in error.get("loc", ())) or "input"
         parts.append(f"{field}: {error.get('msg', 'invalid')}")
     return "; ".join(parts)
+
+
+def input_model(fn: Callable[..., Any]) -> type[BaseModel] | None:
+    """The input model of a tool's first parameter, where a call's input dict goes.
+
+    Args:
+        fn: The tool function, inside its boundary or not.
+
+    Returns:
+        type[BaseModel] | None: The model; None for a tool that takes no
+        input or takes a plain mapping.
+    """
+    first = next(
+        (
+            p.name
+            for p in inspect.signature(fn).parameters.values()
+            if p.kind is not inspect.Parameter.KEYWORD_ONLY
+        ),
+        None,
+    )
+    return None if first is None else model_parameters(fn).get(first)
+
+
+def input_problems(
+    model: type[BaseModel], arguments: dict[str, Any], unknown: Collection[str] = ()
+) -> str | None:
+    """What the boundary would refuse in ``arguments``, found without running the tool.
+
+    ``arguments`` are validated as ``model``, as the boundary validates a
+    tool's input dict, and checked for removed inputs. The fields named in
+    ``unknown`` hold values known only when the tool runs (a workflow's
+    ``$steps`` references): they are left out, and so is any error about
+    them or about the input as a whole, which their values might answer.
+
+    Args:
+        model: The tool's input model (:func:`input_model`).
+        arguments: The tool's fields.
+        unknown: Top-level fields whose values aren't known yet.
+
+    Returns:
+        str | None: The problems, as ``field: problem; field: problem``, or
+        None when the boundary would take the input.
+    """
+    known = {key: value for key, value in arguments.items() if key not in unknown}
+    try:
+        validated = model.model_validate(known)
+    except ValidationError as exc:
+        errors = [
+            error
+            for error in exc.errors()
+            if not unknown or (error["loc"] and error["loc"][0] not in unknown)
+        ]
+        return _describe_errors(errors) or None
+    return "; ".join(removed_inputs(validated)) or None
 
 
 def require_success[TResult](
@@ -182,6 +251,47 @@ _ALWAYS_RETURNED_KEYS = frozenset({"dialog", "confirm_with"})
 
 def _always_returned(data: Any) -> bool:
     return isinstance(data, dict) and not _ALWAYS_RETURNED_KEYS.isdisjoint(data)
+
+
+class ContentReply(dict[str, Any]):
+    """A tool's reply carrying MCP content to send beside it (:func:`with_content`).
+
+    Attributes:
+        content: The content, sent after the reply's own text block.
+    """
+
+    content: tuple[Any, ...] = ()
+
+
+def with_content(reply: dict[str, Any], *content: Any) -> dict[str, Any]:
+    """``reply`` with MCP content to send beside it, e.g. the picture an export wrote.
+
+    The boundary sends the reply as the call's structured content and as its
+    first text block, then each item of ``content`` (a FastMCP ``Image``,
+    ``Audio`` or ``File``, or an MCP content block) as a block of its own: the
+    wrapped tool returns that ``ToolResult``, however it was called. A tool
+    that sends content only to a client (``export_image``) checks for its
+    MCP ``Context`` first, so a direct call still gets a dict.
+
+    Args:
+        reply: The tool's reply.
+        *content: What to send beside it.
+
+    Returns:
+        dict[str, Any]: The reply, carrying ``content``.
+    """
+    carried = ContentReply(reply)
+    carried.content = content
+    return carried
+
+
+#: ``SOLIDWORKS_MCP_TIMING`` values that put a ``timing`` breakdown in replies.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def timing_in_replies() -> bool:
+    """Whether ``SOLIDWORKS_MCP_TIMING`` asks for ``timing`` in every reply."""
+    return os.getenv("SOLIDWORKS_MCP_TIMING", "").strip().lower() in _TRUTHY
 
 
 def error_payload(
@@ -282,12 +392,54 @@ async def _use_document(adapter: Any, document: str, tool_name: str) -> None:
         )
 
 
+def _finish(
+    result: dict[str, Any],
+    server_s: float,
+    timing: CallTiming,
+    warning: str | None,
+    adapter: Any,
+) -> Any:
+    """What the boundary returns for a tool's reply or error payload.
+
+    Logs the call's timing line. A success gets its warnings and
+    ``server_time_s``; with ``SOLIDWORKS_MCP_TIMING=1`` any reply gets
+    ``timing``. Content the tool sent beside its reply (:func:`with_content`)
+    makes it a ``ToolResult``: the reply as structured content and first
+    text block, then the content.
+
+    Args:
+        result: The tool's reply, or the boundary's error payload.
+        server_s: The call's whole time in the server.
+        timing: Where that time went.
+        warning: The tool's support-level warning, if any.
+        adapter: The adapter, for its shared-document warning.
+
+    Returns:
+        The reply dict, or a ``ToolResult`` carrying it and the content.
+    """
+    logger.info("{}", timing.summary(server_s))
+    content = result.content if isinstance(result, ContentReply) else ()
+    reply = dict(result)
+    if reply.get("status") == "success":
+        # A tool's own warning (e.g. a cut that removed nothing) comes first.
+        extra = [w for w in (warning, _document_notice(adapter)) if w]
+        if extra:
+            own = reply.get("warning")
+            reply["warning"] = " ".join([own, *extra] if own else extra)
+        reply["server_time_s"] = round(server_s, 3)
+    if timing_in_replies():
+        reply["timing"] = timing.breakdown(server_s)
+    if not content:
+        return reply
+    return ToolResult(content=[reply, *content], structured_content=reply)
+
+
 def tool_boundary(
     fn: Callable[..., Awaitable[dict[str, Any]]],
     classifier: ErrorClassifier = _CLASSIFIER,
     warning: str | None = None,
     adapter: Any = None,
-) -> Callable[..., Awaitable[dict[str, Any]]]:
+) -> Callable[..., Awaitable[Any]]:
     """Wrap an async tool so every failure becomes an error payload.
 
     ``functools.wraps`` keeps the signature, so FastMCP builds the same input
@@ -308,10 +460,12 @@ def tool_boundary(
     that model first, so a script can call any tool function with a dict, as
     an MCP client effectively does. An input the tool no longer takes
     (``input_compat.REMOVED_INPUTS``) is refused as invalid input before the
-    tool runs.
+    tool runs. Every call is timed (:func:`timed_call`): a success carries
+    ``server_time_s``, and the server log gets one line per call.
 
     Returns:
-        The wrapped tool.
+        The wrapped tool. It returns the reply dict, or a ``ToolResult`` when
+        the tool sent content beside its reply (:func:`with_content`).
     """
     tool_name = fn.__name__
     models = model_parameters(fn)
@@ -331,19 +485,16 @@ def tool_boundary(
                 raise InvalidInputError("; ".join(removed))
         return bound
 
-    @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        started = time.perf_counter()
-
-        def elapsed() -> float:
-            return time.perf_counter() - started
-
+    async def run(
+        elapsed: Callable[[], float], args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The tool's reply, or the error payload for what it raised."""
         document = kwargs.pop("document", None) if with_document else None
         try:
             bound = with_models(args, kwargs)
             if document:
                 await _use_document(adapter, document, tool_name)
-            result = await fn(*bound.args, **bound.kwargs)
+            return await fn(*bound.args, **bound.kwargs)
         except InvalidInputError as exc:
             return error_payload(
                 f"Invalid input: {exc}",
@@ -381,14 +532,17 @@ def tool_boundary(
                 classifier.classify(str(exc), exc, fallback=INTERNAL),
                 elapsed(),
             )
-        if result.get("status") != "success":
-            return result
-        # A tool's own warning (e.g. a cut that removed nothing) comes first.
-        extra = [w for w in (warning, _document_notice(adapter)) if w]
-        if not extra:
-            return result
-        own = result.get("warning")
-        return {**result, "warning": " ".join([own, *extra] if own else extra)}
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+
+        def elapsed() -> float:
+            return time.perf_counter() - started
+
+        with timed_call(tool_name) as timing:
+            result = await run(elapsed, args, kwargs)
+        return _finish(result, elapsed(), timing, warning, adapter)
 
     if with_document:
         _add_document_parameter(fn, wrapper)

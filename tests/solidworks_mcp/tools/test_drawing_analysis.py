@@ -1,7 +1,7 @@
 """Tests for SolidWorks drawing analysis tools."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 from fastmcp import FastMCP
@@ -914,6 +914,7 @@ async def test_validate_drawing_completeness_success(mcp_server, mock_config) ->
         "message": "Drawing completeness validation completed",
         "data": {"complete": True, "missing": []},
         "execution_time": 0.2,
+        "server_time_s": ANY,
     }
 
 
