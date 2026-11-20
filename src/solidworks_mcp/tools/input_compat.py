@@ -4,6 +4,8 @@ This module centralizes test/backward-compat parsing behavior so individual tool
 stay focused on domain fields.
 """
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -15,6 +17,31 @@ class CompatInput(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+
+def one_or_many(data: Any, plural: str, singular: str) -> Any:
+    """Let a list field take one item: ``{singular: x}`` or ``{plural: x}``.
+
+    For a ``mode="before"`` model validator. A bare value under either key
+    becomes ``{plural: [x]}``; anything else passes through unchanged.
+
+    Args:
+        data: The raw input.
+        plural: The list field's name (``equations``).
+        singular: The name clients send by habit (``equation``).
+
+    Returns:
+        Any: ``data`` with ``plural`` holding a list where it could.
+    """
+    if not isinstance(data, dict):
+        return data
+    data = dict(data)
+    if plural not in data and singular in data:
+        data[plural] = data.pop(singular)
+    value = data.get(plural)
+    if value is not None and not isinstance(value, list | tuple):
+        data[plural] = [value]
+    return data
 
 
 _DRAWING_PACKAGE = "use `generate_drawing_package` for a complete drawing"

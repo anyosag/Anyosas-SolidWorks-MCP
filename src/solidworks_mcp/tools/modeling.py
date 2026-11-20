@@ -2904,7 +2904,9 @@ async def register_modeling_tools(
         `list_model_dimensions` and check the result with `rebuild_model` or
         `verify_model`. The value is in the dimension's own unit: millimetres for
         a length, degrees for an angle, a whole number for a count (a pattern's
-        instances). Needs: an open part or assembly. Changes: the dimension and
+        instances). A dimension an equation sets (`driven_by`) is refused before
+        anything is written; change it with `set_equations`. Needs: an open part
+        or assembly. Changes: the dimension and
         the geometry it drives. Returns: `dimension_update` with `name`,
         `old_value`, `new_value` (read back), `units` and `kind`.
 

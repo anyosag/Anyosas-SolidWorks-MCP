@@ -28,8 +28,7 @@ from solidworks_mcp.tools.engineering_data import (
 _TOOLS = (
     "list_model_dimensions",
     "list_equations",
-    "set_global_variable",
-    "add_equation",
+    "set_equations",
     "delete_equation",
     "measure_entities",
     "get_material",
@@ -269,9 +268,8 @@ async def test_missing_adapter_method_is_reported(
         "set_density": {"density_g_cm3": 1.15},
         "set_custom_property": {"name": "PartNo", "value": "1"},
         "export_flat_pattern": {"file_path": "C:/out/flat.dxf"},
-        "set_global_variable": {"name": "well_d", "value": 1.2},
-        "add_equation": {"dimension": "D1@Sketch3", "expression": '"well_d"'},
-        "delete_equation": {"name": "well_d"},
+        "set_equations": {"equations": ['"W" = 40']},
+        "delete_equation": {"equation": "W"},
     }.get(tool, {})
     await register_engineering_data_tools(mcp_server, object(), mock_config)
 

@@ -58,3 +58,4 @@ mostly batch, template, macro-recording and drawing-analysis tools, plus
 | Fault | Workaround |
 | --- | --- |
 | `add_mate` can't mate edges or vertices, only planes, axes and faces. | Mate the faces that meet at the edge. |
+| `set_dimension` refuses a dimension an equation sets (`invalid_input`, naming the equation; `driven_by` in `list_model_dimensions`). | Change the equation, or the variable it reads, with `set_equations`; or free the dimension with `delete_equation`. |

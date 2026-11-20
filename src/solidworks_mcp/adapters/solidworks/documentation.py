@@ -651,7 +651,8 @@ class SolidWorksDocumentationMixin:
             AdapterResult[list[dict[str, Any]]]: ``full_name``, ``feature``,
             ``value`` (document units), ``system_value`` (metres / radians),
             ``kind`` (length, angle or count), ``units`` (what
-            ``set_dimension`` takes for it) and ``read_only`` per dimension.
+            ``set_dimension`` takes for it), ``read_only`` and ``driven_by``
+            (the equation that sets it, or None) per dimension.
         """
         guard = self._require_doc_type({1, 2}, "list_model_dimensions")
         if guard is not None:
@@ -659,7 +660,10 @@ class SolidWorksDocumentationMixin:
         target = (feature_name or "").strip().lower()
 
         def _list() -> list[dict[str, Any]]:
+            from .equations import driven_by, driven_map
+
             model = self.currentModel
+            driven = driven_map(self, model)
             dims: list[dict[str, Any]] = []
             listed: set[str] = set()
             for feat, name in _dimension_features(self, model):
@@ -687,6 +691,7 @@ class SolidWorksDocumentationMixin:
                             "read_only": bool(
                                 self._attempt(lambda d=dim: d.ReadOnly, default=False)
                             ),
+                            "driven_by": driven_by(driven, full_name),
                         }
                     )
             if target and not dims:

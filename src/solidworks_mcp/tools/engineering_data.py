@@ -7,14 +7,16 @@ the adapter's own result - nothing here is simulated.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastmcp import FastMCP
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..adapters.base import AdapterResult, SolidWorksAdapter
+from ..adapters.solidworks.equations import check_equations
 from ..utils import export_check
-from .input_compat import CompatInput
+from .input_compat import CompatInput, one_or_many
+from .modeling import _attach_measured_change, _read_summary
 from .tool_boundary import (
     ToolOperationError,
     normalize_input,
@@ -45,76 +47,41 @@ class ListEquationsInput(CompatInput):
     """Input schema for listing equations: it takes nothing."""
 
 
-class SetGlobalVariableInput(CompatInput):
-    """Input schema for adding or changing a global variable.
+class SetEquationsInput(CompatInput):
+    """Input schema for adding or replacing equations.
 
     Attributes:
-        name (str): The variable's name.
-        value (float): Its value, in ``units``.
-        units (str): The unit written after the number.
+        equations (list[str]): SolidWorks equation strings, one or more.
     """
 
-    name: str = Field(
+    equations: list[str] = Field(
         min_length=1,
-        description='The variable\'s name, without quotes, e.g. "well_d"',
-    )
-    value: float = Field(description="Its value, in `units`")
-    units: Literal["mm", "cm", "m", "in", "ft", "deg", "rad", ""] = Field(
-        default="mm",
-        description='Unit written after the number: mm, cm, m, in, ft, deg, rad, or "" '
-        "for a plain number (a count)",
+        description="Equations in SolidWorks syntax, e.g. '\"W\" = 40mm', "
+        '\'"D1@Sketch1" = "W"\'',
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _one_equation(cls, data: Any) -> Any:
+        return one_or_many(data, "equations", "equation")
 
-class AddEquationInput(CompatInput):
-    """Input schema for driving a dimension by an equation.
-
-    Attributes:
-        dimension (str): The dimension's full name.
-        expression (str): Its right-hand side.
-    """
-
-    dimension: str = Field(
-        min_length=1,
-        description='The dimension\'s full name, e.g. "D1@Sketch3" '
-        "(list_model_dimensions, or a sketch pattern's `dimensions`)",
-    )
-    expression: str = Field(
-        min_length=1,
-        description="The right-hand side in SolidWorks syntax, names in double quotes: "
-        '"\\"well_d\\"", "\\"well_d\\" * 2", "\\"D1@Sketch1\\" + 3mm". A bare global '
-        "variable name is quoted for you.",
-    )
+    @field_validator("equations")
+    @classmethod
+    def _left_sides(cls, value: list[str]) -> list[str]:
+        check_equations(value)
+        return value
 
 
 class DeleteEquationInput(CompatInput):
-    """Input schema for deleting an equation or global variable.
+    """Input schema for deleting one equation.
 
     Attributes:
-        name (str | None): What the equation sets.
-        index (int | None): Its index from list_equations.
-        force (bool): Delete a global variable other equations read.
+        equation (str | int): The name it sets, or its index.
     """
 
-    name: str | None = Field(
-        default=None,
-        description='What the equation sets: a global variable ("well_d") or a '
-        'dimension ("D1@Sketch3")',
+    equation: str | int = Field(
+        description='The name it sets ("W", "D1@Boss") or its list_equations index',
     )
-    index: int | None = Field(
-        default=None, ge=0, description="Its `index` from list_equations"
-    )
-    force: bool = Field(
-        default=False,
-        description="Delete a global variable that other equations read (they then "
-        "fail to solve)",
-    )
-
-    @model_validator(mode="after")
-    def _one_target(self) -> DeleteEquationInput:
-        if not (self.name or "").strip() and self.index is None:
-            raise ValueError("give `name` or `index`")
-        return self
 
 
 class MeasureEntitiesInput(CompatInput):
@@ -286,6 +253,25 @@ def _success(result: AdapterResult[Any], message: str) -> dict[str, Any]:
     }
 
 
+def _with_change(
+    result: AdapterResult[Any],
+    before: AdapterResult[dict[str, Any]] | None,
+    after: AdapterResult[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """The success reply with ``data.measured_change`` (volume, box, bodies).
+
+    ``measured_change`` is None when the model couldn't be read before. The
+    feature tools' "changed no volume" warning is left out: an equation may
+    rightly change nothing.
+    """
+    reply = _success(result, "")
+    reply["data"] = dict(result.data or {})
+    reply["data"]["measured_change"] = _attach_measured_change({}, before, after).get(
+        "measured_change"
+    )
+    return reply
+
+
 async def register_engineering_data_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -321,7 +307,8 @@ async def register_engineering_data_tools(
         name. Needs: an open part or assembly. Read-only. Returns: `data`, one entry per
         dimension with `full_name`, `feature`, `value` (document units), `system_value`
         (metres or radians), `kind` (length, angle or count), `units` (what
-        `set_dimension` takes: mm, deg or count) and `read_only`.
+        `set_dimension` takes: mm, deg or count), `read_only` and `driven_by` (the
+        equation that sets it, or null).
 
         Args:
             input_data: Nothing is required: give `feature_name` to list one
@@ -340,119 +327,93 @@ async def register_engineering_data_tools(
     async def list_equations(
         input_data: ListEquationsInput | None = None,
     ) -> dict[str, Any]:
-        """List the active part's or assembly's global variables and equations with their values.
+        """List the active part's or assembly's equations and global variables.
 
-        Use it before `set_global_variable`, `add_equation` or `delete_equation` to see
-        what a model's parameters are and which dimensions they drive. Needs: an open
-        part or assembly. Read-only. Returns: `data` with `global_variables` and
-        `equations`, each entry `index`, `name` (what it sets), `equation` (the text,
-        e.g. "D1@Sketch3" = "well_d"), `kind` (global_variable or dimension), `value`
-        and `suppressed`; a dimension's `dimension` gives its value now in mm, deg or
-        count; and `count`.
+        Use it before `set_equations` or `delete_equation`, and to find equations a
+        deleted feature left behind (`broken`). Needs: an open part or assembly.
+        Read-only. Returns: `data` with `equations` (each `index`, `equation` text,
+        `name` it sets, `value`, `global`, `broken`), `count`,
+        `automatic_solve_order` and `document_units`.
 
         Args:
             input_data: Nothing to give; every equation is listed.
 
         Returns:
-            dict[str, Any]: The global variables and equations.
+            dict[str, Any]: The equations.
         """
         _supports("list_equations")
         normalize_input(input_data, ListEquationsInput)
         result = await adapter.list_equations()
         require_success(result, context="Failed to list equations")
         count = (result.data or {}).get("count", 0)
-        return _success(result, f"Listed {count} equation(s) and global variable(s)")
+        return _success(result, f"Listed {count} equation(s)")
 
     @mcp.tool()
-    async def set_global_variable(input_data: SetGlobalVariableInput) -> dict[str, Any]:
-        """Add a global variable to the active part or assembly, or change its value, e.g. "well_d" = 1.2mm.
+    async def set_equations(input_data: SetEquationsInput) -> dict[str, Any]:
+        """Add or replace equations and global variables in the active part or assembly.
 
-        Use it for a parameter several sketches or features share: drive each
-        dimension from it with `add_equation`, then change the value here once. The
-        model is rebuilt and the dimensions read back. Needs: an open part or
-        assembly. Changes: the variable and every dimension an equation drives from
-        it. Returns: `data` with `action` (added or changed), `global_variable`,
-        `previous` (the old equation), `driven` (the equations that read it, each
-        with its `dimension` value now), and `global_variables` and `equations`.
-
-        Args:
-            input_data: The variable. `name` and `value` are required; `units`
-                defaults to mm.
-
-        Returns:
-            dict[str, Any]: The variable and what it drives.
-        """
-        _supports("set_global_variable")
-        input_data = normalize_input(input_data, SetGlobalVariableInput)
-        result = await adapter.set_global_variable(
-            input_data.name, input_data.value, input_data.units
-        )
-        require_success(result, context="Failed to set the global variable")
-        driven = len((result.data or {}).get("driven") or [])
-        return _success(
-            result,
-            f"{(result.data or {}).get('action', 'set').capitalize()} "
-            f'"{input_data.name}" = {input_data.value:g}{input_data.units}; '
-            f"it drives {driven} equation(s)",
-        )
-
-    @mcp.tool()
-    async def add_equation(input_data: AddEquationInput) -> dict[str, Any]:
-        """Drive a dimension of the active part or assembly by an equation, e.g. "D1@Sketch3" = "well_d".
-
-        Use it to link dimensions: to a global variable (`set_global_variable`), or to
-        another dimension ("D1@Sketch1" * 2). A dimension that already has an
-        equation gets the new one instead. The model is rebuilt and the dimension
-        read back. An expression SolidWorks can't solve changes nothing and is
-        `invalid_input`. Needs: an open part or assembly. Changes: the equation and
-        the dimension. Returns: `data` with `action` (added or changed),
-        `equation`, `previous`, `dimension` (`value` now, `units`), `value_before`,
-        and `global_variables` and `equations`.
+        Use it to link dimensions: '"W" = 40mm', '"D1@Sketch1" = "W"'. An equation
+        for a name that has one replaces it; others are added. Write units in
+        numbers: a bare number is in `document_units`. All or nothing: a refused
+        equation changes nothing. Solve order is automatic, then one rebuild.
+        Needs: an open part or assembly. Changes: the equations and the dimensions
+        they drive. Returns: `data` with `equations` (each `index`, `replaced`),
+        `automatic_solve_order_was`, `failing_features`, `measured_change`,
+        `document_units`.
 
         Args:
-            input_data: The equation. `dimension` (full name) and `expression`
-                (its right-hand side) are required.
+            input_data: `equations`, one or more SolidWorks equation strings
+                (names in double quotes).
 
         Returns:
-            dict[str, Any]: The equation and the dimension's new value.
+            dict[str, Any]: What was set and what the rebuild did.
         """
-        _supports("add_equation")
-        input_data = normalize_input(input_data, AddEquationInput)
-        result = await adapter.add_equation(input_data.dimension, input_data.expression)
-        require_success(result, context="Failed to add the equation")
-        dimension = (result.data or {}).get("dimension") or {}
-        return _success(
-            result,
-            f"{input_data.dimension} = {input_data.expression}: now "
-            f"{dimension.get('value')} {dimension.get('units', '')}".rstrip(),
-        )
+        _supports("set_equations")
+        input_data = normalize_input(input_data, SetEquationsInput)
+        before = await _read_summary(adapter)
+        result = await adapter.set_equations(input_data.equations)
+        require_success(result, context="Failed to set equations")
+        reply = _with_change(result, before, await _read_summary(adapter))
+        reply["message"] = f"Set {len(input_data.equations)} equation(s)"
+        failing = reply["data"].get("failing_features") or []
+        if failing:
+            reply["warning"] = (
+                "The equations were applied, but features fail to rebuild: "
+                + ", ".join(str(f.get("feature")) for f in failing)
+                + ". See data.failing_features; fix or undo."
+            )
+        return reply
 
     @mcp.tool()
     async def delete_equation(input_data: DeleteEquationInput) -> dict[str, Any]:
-        """Delete an equation or a global variable of the active part or assembly.
+        """Delete one equation or global variable of the active part or assembly.
 
-        Use it to free a dimension from its equation (it keeps its value) or to remove
-        a variable. A global variable other equations read is refused unless `force`
-        is on. Find names and indexes with `list_equations`. Needs: an open part or
-        assembly. Changes: removes the equation and rebuilds. Returns: `data` with
-        `deleted` (the entry removed), `left_using_it` (equations that read a forced
-        deletion), and `global_variables` and `equations`.
+        Use it to free a dimension from its equation (it keeps its value) or to
+        remove a `broken` one. Find names and indexes with `list_equations`;
+        `undo` restores a deletion. Needs: an open part or assembly. Changes:
+        removes the equation and rebuilds. Returns: `data` with `deleted` (its
+        text), `count` (left), `failing_features`, `left_broken` (equations that
+        read it) and `measured_change`.
 
         Args:
-            input_data: Which one. Give `name` (what it sets) or `index`; `force`
-                is off.
+            input_data: `equation`: the name it sets, or its index.
 
         Returns:
             dict[str, Any]: What was deleted and what is left.
         """
         _supports("delete_equation")
         input_data = normalize_input(input_data, DeleteEquationInput)
-        result = await adapter.delete_equation(
-            input_data.name, input_data.index, input_data.force
-        )
+        before = await _read_summary(adapter)
+        result = await adapter.delete_equation(input_data.equation)
         require_success(result, context="Failed to delete the equation")
-        deleted = (result.data or {}).get("deleted") or {}
-        return _success(result, f"Deleted {deleted.get('equation', 'the equation')}")
+        reply = _with_change(result, before, await _read_summary(adapter))
+        reply["message"] = f"Deleted {reply['data'].get('deleted')}"
+        left = reply["data"].get("left_broken") or []
+        if left:
+            reply["warning"] = "These equations read it and are now broken: " + (
+                "; ".join(left)
+            )
+        return reply
 
     @mcp.tool()
     async def measure_entities(input_data: MeasureEntitiesInput) -> dict[str, Any]:
@@ -698,4 +659,4 @@ async def register_engineering_data_tools(
             "file_check": check,
         }
 
-    return 13
+    return 12

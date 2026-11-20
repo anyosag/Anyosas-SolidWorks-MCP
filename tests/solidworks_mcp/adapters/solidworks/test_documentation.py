@@ -261,6 +261,7 @@ async def test_list_model_dimensions_walks_every_feature() -> None:
             "kind": "length",
             "units": "mm",
             "read_only": False,
+            "driven_by": None,
         },
         {
             "full_name": "D1@Boss-Extrude1",
@@ -270,6 +271,7 @@ async def test_list_model_dimensions_walks_every_feature() -> None:
             "kind": "length",
             "units": "mm",
             "read_only": False,
+            "driven_by": None,
         },
     ]
 
