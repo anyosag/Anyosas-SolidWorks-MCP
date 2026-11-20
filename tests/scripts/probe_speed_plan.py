@@ -479,12 +479,19 @@ def solidworks_age_seconds(pid: int) -> float | None:
 
 
 def load_readiness() -> Any:
-    """``tests/live/readiness.py``, loaded from its file (no sys.path change)."""
+    """``tests/live/readiness.py``, loaded from its file (no sys.path change).
+
+    The module goes into ``sys.modules`` before it runs: its dataclasses look
+    their module up there, and the first live run died without it
+    (``'NoneType' object has no attribute '__dict__'``).
+    """
+    name = "speed_probe_readiness"
     path = REPO / "tests" / "live" / "readiness.py"
-    spec = importlib.util.spec_from_file_location("speed_probe_readiness", path)
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Can't load {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -3237,6 +3244,12 @@ async def dry_run(args: argparse.Namespace) -> int:
         if check.raw_com:
             print(f"    raw COM (live only): {check.raw_com}")
     print(f"\n  about {total:g} min live, besides SolidWorks' own warm-up\n")
+    # The warm-up's parts that need no SolidWorks: the first live run died
+    # loading readiness.py, which no dry run had done.
+    readiness = load_readiness()
+    readiness.SolidWorksReadiness(os.getpid(), lambda: False)
+    age = solidworks_age_seconds(os.getpid())
+    print(f"  warm-up helpers load; this process' age reads {age!r} s\n")
     adapter = MockSolidWorksAdapter(_MOCK_CONFIG)
     await adapter.connect()
     path = run_dir / "report.json"
