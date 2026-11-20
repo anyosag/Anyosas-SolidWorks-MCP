@@ -1778,6 +1778,53 @@ succeeded.
   `FeatureCut4`. Whether SolidWorks plays the sound later, in its idle
   loop, after the toggle is back on is only heard, not read.
 
+## 62. Hole Wizard holes and Thread features: measured
+
+`tests/scripts/probe_hole_wizard.py` (SOLIDWORKS 2026 SP4.1, 2026-11-20;
+the full table is in `openspec/changes/hole-wizard-and-threads/design.md`,
+"Probe results"):
+
+- **`HoleWizard5` takes 27 arguments, and a wrong value slot cuts without
+  an error.** The vectors in `holes.wizard_values` removed exactly the hand
+  volumes for every kind. `Value2` 0 on a blind clearance hole cut 6245 mm³
+  of an 8000 mm³ block; a tapped hole without the cosmetic thread in
+  `Value7` mills its threaded length at the major diameter.
+- **Sizes read back from `IWizardHoleFeatureData2`:** the clearance in
+  `HoleDiameter` (`ThruHoleDiameter` reads 0), metres; the countersink angle
+  in radians. **A through tapped hole reads `TapDrillDiameter` 0** (and
+  `ThreadDepth` 0): the drill is read from the bore's mouth edge instead.
+- **The hole lands exactly on the picked point** (no 0.04 mm offset on
+  2026), and its position sketch (first sub-feature) takes the origin
+  dimensions; `set_dimension` moves the hole.
+- **The thread libraries hold few fine pitches.** `Metric Tap` and `Metric
+  Die` (`C:\ProgramData\SolidWorks\SOLIDWORKS 2026\thread profiles\*.sldlfp`)
+  spell sizes `M10x1.0`; M30 has only `M30x2.0` and `M30x3.5`. A size not in
+  the library cuts a meaningless groove, and `PitchOverride` on a coarser
+  profile makes no feature. The ISO profile depends on the pitch alone, so
+  `create_thread` borrows a same-pitch size's profile (`M10x1.0` for
+  M30x1) and sets it on the edge with `DiameterOverride`: within 0.3% of the
+  basic groove.
+- **The profile sits on the edge's own diameter.** `IThreadFeatureData.Diameter`
+  reads the edge's diameter, so a thread shifts with its hole or rod; that is
+  why `create_thread` checks the edge (and `diameter_offset_mm` moves the
+  check for print clearance). `Offset`/`OffsetDistance` are the start's
+  axial offset, not a diameter: `ReverseOffset` true moves the start out of
+  the material, and the length is kept.
+- **Direction and reach.** A thread runs from its edge into the material
+  (from the edge between a chamfer and its cylinder, into the cylinder), and
+  its groove reaches one profile width past `BlindDepth`: 0.875 P for a die,
+  0.75 P for a tap. Allow for it next to a shoulder or a floor.
+- **Rebuild cost:** about 14 ms per turn on every later rebuild (0.95 s at
+  100 turns, 2.9 s at 200); making one takes 6 to 13 s. `MAX_THREAD_TURNS`
+  is 200.
+- **Mating threads still touch at their run-outs.** On the imaging chamber's
+  copies, an M30x1 tap and an undersized M30x1 die (0.25 mm radial
+  clearance) left 1.54 mm³ in four places, at both thread ends, whatever
+  the turn of one part (1.54 to 34.5 mm³ over a full turn, smallest within
+  a few degrees of 0). Each groove's last turn ends at one angle, so beside
+  it the other part's teeth meet uncut material. A thread relief or a longer
+  chamfer clears it; turning the part doesn't.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape

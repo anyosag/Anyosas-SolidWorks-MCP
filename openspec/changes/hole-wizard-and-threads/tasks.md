@@ -10,56 +10,60 @@ What the code does beyond, or differently from, the design, for review:
 - The mock keeps circular edges given by `mock_add_round_edge` and each hole's mouth; with none at `edge_point` it assumes an edge of the diameter the thread needs and says so in a `note`. Its size table holds only the spec's "to confirm" M3 values, marked as mock data (probe 1.4 has not run).
 - No `error_classifier.py` rule was needed: the messages classify through the existing rules (tests check each one).
 
+## Status (2026-11-20 later, branch `threads-live`)
+
+Section 1 ran on SOLIDWORKS 2026 SP4.1 (design.md, "Probe results"). It settled D2 to D10 and changed the code in four places: a through tapped hole's drill is read from its mouth (`TapDrillDiameter` reads 0), `MAX_THREAD_TURNS` is 200, a size the thread library lacks borrows a same-pitch profile, and the reply's `extent` says where the groove runs. `create_thread` also gained `diameter_offset_mm` and `start_offset_mm` for the imaging chamber (design.md, "Extensions ... awaiting the user's review"). The mock's size table still holds M3 only.
+
 ## 1. Probes (SolidWorks, scratch documents, each with the user's OK)
 
 `tests/scripts/probe_hole_wizard.py` holds every probe below as a step (written 2026-11-20, not run). Each step builds its own scratch part (a 40 × 20 × 10 mm block, a Ø10 × 40 mm rod, a 30 × 30 × 20 mm block). Run it on SolidWorks 2025 and 2026 if both are installed, and record the revision of each (`RevisionNumber`).
 
-- [ ] 1.1 `HoleWizard5`: the argument list and the value vectors.
+- [x] 1.1 `HoleWizard5`: the argument list and the value vectors.
   - Read the signature with `lookup_api_method` and `get_api_remarks` on the installed type library, and count the arguments (hjbaard passes 27).
   - Call it through late binding with the D4 enums, for each kind, through and blind. For each, measure the volume removed and compare it with the hand calculation from the sizes read back.
   - Re-prove the `Value1`…`Value12` vectors one by one. Record what a zero, a `-1` and a wrong slot do.
   - Record the results in design.md under "Probe results" and settle D4.
-- [ ] 1.2 Picking the face.
+- [x] 1.2 Picking the face.
   - `SelectByRay` from 0.01 mm above the point along the normal: the selection count after, with and without `ClearSelection2` first (pitfall #59).
   - Repeat in a side view where another face hides the target (the `ShowNamedView2` left view), on a block whose top is split in two by a slot, and over an earlier hole's countersink.
   - Settle D2.
-- [ ] 1.3 Where the point lands.
+- [x] 1.3 Where the point lands.
   - Make a hole at `[20, 14, 10]` and read its edge's centre. Record the offset from the point (hjbaard saw about 0.04 mm).
   - Find the position sketch (a sub-feature) and check that it can be edited with `EditSketch` and its point dimensioned from the origin through the fork's own sketch calls, in the face sketch's own horizontal and vertical directions. Check `check_sketch_fully_defined`.
   - Check whether `HoleWizard5` takes a face plus pre-selected sketch points, so the position is exact from the start.
   - Settle D3.
-- [ ] 1.4 The sizes SolidWorks reports.
+- [x] 1.4 The sizes SolidWorks reports.
   - Read `IWizardHoleFeatureData2` for each kind. Which properties hold the clearance, counterbore, countersink and tap-drill values, and in which unit.
   - Read M3 for close, normal and loose (the "to confirm" values in the specs: 3.2, 3.4, 3.6; counterbore Ø6.5 × 3.4; countersink Ø6.72 at 90°; tap drill 2.5, thread depth 6.0), and a few more sizes the live test will use.
   - Record what an unknown size (`M3.3`) does: `None`, or a hole.
   - Settle D5 and fill the mock's size table (D13).
-- [ ] 1.5 The thread feature and its library.
+- [x] 1.5 The thread feature and its library.
   - `CreateDefinition(87)` gives an `IThreadFeatureData`; call `InitializeThreadData`; set `Type` to `Metric Tap` and `Metric Die`; read each back. Record the file it resolves to.
   - `ISldWorks.GetConfigurationNames(file)`: the sizes it lists for M3, M4 and M10, and how they are spelled (`M10x1.0` or `M10x1`).
   - Check each `IThreadFeatureData` member the design uses (`Edge`, `Size`, `EndCondition`, `BlindDepth`, `RightHanded`, `ThreadMethod`) for the right call form under late binding, and which interfaces need flagging.
   - Settle D6 steps 2 to 4.
-- [ ] 1.6 Thread diameters.
+- [x] 1.6 Thread diameters.
   - External M10x1.5 on Ø10, Ø9.9 and Ø10.1 rods; internal on holes of Ø8.376, Ø8.5 and Ø8.2.
   - Record what SolidWorks cuts for each, to confirm the 0.01 mm rule and that an internal thread shifts with its hole.
   - Compare the volumes removed with the hand calculations in the threads spec. Settle D6 step 6.
-- [ ] 1.7 Versions.
+- [x] 1.7 Versions (SOLIDWORKS 2026 SP4.1 only; 2025 is not installed here).
   - Record `RevisionNumber` and what `CreateDefinition(87)` and `HoleWizard5` do on each installed version.
   - Read the API help (`get_api_remarks`) for the version each call was added in, and record whether it agrees with hjbaard's "2016".
   - Older versions can't be probed here: record which were available.
   - Settle D8.
-- [ ] 1.8 Rebuild time.
+- [x] 1.8 Rebuild time.
   - Time `CreateFeature` and the next `ForceRebuild3` for M3x0.5 at 10, 50 and 100 mm, and M10x1.5 at 20 and 100 mm.
   - Settle D9's `MAX_THREAD_TURNS`, and whether any step needs more than one `limits.check`.
-- [ ] 1.9 A modeled tapped hole.
+- [x] 1.9 A modeled tapped hole.
   - Through and blind, M3 and M4: the thread's start edge (the hole's mouth), its length (the `ThreadDepth`, or the through length), and how to read the through length.
   - Whether the cosmetic thread stays on beside the modeled one, and whether the drawing then shows both.
   - The volume ends of a through thread (hjbaard saw up to 0.5 mm³ off where it runs out of the plate).
   - Settle D7.
-- [ ] 1.10 Failure and cleanup.
+- [x] 1.10 Failure and cleanup.
   - What `HoleWizard5` returns for an unknown size; what a refused `CreateFeature` leaves in the tree (a failed feature, or nothing).
   - That `delete_feature` on the hole removes its position sketch and thread, and the feature count and volume come back.
   - Settle D10.
-- [ ] 1.11 Drawing import (pitfall #18).
+- [ ] 1.11 Drawing import (pitfall #18). (Not run 2026-11-20: by hand.)
   - On a drawing of a part with a Hole Wizard hole whose position was dimensioned by D3, run the fork's dimension import with `include_hole_wizard`.
   - Record whether the position dimensions arrive, once each.
 
@@ -114,7 +118,7 @@ What the code does beyond, or differently from, the design, for review:
 - [x] 7.2 Agent skill:
   - `references/workflows.md` gains "Standard holes and printable threads": make the plate, call the hole tool with a size, read the sizes back, drill the minor diameter before an internal `create_thread`.
   - `references/errors-and-limits.md` gains the thread-size, diameter, `not_supported` and turn-limit refusals.
-- [ ] 7.3 `docs/agents/com-api-pitfalls.md`: entries for what probes 1.1 to 1.10 found (the `HoleWizard5` vectors, the 0.04 mm landing, the unknown-size thread, rebuild time).
+- [x] 7.3 `docs/agents/com-api-pitfalls.md`: entries for what probes 1.1 to 1.10 found (the `HoleWizard5` vectors, the 0.04 mm landing, the unknown-size thread, rebuild time).
 - [ ] 7.4 `.\dev-commands.ps1 dev-docs-strict`. (Not run 2026-11-20: mkdocs is not installed in this `.venv`.)
 
 ## 8. Live

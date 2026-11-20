@@ -259,6 +259,15 @@ nothing fails, and the empty pattern is deleted; try `reverse_direction`.
    and `length_mm`. Inside a hole (`internal: true`), drill the ISO basic
    minor diameter first (D - 1.0825 P: Ø8.376 for M10x1.5); on a rod, make
    it the nominal diameter. A modeled thread slows every later rebuild.
+6. For print clearance, an undersized rod or oversized bore takes
+   `diameter_offset_mm` (-0.5 for M30x1 on a Ø29.5 shaft). The thread runs
+   from the edge into the material, and its groove reaches about one
+   profile width past `length_mm` (0.875 P outside, 0.75 P inside): check
+   `data.extent.range_mm` next to a shoulder or floor. `start_offset_mm`
+   starts it before the edge, through a chamfer or lead-in beside it.
+7. Mating threads touch where each one's last turn ends. Keep the other
+   part's teeth a pitch clear of each thread's end (a thread relief below a
+   shoulder, a longer chamfer on a rod's tip), then `check_interference`.
 
 ## Labels: raised or engraved text
 

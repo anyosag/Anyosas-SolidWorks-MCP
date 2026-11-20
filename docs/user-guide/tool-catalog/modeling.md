@@ -1108,6 +1108,8 @@ Cut a real, printable ISO metric thread (SolidWorks' Thread feature) from a circ
 | `edge_point` | `List[float]` | ✅ | `` | [x, y, z] mm on the circular edge (rod end or hole mouth), not its centre |
 | `length_mm` | `float` | ✅ | `` | How far the thread runs from the edge, mm |
 | `internal` | `bool` | — | `False` | True for a thread in a hole (Metric Tap profile) |
+| `diameter_offset_mm` | `float?` | — | `None` | Print clearance: the edge is this much off the diameter the size needs (e.g. -0.5 for M30 on a Ø29.5 shaft, +0.3 for an oversized bore); the thread is cut on the edge's own diameter. Within one pitch. |
+| `start_offset_mm` | `float?` | — | `None` | Start the thread this far back out of the material, before the edge (through a chamfer or lead-in beside it); negative starts it further in. The length stays length_mm. |
 
 **Sample call:**
 
