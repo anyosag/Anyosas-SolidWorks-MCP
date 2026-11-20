@@ -282,6 +282,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "add_rectangle": _STABLE,
     "add_sketch_constraint": _STABLE,
     "add_sketch_dimension": _STABLE,
+    "add_sketch_geometry": _UNCHECKED,
     "add_sketch_text": _UNCHECKED,
     "add_spline": _STABLE,
     "check_sketch_fully_defined": _STABLE,

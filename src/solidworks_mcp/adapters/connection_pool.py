@@ -1214,6 +1214,23 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.add_sketch_outlines(outlines),
         )
 
+    async def add_sketch_entities(
+        self, items: list[dict[str, Any]], rollback_on_error: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw sketch entities in one operation using pool.
+
+        Args:
+            items (list[dict[str, Any]]): The entities, in order.
+            rollback_on_error (bool): Delete what the call drew when one fails.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "add_sketch_entities",
+            lambda adapter: adapter.add_sketch_entities(items, rollback_on_error),
+        )
+
     async def add_sketch_text(
         self,
         text: str,

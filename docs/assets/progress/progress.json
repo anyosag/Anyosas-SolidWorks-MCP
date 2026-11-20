@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 205,
+  "total": 206,
   "by_level": {
    "stable": 109,
    "beta": 0,
-   "experimental": 57,
+   "experimental": 58,
    "planned": 39
   },
   "list": [
@@ -147,6 +147,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Add a driving dimension to sketch entities: linear, horizontal, vertical, angular, radial or diameter."
+   },
+   {
+    "name": "add_sketch_geometry",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Draw many circles, lines, rectangles and centrelines in the open sketch in one call, as rows of numbers in mm."
    },
    {
     "name": "add_sketch_text",
