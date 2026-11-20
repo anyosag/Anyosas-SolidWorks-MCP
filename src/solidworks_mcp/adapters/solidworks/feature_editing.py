@@ -30,7 +30,7 @@ import math
 from typing import Any
 
 from .. import sw_type_info as _sw_type_info
-from .com_utils import as_list
+from .com_utils import as_list, reads_as_circle
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
 from .edge_rules import (
@@ -612,7 +612,8 @@ SEGMENT_ARC = 1
 def describe_circle(adapter: Any, segment: Any) -> dict[str, Any] | None:
     """A full circle's ``center_mm`` and ``radius_mm``; None for an arc.
 
-    ``ISketchArc.IsCircle()`` says whether the arc closes, and
+    ``ISketchArc.IsCircle()`` says whether the arc closes (the long 1, read
+    by :func:`~.com_utils.reads_as_circle`), and
     ``GetRadius()`` gives the radius in metres. Three reads past the
     segment's type, against six for its start, end and centre.
 
@@ -622,7 +623,7 @@ def describe_circle(adapter: Any, segment: Any) -> dict[str, Any] | None:
         circle or ``IsCircle`` doesn't read.
     """
     _flag(adapter, segment, "IsCircle", "GetRadius", "GetCenterPoint2")
-    if _attempt(adapter, lambda: segment.IsCircle()) is not True:
+    if not reads_as_circle(_attempt(adapter, lambda: segment.IsCircle())):
         return None
     info: dict[str, Any] = {"type": "circle"}
     center = _point_mm(adapter, _attempt(adapter, lambda: segment.GetCenterPoint2()))
@@ -707,7 +708,7 @@ def describe_segment(adapter: Any, segment: Any, text_of: Any = None) -> dict[st
         dict[str, Any]: ``type``, the points that read (``start_mm``,
         ``end_mm``, ``center_mm``), ``construction``; a text's
         :func:`describe_text` instead of points; a full circle (an arc whose
-        ``ISketchArc.IsCircle`` reads True) is ``type`` ``circle`` with
+        ``ISketchArc.IsCircle`` reads 1) is ``type`` ``circle`` with
         ``center_mm`` and ``radius_mm`` (:func:`describe_circle`), since its
         start and end are the same point and said nothing.
     """

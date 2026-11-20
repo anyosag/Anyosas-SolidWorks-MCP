@@ -10,6 +10,7 @@ import pytest
 from solidworks_mcp.adapters.solidworks.com_utils import (
     as_list,
     clear_selection,
+    reads_as_circle,
     strip_op_prefix,
 )
 
@@ -58,3 +59,21 @@ def _refuses(_all: bool) -> bool:
 )
 def test_clear_selection_never_raises(model: Any, expected: bool) -> None:
     assert clear_selection(_Adapter(), model) is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1, True),
+        (1.0, True),
+        (True, True),
+        (0, False),
+        (False, False),
+        (2, False),
+        (None, False),
+        ("1", False),
+    ],
+)
+def test_reads_as_circle(value: Any, expected: bool) -> None:
+    """``ISketchArc.IsCircle`` is a long: 1 for a full circle (pitfall #60)."""
+    assert reads_as_circle(value) is expected

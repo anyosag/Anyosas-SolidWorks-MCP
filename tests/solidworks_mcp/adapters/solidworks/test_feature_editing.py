@@ -1139,11 +1139,22 @@ def test_a_full_circle_is_described_by_centre_and_radius() -> None:
     }
 
 
+def test_is_circle_answering_the_long_1_is_a_full_circle() -> None:
+    """Live, ``ISketchArc.IsCircle`` returned 1, not True (pitfall #60)."""
+    adapter = _Adapter(_Model([]))
+    circle = _Arc(1, center=_Point(8, 3), start=_Point(8.3, 3), end=_Point(8.3, 3))
+
+    info = fe.describe_segment(adapter, circle)
+
+    assert info["type"] == "circle"
+    assert info["radius_mm"] == 0.3 and "start_mm" not in info
+
+
 def test_an_open_arc_and_an_unreadable_circle_keep_their_points() -> None:
     adapter = _Adapter(_Model([]))
     points = {"center": _Point(0, 0), "start": _Point(1, 0), "end": _Point(0, 1)}
 
-    for closes in (False, None):
+    for closes in (False, None, 0, "1"):
         info = fe.describe_segment(adapter, _Arc(closes, **points))
         assert info["type"] == "arc"
         assert info["start_mm"] == [1.0, 0.0] and info["end_mm"] == [0.0, 1.0]

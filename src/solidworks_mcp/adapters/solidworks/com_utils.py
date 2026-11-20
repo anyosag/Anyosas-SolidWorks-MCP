@@ -35,6 +35,19 @@ def as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def reads_as_circle(value: Any) -> bool:
+    """Whether ``ISketchArc.IsCircle()``'s answer means a full circle.
+
+    The API help gives it as a long, "1 if a complete circle, 0 if a partial
+    arc", and late binding hands back the int 1, not True (pitfall #60); a
+    COM bool True is taken too. ``ICurve.IsCircle`` is a real bool and does
+    not need this.
+    """
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, int | float) and value == 1
+
+
 def double_array(values: list[float]) -> Any:
     """``VARIANT(VT_ARRAY | VT_R8)`` for array-valued COM arguments (tuple when pywin32 is absent)."""
     try:

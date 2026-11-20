@@ -175,6 +175,9 @@ def test_references_that_name_nothing(
         (_Segment(0), "line"),
         (_Segment(1), "arc"),
         (_Segment(1, circle=True), "circle"),
+        # Live, ISketchArc.IsCircle answers the long 1 / 0 (pitfall #60).
+        (_Segment(1, circle=1), "circle"),
+        (_Segment(1, circle=0), "arc"),
         (_Segment(3), "spline"),
         ((object(), object()), "group"),
         (SimpleNamespace(), "segment"),

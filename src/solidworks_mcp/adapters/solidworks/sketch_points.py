@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .com_utils import as_list
+from .com_utils import as_list, reads_as_circle
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
 
@@ -122,9 +122,8 @@ def segment_kind(adapter: Any, entity: Any) -> str:
     _flag(adapter, entity, "GetType", "IsCircle")
     kind = _attempt(adapter, lambda: entity.GetType())
     if kind == 1:
-        return (
-            "circle" if _attempt(adapter, lambda: entity.IsCircle()) is True else "arc"
-        )
+        closed = _attempt(adapter, lambda: entity.IsCircle())
+        return "circle" if reads_as_circle(closed) else "arc"
     return SEGMENT_KINDS.get(kind, "segment") if isinstance(kind, int) else "segment"
 
 
