@@ -1106,6 +1106,98 @@ def _describe_open_document(
     }
 
 
+def open_documents(adapter: Any) -> list[dict[str, Any]]:
+    """The documents open in SolidWorks, for a document operation's reply.
+
+    Read inside the operation that opened, made, activated, saved or closed a
+    document, so the list costs no second operation and no second settle
+    gap. ``GetDocuments`` also lists the parts an open assembly loaded with
+    no window of their own (``Visible`` False, pitfall #44); they are left
+    out, except the active document. COM calls: ``GetDocuments`` and
+    ``ActiveDoc``, ``Visible`` of each loaded document but the active one,
+    and ``GetTitle``, ``GetType`` and ``GetSaveFlag`` of each document
+    listed; the active one is found by COM identity, with no call.
+
+    Args:
+        adapter: The connected adapter, on the COM thread.
+
+    Returns:
+        list[dict[str, Any]]: ``title``, ``type`` (Part, Assembly, Drawing or
+        Unknown), ``active`` and ``modified`` (None when it can't be read),
+        in SolidWorks' order.
+    """
+    app = adapter.swApp
+    docs = _coerce_dispatch_sequence(
+        adapter._attempt(lambda: app.GetDocuments(), default=None)
+    )
+    active = adapter._attempt(lambda: getattr(app, "ActiveDoc", None), default=None)
+    listed: list[dict[str, Any]] = []
+    for doc in docs:
+        is_active = _sw_type_info.same_com_object(doc, active)
+        if not is_active and adapter._attempt(lambda d=doc: d.Visible) is False:
+            continue
+        title = adapter._attempt(lambda d=doc: adapter._get_attr_or_call(d, "GetTitle"))
+        kind = adapter._attempt(lambda d=doc: adapter._get_attr_or_call(d, "GetType"))
+        modified = adapter._attempt(
+            lambda d=doc: adapter._get_attr_or_call(d, "GetSaveFlag")
+        )
+        listed.append(
+            {
+                "title": str(title) if title else None,
+                "type": _DOC_TYPE_NAMES.get(
+                    int(kind) if isinstance(kind, (int, float)) else -1, "Unknown"
+                ),
+                "active": is_active,
+                "modified": modified if isinstance(modified, bool) else None,
+            }
+        )
+    return listed
+
+
+def model_contents(adapter: Any, model: Any) -> dict[str, Any] | None:
+    """A document's own feature tree and its solid bodies, for ``open_model``.
+
+    The rows are ``list_features``' for the document itself (no component's
+    features), suppressed ones included; ``bodies`` is the part's solid
+    bodies by name (None for an assembly or drawing). About four COM calls a
+    feature (name, type, suppression, next), and one a body.
+
+    Args:
+        adapter: The connected adapter, on the COM thread.
+        model: The document.
+
+    Returns:
+        dict[str, Any] | None: ``features`` and ``bodies``, or None when the
+        adapter has no feature walk.
+    """
+    from .bodies import solid_body_names
+
+    selector = getattr(adapter, "_feature_selector", None)
+    walk = getattr(selector, "_list_document_features", None)
+    if model is None or not callable(walk):
+        return None
+    rows = adapter._attempt(lambda: walk(model, True), default=None)
+    kind = adapter._attempt(lambda: adapter._get_attr_or_call(model, "GetType"))
+    bodies = (
+        solid_body_names(adapter, _sw_type_info.flagged(model, "IPartDoc"))
+        if kind == 1
+        else None
+    )
+    return {
+        "features": list(rows) if isinstance(rows, list) else [],
+        "bodies": bodies,
+    }
+
+
+def with_metadata(
+    result: AdapterResult[Any], extra: dict[str, Any]
+) -> AdapterResult[Any]:
+    """``result`` with ``extra`` in its metadata, when it succeeded."""
+    if result.is_success and extra:
+        result.metadata = {**(result.metadata or {}), **extra}
+    return result
+
+
 # --- Geometry summary ------------------------------------------------------
 # Read-only helpers for ``get_model_geometry_summary``. None of them rebuilds
 # the model or touches the selection (COM pitfall #23), so the summary can be
@@ -1608,7 +1700,13 @@ class SolidWorksIOMixin:
             adapter.currentModel = active_model
         return adapter.currentModel
 
-    async def open_model(self, file_path: str) -> AdapterResult[SolidWorksModel]:
+    async def open_model(
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
+    ) -> AdapterResult[SolidWorksModel]:
         """Open a SolidWorks model file and set it as active on the adapter.
 
         A dialog SolidWorks shows while opening is cancelled by the watchdog,
@@ -1620,14 +1718,24 @@ class SolidWorksIOMixin:
 
         Args:
             file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
+            list_documents: Also put :func:`open_documents` in the metadata
+                (``open_documents``), read in the same operation.
+            summarize: Also put :func:`model_contents` of the opened document
+                in the metadata (``contents``).
 
         Returns:
             AdapterResult[SolidWorksModel]: Model metadata for the opened document.
         """
-        return self._open_document(file_path, OPEN_SILENT)
+        return self._open_document(
+            file_path, OPEN_SILENT, list_documents=list_documents, summarize=summarize
+        )
 
     async def open_model_read_only(
-        self, file_path: str
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Open a model read-only (``swOpenDocOptions_Silent | ReadOnly``).
 
@@ -1638,20 +1746,34 @@ class SolidWorksIOMixin:
 
         Args:
             file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
+            list_documents: As for :meth:`open_model`.
+            summarize: As for :meth:`open_model`.
 
         Returns:
             AdapterResult[SolidWorksModel]: As :meth:`open_model`.
         """
-        return self._open_document(file_path, OPEN_SILENT | OPEN_READ_ONLY)
+        return self._open_document(
+            file_path,
+            OPEN_SILENT | OPEN_READ_ONLY,
+            list_documents=list_documents,
+            summarize=summarize,
+        )
 
     def _open_document(
-        self, file_path: str, options: int
+        self,
+        file_path: str,
+        options: int,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Open a file with ``OpenDoc6`` ``options`` and make it the active document.
 
         Args:
             file_path: Path to a ``.sldprt``, ``.sldasm``, or ``.slddrw`` file.
             options: ``swOpenDocOptions_e`` flags.
+            list_documents: See :meth:`open_model`.
+            summarize: See :meth:`open_model`.
 
         Returns:
             AdapterResult[SolidWorksModel]: Model metadata for the opened
@@ -1663,6 +1785,8 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
             )
         resolved_path = os.path.abspath(file_path)
+        # What the operation reads for the metadata, besides the model.
+        extra: dict[str, Any] = {}
 
         def _kind() -> tuple[Any, str]:
             """The document's ``swDocumentTypes_e`` and type name, by extension."""
@@ -1704,6 +1828,10 @@ class SolidWorksIOMixin:
                 if active_config
                 else "Default"
             )
+            if summarize:
+                extra["contents"] = model_contents(adapter, adapter.currentModel)
+            if list_documents:
+                extra["open_documents"] = open_documents(adapter)
 
             return SolidWorksModel(
                 path=resolved_path,
@@ -1759,7 +1887,7 @@ class SolidWorksIOMixin:
         )
         dialog = _dialog_of(result)
         if dialog is None:
-            return result
+            return cast(AdapterResult[SolidWorksModel], with_metadata(result, extra))
         opened = cast(
             AdapterResult[SolidWorksModel],
             adapter._handle_com_operation("open_model", _open_anyway),
@@ -1767,10 +1895,14 @@ class SolidWorksIOMixin:
         if not opened.is_success:
             return result
         opened.metadata = {**(opened.metadata or {}), **_opened_after(dialog)}
-        return opened
+        return cast(AdapterResult[SolidWorksModel], with_metadata(opened, extra))
 
     async def close_model(
-        self, save: bool = False, overwrite_modified_references: bool = False
+        self,
+        save: bool = False,
+        overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Close the current SolidWorks model and optionally save first.
 
@@ -1780,6 +1912,9 @@ class SolidWorksIOMixin:
                 document open.
             overwrite_modified_references: Let that save overwrite the user's
                 modified files the assembly uses.
+            list_documents: Also put the documents still open (see
+                :func:`open_documents`) in the metadata, read in the same
+                operation.
 
         Returns:
             AdapterResult[Any]: Result of the close operation; a
@@ -1798,6 +1933,7 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR,
                 error="SolidWorks application is not connected",
             )
+        extra: dict[str, Any] = {}
 
         def _close() -> None:
             """Close the model document.
@@ -1819,15 +1955,22 @@ class SolidWorksIOMixin:
             title = adapter._get_attr_or_call(model, "GetTitle")
             app.CloseDoc(title)
             adapter.currentModel = None
+            if list_documents:
+                extra["open_documents"] = open_documents(adapter)
             return None
 
-        return _confirmation_or(adapter._handle_com_operation("close_model", _close))
+        return with_metadata(
+            _confirmation_or(adapter._handle_com_operation("close_model", _close)),
+            extra,
+        )
 
     async def create_part(
         self,
         name: str | None = None,
         units: str | None = None,
         template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Create a new part document and set it as active.
 
@@ -1841,6 +1984,8 @@ class SolidWorksIOMixin:
             template: Optional ``.prtdot`` path. When given the part is made
                 from it with ``NewDocument``; otherwise ``NewPart`` and then
                 the user-preference default templates are tried.
+            list_documents: Also put :func:`open_documents` in the metadata,
+                read in the same operation.
 
         Returns:
             AdapterResult[SolidWorksModel]: Metadata for the new part document.
@@ -1862,6 +2007,7 @@ class SolidWorksIOMixin:
                         "Expected one of: mm, cm, m, in, ft."
                     ),
                 )
+        extra: dict[str, Any] = {}
 
         def _create() -> SolidWorksModel:
             """Create a new part."""
@@ -1906,6 +2052,8 @@ class SolidWorksIOMixin:
                     properties["units"] = _apply_unit_system(adapter, model, unit_token)
                 except Exception as exc:  # noqa: BLE001 - surfaced, not raised
                     properties["units_error"] = str(exc)
+            if list_documents:
+                extra["open_documents"] = open_documents(adapter)
             return SolidWorksModel(
                 path="",
                 name=title,
@@ -1917,11 +2065,15 @@ class SolidWorksIOMixin:
 
         return cast(
             AdapterResult[SolidWorksModel],
-            adapter._handle_com_operation("create_part", _create),
+            with_metadata(adapter._handle_com_operation("create_part", _create), extra),
         )
 
     async def create_assembly(
-        self, name: str | None = None, template: str | None = None
+        self,
+        name: str | None = None,
+        template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Create a new assembly document and set it as active.
 
@@ -1930,6 +2082,8 @@ class SolidWorksIOMixin:
             template: Optional ``.asmdot`` path. When given the assembly is
                 made from it with ``NewDocument``; otherwise ``NewAssembly``
                 and then the user-preference default templates are tried.
+            list_documents: Also put :func:`open_documents` in the metadata,
+                read in the same operation.
 
         Returns:
             AdapterResult[SolidWorksModel]: Metadata for the new assembly document.
@@ -1939,6 +2093,7 @@ class SolidWorksIOMixin:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="Not connected to SolidWorks"
             )
+        extra: dict[str, Any] = {}
 
         def _create() -> SolidWorksModel:
             """Create a new assembly."""
@@ -1975,6 +2130,8 @@ class SolidWorksIOMixin:
             adapter._attempt(lambda: _sw_type_info.flag_doc(model, 2), default=0)
             adapter.currentModel = model
             title = self._read_model_title(model)
+            if list_documents:
+                extra["open_documents"] = open_documents(adapter)
             return SolidWorksModel(
                 path="",
                 name=title,
@@ -1986,7 +2143,9 @@ class SolidWorksIOMixin:
 
         return cast(
             AdapterResult[SolidWorksModel],
-            adapter._handle_com_operation("create_assembly", _create),
+            with_metadata(
+                adapter._handle_com_operation("create_assembly", _create), extra
+            ),
         )
 
     async def create_drawing(
@@ -2252,6 +2411,8 @@ class SolidWorksIOMixin:
         self,
         file_path: str | None = None,
         overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Save the active model to its current path or to a new file path.
 
@@ -2265,6 +2426,8 @@ class SolidWorksIOMixin:
                 once closed the document and wrote an empty part.
             overwrite_modified_references: Let an assembly save overwrite the
                 user's modified files it uses.
+            list_documents: Also put :func:`open_documents` (a Save As renames
+                the document) in the metadata, read in the same operation.
 
         Returns:
             AdapterResult[Any]: ``file_path``, ``saved_references`` and
@@ -2282,14 +2445,18 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
         model = adapter.currentModel
+        extra: dict[str, Any] = {}
 
-        return _confirmation_or(
-            adapter._handle_com_operation(
-                "save_file",
-                lambda: saving.save_document(
-                    adapter, model, file_path, overwrite_modified_references
-                ),
+        def _save() -> saving.NeedsConfirmation | dict[str, Any]:
+            outcome = saving.save_document(
+                adapter, model, file_path, overwrite_modified_references
             )
+            if list_documents and not isinstance(outcome, saving.NeedsConfirmation):
+                extra["open_documents"] = open_documents(adapter)
+            return outcome
+
+        return with_metadata(
+            _confirmation_or(adapter._handle_com_operation("save_file", _save)), extra
         )
 
     async def rebuild_model(
@@ -2484,7 +2651,7 @@ class SolidWorksIOMixin:
         )
 
     async def activate_document(
-        self, title_or_path: str
+        self, title_or_path: str, *, list_documents: bool = False
     ) -> AdapterResult[dict[str, Any]]:
         """Make an already-open document the active one.
 
@@ -2497,6 +2664,8 @@ class SolidWorksIOMixin:
         Args:
             title_or_path: A window title (``"bracket.SLDPRT"``), a full path,
                 or a bare file name of a document that is already open.
+            list_documents: Also put :func:`open_documents` in the metadata,
+                read in the same operation.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``activated`` (the title switched
@@ -2514,6 +2683,7 @@ class SolidWorksIOMixin:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="title_or_path is required"
             )
+        extra: dict[str, Any] = {}
 
         def _activate() -> dict[str, Any]:
             app = adapter.swApp
@@ -2596,6 +2766,8 @@ class SolidWorksIOMixin:
                         "take. A document loaded only inside an assembly has no "
                         "window to activate: open its file with open_model."
                     )
+            if list_documents:
+                extra["open_documents"] = open_documents(adapter)
             return {
                 "activated": str(match_title),
                 "verified": verified,
@@ -2604,7 +2776,9 @@ class SolidWorksIOMixin:
 
         return cast(
             AdapterResult[dict[str, Any]],
-            adapter._handle_com_operation("activate_document", _activate),
+            with_metadata(
+                adapter._handle_com_operation("activate_document", _activate), extra
+            ),
         )
 
     async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:

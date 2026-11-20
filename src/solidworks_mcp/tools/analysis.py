@@ -10,10 +10,10 @@ against expected values in one call.
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..adapters.base import SolidWorksAdapter
-from .input_compat import CompatInput
+from .input_compat import CompatInput, rename_aliases
 from .tool_boundary import (
     InvalidInputError,
     normalize_input,
@@ -452,22 +452,65 @@ def _query_reply(
     return reply
 
 
-class VerifyModelInput(BaseModel):
-    """Expectations for ``verify_model``; every field is optional.
+class GeometryExpectations(BaseModel):
+    """What a part should measure: volume, overall size and solid bodies.
 
-    Unknown fields are rejected so a misspelt expectation (``volume`` for
+    Checked against the geometry summary alone (:func:`check_geometry`), so
+    a feature tool can check them with the summary it read anyway. Unknown
+    fields are rejected so a misspelt expectation (``volume`` for
     ``volume_mm3``) fails loudly instead of silently not being checked.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    mass_kg: float | None = Field(
-        default=None, description="Expected mass in kg (depends on the material)"
-    )
     volume_mm3: float | None = Field(default=None, description="Expected volume, mm³")
     bounding_box_mm: tuple[float, float, float] | None = Field(
         default=None,
         description="Expected overall size [x, y, z] in mm, in model axes",
+    )
+    solid_body_count: int | None = Field(
+        default=None, ge=0, description="Expected number of solid bodies (parts)"
+    )
+    relative_tolerance: float = Field(
+        default=0.01,
+        ge=0,
+        description="Allowed relative error for mass and volume (0.01 = 1 %)",
+    )
+    length_tolerance_mm: float = Field(
+        default=0.1, ge=0, description="Allowed error per bounding-box axis, mm"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expected_prefix(cls, data: Any) -> Any:
+        """Take ``expected_volume_mm3`` for ``volume_mm3`` (``input_compat``)."""
+        return rename_aliases(cls, data)
+
+
+class FeatureExpectations(GeometryExpectations):
+    """A feature tool's ``expect``: at least one value to check."""
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse an ``expect`` that checks nothing."""
+        if (
+            self.volume_mm3 is None
+            and self.bounding_box_mm is None
+            and self.solid_body_count is None
+        ):
+            raise ValueError(
+                "expect needs volume_mm3, bounding_box_mm or solid_body_count"
+            )
+
+
+class VerifyModelInput(GeometryExpectations):
+    """Expectations for ``verify_model``; every field is optional.
+
+    The volume, size and solid-body checks are :class:`GeometryExpectations`';
+    the rest need more reads than the geometry summary.
+    """
+
+    mass_kg: float | None = Field(
+        default=None, description="Expected mass in kg (depends on the material)"
     )
     feature_count: int | None = Field(
         default=None,
@@ -478,9 +521,6 @@ class VerifyModelInput(BaseModel):
             "default planes are not counted"
         ),
     )
-    solid_body_count: int | None = Field(
-        default=None, ge=0, description="Expected number of solid bodies (parts)"
-    )
     component_count: int | None = Field(
         default=None, ge=0, description="Expected top-level components (assemblies)"
     )
@@ -490,14 +530,6 @@ class VerifyModelInput(BaseModel):
     no_interference: bool | None = Field(
         default=None,
         description="true to require that no components overlap (assemblies)",
-    )
-    relative_tolerance: float = Field(
-        default=0.01,
-        ge=0,
-        description="Allowed relative error for mass and volume (0.01 = 1 %)",
-    )
-    length_tolerance_mm: float = Field(
-        default=0.1, ge=0, description="Allowed error per bounding-box axis, mm"
     )
 
 
@@ -616,6 +648,81 @@ def _box_check(
     return _check("bounding_box_mm", want, size, "mm", passed, tolerance, note)
 
 
+def _size_checks(
+    expectations: GeometryExpectations, summary: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The volume and bounding-box checks ``expectations`` asks for."""
+    checks: list[dict[str, Any]] = []
+    if expectations.volume_mm3 is not None:
+        checks.append(
+            _relative_check(
+                "volume_mm3",
+                expectations.volume_mm3,
+                summary.get("volume_mm3"),
+                expectations.relative_tolerance,
+                "mm³",
+            )
+        )
+    if expectations.bounding_box_mm is not None:
+        checks.append(
+            _box_check(
+                expectations.bounding_box_mm,
+                summary.get("bounding_box_mm"),
+                expectations.length_tolerance_mm,
+            )
+        )
+    return checks
+
+
+#: The counts the geometry summary gives, with each one's unit.
+_SUMMARY_COUNTS = {
+    "solid_body_count": "bodies",
+    "component_count": "components",
+    "mate_count": "mates",
+}
+
+
+def _count_checks(
+    expectations: BaseModel, summary: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The summary-count checks ``expectations`` asks for, in a fixed order."""
+    return [
+        _exact_check(name, expected, summary.get(name), unit)
+        for name, unit in _SUMMARY_COUNTS.items()
+        if (expected := getattr(expectations, name, None)) is not None
+    ]
+
+
+def check_geometry(
+    expectations: GeometryExpectations, summary: dict[str, Any]
+) -> dict[str, Any]:
+    """``verify_model``'s verdict on what a geometry summary measured.
+
+    Used by the feature tools' ``expect``, with the summary they read after
+    the feature: the same checks, tolerances and verdict as ``verify_model``.
+
+    Args:
+        expectations: The volume, size and body count expected.
+        summary: ``get_model_geometry_summary``'s data (``{}`` when unread).
+
+    Returns:
+        dict[str, Any]: ``verdict`` (pass, fail or inconclusive), ``checks``
+        (as ``verify_model`` gives them) and ``message``.
+    """
+    checks = [
+        *_size_checks(expectations, summary),
+        *_count_checks(expectations, summary),
+    ]
+    verdict = _verdict(checks)
+    return {
+        "verdict": verdict,
+        "checks": checks,
+        "message": _verdict_message(
+            verdict, checks, str(summary.get("document_type") or "part")
+        ),
+    }
+
+
 def _verdict(checks: list[dict[str, Any]]) -> str:
     """Overall verdict: fail beats inconclusive beats pass."""
     if not checks:
@@ -709,7 +816,7 @@ def interference_pairs(
     }
 
 
-def _interference_message(data: dict[str, Any]) -> str:
+def interference_message(data: dict[str, Any]) -> str:
     """The count and the pairs that overlap most, in one line."""
     count = data.get("interference_count")
     if not isinstance(count, int):
@@ -1016,7 +1123,7 @@ async def register_analysis_tools(
         data.update(interference_pairs(list(data.get("interferences") or [])))
         return {
             "status": "success",
-            "message": _interference_message(data),
+            "message": interference_message(data),
             "data": data,
             "execution_time": result.execution_time,
         }
@@ -1443,25 +1550,7 @@ async def register_analysis_tools(
                 )
             checks.append(check)
 
-        if expectations.volume_mm3 is not None:
-            checks.append(
-                _relative_check(
-                    "volume_mm3",
-                    expectations.volume_mm3,
-                    summary.get("volume_mm3"),
-                    rel,
-                    "mm³",
-                )
-            )
-
-        if expectations.bounding_box_mm is not None:
-            checks.append(
-                _box_check(
-                    expectations.bounding_box_mm,
-                    summary.get("bounding_box_mm"),
-                    expectations.length_tolerance_mm,
-                )
-            )
+        checks += _size_checks(expectations, summary)
 
         if expectations.feature_count is not None:
             features_result = await adapter.list_features()
@@ -1480,14 +1569,7 @@ async def register_analysis_tools(
                 )
             )
 
-        for name, unit in (
-            ("solid_body_count", "bodies"),
-            ("component_count", "components"),
-            ("mate_count", "mates"),
-        ):
-            expected = getattr(expectations, name)
-            if expected is not None:
-                checks.append(_exact_check(name, expected, summary.get(name), unit))
+        checks += _count_checks(expectations, summary)
 
         if expectations.no_interference is not None:
             interference = await adapter.check_interference({})

@@ -18,15 +18,18 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parents[2] / "src" / "utils" / "measure_tool_cost.py"
 
 #: Characters of every listed description and input schema (all groups),
-#: measured at 240,653 (109,603 + 131,050) on 2026-11-19, and at 245,459
-#: (111,706 + 133,753) on 2026-11-20 with ``add_sketch_geometry`` (791 +
-#: 1,245), which lets an agent write 40 circles as rows in one call instead
-#: of 40 ``add_circle`` steps (speed plan items 2 and 7).
-TOTAL_BUDGET = 246_500
-#: Characters of the input schemas alone, measured at 133,753.
-SCHEMA_BUDGET = 134_500
-#: Characters of the core group, measured at 65,755.
-CORE_BUDGET = 67_000
+#: measured at 240,653 (109,603 + 131,050) on 2026-11-19. The 2026-11-20
+#: speed plan added ``add_sketch_geometry`` (791 + 1,245 characters; 40
+#: circles as rows in one call instead of 40 ``add_circle`` steps), and the
+#: feature tools' ``expect``, add_mate's ``check_interference`` and the
+#: document tools' ``open_documents`` (about 2,350, to save the read an agent
+#: made in the next turn): 248,651 (112,618 + 136,033) merged.
+TOTAL_BUDGET = 250_000
+#: Characters of the input schemas alone, measured at 136,033 (the
+#: ``expect`` field of eleven feature tools is most of their growth).
+SCHEMA_BUDGET = 137_000
+#: Characters of the core group, measured at 67,500.
+CORE_BUDGET = 69_000
 
 
 def _script() -> ModuleType:

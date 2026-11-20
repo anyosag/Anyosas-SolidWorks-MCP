@@ -52,7 +52,7 @@ async def test_close_the_active_document_and_the_leftovers() -> None:
 
     reply = await close(CloseModelInput(close_leftovers=True))
 
-    adapter.close_model.assert_awaited_once_with(False, False)
+    adapter.close_model.assert_awaited_once_with(False, False, list_documents=True)
     assert reply["status"] == "success"
     assert reply["message"] == (
         "Model closed successfully; closed 1 leftover document(s)"

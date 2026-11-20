@@ -33,6 +33,7 @@ from .cache.response_cache import CachePolicy, ResponseCache
 from .config import DeploymentMode, SolidWorksMCPConfig, load_config
 from .exceptions import SolidWorksMCPError
 from .skills import SERVER_INSTRUCTIONS, SKILL_DIR
+from .tools.input_compat import reshape_arguments
 from .tools.schema_compaction import CompactToolSchemas
 from .tools.tool_groups import GROUPS, group_tag, hidden_groups, parse_groups
 from .version import __version__
@@ -107,6 +108,35 @@ class _ConnectOnDemand(Middleware):
         return await call_next(context)
 
 
+class _ReshapeArguments(Middleware):
+    """Put right the common shape mistakes in a tool call before FastMCP validates it.
+
+    An agent that calls a tool whose schema isn't in its prompt sends a
+    model's fields without their ``input_data`` wrapper (``open_model`` with
+    a flat ``file_path``), no ``input_data`` at all for a tool that needs
+    nothing in it, or ``input_data`` as a JSON string. Each cost a retry turn.
+    :func:`~solidworks_mcp.tools.input_compat.reshape_arguments` says what is
+    accepted; a call it can't read unambiguously goes on unchanged and fails
+    validation as before.
+    """
+
+    async def on_call_tool(
+        self, context: MiddlewareContext[Any], call_next: Any
+    ) -> Any:
+        message = context.message
+        server = context.fastmcp_context.fastmcp if context.fastmcp_context else None
+        if server is not None and isinstance(message.arguments, dict):
+            tool = await server.get_tool(message.name)
+            fn = getattr(tool, "fn", None)
+            if callable(fn):
+                arguments = reshape_arguments(fn, message.arguments)
+                if arguments is not message.arguments:
+                    context = context.copy(
+                        message=message.model_copy(update={"arguments": arguments})
+                    )
+        return await call_next(context)
+
+
 class SolidWorksMCPServer:
     """Main SolidWorks MCP Server class.
 
@@ -161,6 +191,7 @@ class SolidWorksMCPServer:
         self._connect_task: asyncio.Task[bool] | None = None
         self._last_connect_failure: float | None = None
         self.mcp.add_middleware(_ConnectOnDemand(self))
+        self.mcp.add_middleware(_ReshapeArguments())
 
     @staticmethod
     def _env_truthy(value: str | None) -> bool:

@@ -4,10 +4,11 @@ Provides tools for creating and manipulating SolidWorks models, including parts,
 assemblies, drawings, and features like extrusions, revolves, etc.
 """
 
-from typing import Any, Literal
+from collections import Counter
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, WithJsonSchema
 
 from ..adapters.base import (
     AdapterResult,
@@ -23,6 +24,13 @@ from ..adapters.solidworks.edge_feature_check import warnings as edge_feature_wa
 from ..adapters.solidworks.plane_frame import add, scale, two_points, unit, vector
 from ..adapters.solidworks.rebuild_diagnostics import body_count_warning, issues_warning
 from ..adapters.solidworks.reference_geometry import LINE_MM
+from .analysis import (
+    FeatureExpectations,
+    check_geometry,
+    interference_message,
+    interference_pairs,
+)
+from .file_management import filter_features, with_open_documents
 from .input_compat import CompatInput
 from .reply_limits import limit_field, offset_field, page
 from .sketching import AddSketchTextInput, text_warnings
@@ -264,6 +272,162 @@ def _add_warnings(reply: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     return reply
 
 
+def _summary_data(measured: Any) -> dict[str, Any] | None:
+    """A geometry summary's data, from its result or as a plain dict."""
+    if isinstance(measured, dict):
+        return measured
+    if isinstance(measured, AdapterResult) and measured.is_success:
+        return measured.data if isinstance(measured.data, dict) else None
+    return None
+
+
+def _geometry_after(feature: Any) -> dict[str, Any] | None:
+    """The summary a fillet or chamfer read after itself (``geometry_after``)."""
+    properties = _result_value(feature, "properties", default=None)
+    after = properties.get("geometry_after") if isinstance(properties, dict) else None
+    return after if isinstance(after, dict) else None
+
+
+def _missed(check: dict[str, Any]) -> str:
+    """One failed check in words: ``volume_mm3 measured 1200 mm³, expected 1000``."""
+    unit = f" {check['unit']}" if check.get("unit") else ""
+    text = (
+        f"{check['name']} measured {check['actual']}{unit}, expected "
+        f"{check['expected']}"
+    )
+    return f"{text} ({check['note']})" if check.get("note") else text
+
+
+def meet_expectations(
+    reply: dict[str, Any], expect: Any, summary: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Check a feature's part against its ``expect``, as ``verify_model`` would.
+
+    The reply gets ``verification`` (``verdict``, ``checks``, ``message``, from
+    ``analysis.check_geometry``). A failed check is an error, not a success
+    carrying a failed check: the agent asked for an assertion, and an error
+    is what it and ``execute_workflow`` act on (a workflow stops there, and
+    ``rollback_on_error`` removes the feature). Its ``data`` is the reply,
+    the feature and its measurements included, and it says the feature is in
+    the model, so the agent fixes it rather than calling again.
+
+    Args:
+        reply: The feature tool's success reply.
+        expect: The tool's ``expect`` (a ``FeatureExpectations``), or None.
+        summary: The geometry summary read after the feature (None or ``{}``
+            when it couldn't be read: every check is then unmeasured).
+
+    Returns:
+        dict[str, Any]: ``reply``, with ``verification`` when ``expect`` was
+        given, and a ``warning`` when a check couldn't be measured.
+
+    Raises:
+        ToolOperationError: A check failed (``expectation_failed``).
+    """
+    if expect is None:
+        return reply
+    verification = check_geometry(expect, summary or {})
+    reply["verification"] = verification
+    checks = verification["checks"]
+    if verification["verdict"] == "fail":
+        missed = "; ".join(_missed(c) for c in checks if c["passed"] is False)
+        data = {
+            key: value
+            for key, value in reply.items()
+            if key not in ("status", "message", "execution_time")
+        }
+        raise ToolOperationError(
+            f"{reply.get('message')}, but the part does not meet `expect`: "
+            f"{missed}. The feature is in the model: change it (edit_feature) "
+            "or remove it (undo, delete_feature); calling again adds another.",
+            reply.get("execution_time"),
+            data,
+        )
+    unmeasured = [c["name"] for c in checks if c["passed"] is None]
+    if unmeasured:
+        _add_warnings(
+            reply,
+            [
+                f"`expect` could not check {', '.join(unmeasured)}: the part "
+                "couldn't be measured after the feature. Check it with "
+                "verify_model."
+            ],
+        )
+    return reply
+
+
+#: How many of the newest tree items ``open_model``'s summary names.
+_SUMMARY_LAST = 5
+#: How many solid bodies it names.
+_SUMMARY_BODIES = 10
+
+
+def model_summary(contents: Any) -> dict[str, Any] | None:
+    """``open_model``'s short summary of the tree and bodies it read.
+
+    The folders, origin and default planes every tree has are left out
+    (``list_features`` with ``include_standard: false``).
+
+    Args:
+        contents: The adapter's ``metadata["contents"]``: ``features`` (the
+            document's own rows, suppressed ones included) and ``bodies``
+            (solid-body names, None for an assembly or drawing).
+
+    Returns:
+        dict[str, Any] | None: ``features`` (how many), ``by_type`` (count of
+        each type, in tree order), ``last`` (the newest names, oldest first),
+        ``suppressed`` (when any) and, for a part, ``bodies`` (``count`` and
+        the first names); None when nothing was read.
+    """
+    if not isinstance(contents, dict) or not isinstance(contents.get("features"), list):
+        return None
+    rows = [
+        r
+        for r in contents["features"]
+        if isinstance(r, dict) and r.get("component") is None
+    ]
+    kept = filter_features(rows, include_standard=False)
+    summary: dict[str, Any] = {
+        "features": len(kept),
+        "by_type": dict(Counter(str(r.get("type") or "Unknown") for r in kept)),
+        "last": [str(r.get("name") or "") for r in kept[-_SUMMARY_LAST:]],
+    }
+    suppressed = sum(1 for r in kept if r.get("suppressed"))
+    if suppressed:
+        summary["suppressed"] = suppressed
+    bodies = contents.get("bodies")
+    if isinstance(bodies, list):
+        summary["bodies"] = {
+            "count": len(bodies),
+            "names": [str(b) for b in bodies[:_SUMMARY_BODIES]],
+        }
+    return summary
+
+
+#: What ``add_mate``'s ``interference`` keeps of ``check_interference``'s data.
+_INTERFERENCE_SUMMARY = (
+    "interference_found",
+    "interference_count",
+    "pair_count",
+    "total_volume_mm3",
+    "top_pairs",
+)
+
+
+def interference_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """``check_interference``'s data cut to its summary, for ``add_mate``.
+
+    Args:
+        data: The adapter's interference data (``interferences`` and counts).
+
+    Returns:
+        dict[str, Any]: The counts and ``top_pairs`` (see
+        ``analysis.interference_pairs``), without every interference.
+    """
+    full = {**data, **interference_pairs(list(data.get("interferences") or []))}
+    return {key: full[key] for key in _INTERFERENCE_SUMMARY if key in full}
+
+
 def _edge_feature_reply(
     kind: str, reply: dict[str, Any], feature: Any
 ) -> dict[str, Any]:
@@ -365,6 +529,23 @@ _REGIONS = (
     "with a warning"
 )
 
+_EXPECT = (
+    "Check after it: volume_mm3, bounding_box_mm [x, y, z], solid_body_count. As "
+    "verify_model checks them, within relative_tolerance (0.01) and "
+    "length_tolerance_mm (0.1); the reply's `verification` has the checks. A "
+    "mismatch is an `expectation_failed` error, the feature left in the model"
+)
+
+#: ``expect``'s type: validated as ``FeatureExpectations``, listed as a plain
+#: object whose description names its fields (the model's own schema would
+#: add five described fields to each feature tool's listing).
+_Expect = Annotated[FeatureExpectations | None, WithJsonSchema({"type": "object"})]
+
+
+def _expect_field() -> Any:
+    """The ``expect`` input of a feature tool."""
+    return Field(default=None, description=_EXPECT)
+
 
 def _regions_reply(block: dict[str, Any], applied: Any) -> list[str]:
     """Put ``regions`` in a feature's reply block; the automatic union's note."""
@@ -422,17 +603,18 @@ class CreatePartInput(CompatInput):
 
     Attributes:
         material (str | None): The material value.
-        name (str): The name value.
+        name (str | None): A label only; SolidWorks names the part.
         template (str | None): The template value.
         units (str | None): The units value.
     """
 
-    name: str = Field(
+    name: str | None = Field(
+        default=None,
         description=(
-            "A label for your own reference; SolidWorks names the new part "
-            "itself (Part1, ...) and the file takes the name of the path "
+            "A label for your own reference, optional; SolidWorks names the new "
+            "part itself (Part1, ...) and the file takes the name of the path "
             "you save it to with save_part"
-        )
+        ),
     )
     template: str | None = Field(
         default=None,
@@ -444,19 +626,13 @@ class CreatePartInput(CompatInput):
     material: str | None = Field(default=None, description="Material name")
 
     def model_post_init(self, __context: Any) -> None:
-        """Provide model post init support for the create part input.
+        """A blank label is no label.
 
         Args:
             __context (Any): The context value.
-
-        Returns:
-            None: None.
-
-        Raises:
-            ValueError: Name is required.
         """
-        if not self.name.strip():
-            raise ValueError("name is required")
+        if self.name is not None and not self.name.strip():
+            self.name = None
 
 
 class CreateExtrusionInput(CompatInput):
@@ -519,6 +695,7 @@ class CreateExtrusionInput(CompatInput):
     end_condition: str = Field(default="Blind", description="End condition type")
     merge_result: bool = Field(default=True, description="Merge with existing geometry")
     regions: Literal["all"] | None = Field(default=None, description=_REGIONS)
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the create extrusion input.
@@ -581,6 +758,7 @@ class CreateRevolveInput(CompatInput):
         default=None, description="Thickness for thin wall feature in mm"
     )
     merge_result: bool = Field(default=True, description="Merge with existing geometry")
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the create revolve input.
@@ -637,6 +815,7 @@ class CreateCutRevolveInput(CompatInput):
         default=False,
         description="Revolve `angle` degrees each way from the sketch (180 at most)",
     )
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         """Refuse a two-way revolve of more than a full turn.
@@ -666,6 +845,7 @@ class CreateSweepInput(BaseModel):
     twist_along_path: bool = Field(default=False, description="Twist along path")
     twist_angle: float = Field(default=0.0, description="Twist angle in degrees")
     merge_result: bool = Field(default=True, description="Merge with existing geometry")
+    expect: _Expect = _expect_field()
 
 
 class CreateLoftInput(BaseModel):
@@ -688,6 +868,7 @@ class CreateLoftInput(BaseModel):
     )
     end_tangent: str | None = Field(default=None, description="End tangent condition")
     merge_result: bool = Field(default=True, description="Merge with existing geometry")
+    expect: _Expect = _expect_field()
 
 
 class GetDimensionInput(CompatInput):
@@ -880,6 +1061,7 @@ class CreateCutExtrudeInput(CompatInput):
         ),
     )
     regions: Literal["all"] | None = Field(default=None, description=_REGIONS)
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         if self.depth <= 0:
@@ -1111,6 +1293,7 @@ class AddFilletInput(CompatInput):
             "rebuilds); they are selected first. Not with edge_names"
         ),
     )
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         if self.radius <= 0:
@@ -1171,6 +1354,7 @@ class AddChamferInput(CompatInput):
             "rebuilds); they are selected first. Not with edge_names"
         ),
     )
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         if self.distance <= 0:
@@ -1184,16 +1368,17 @@ class CreateAssemblyInput(CompatInput):
     """Input schema for creating a new assembly.
 
     Attributes:
-        name (str): The name value.
+        name (str | None): A label only; SolidWorks names the assembly.
         template (str | None): The template value.
     """
 
-    name: str = Field(
+    name: str | None = Field(
+        default=None,
         description=(
-            "A label for your own reference; SolidWorks names the new assembly "
-            "itself (Assem1, ...) and the file takes the name of the path "
-            "you save it to with save_assembly"
-        )
+            "A label for your own reference, optional; SolidWorks names the new "
+            "assembly itself (Assem1, ...) and the file takes the name of the "
+            "path you save it to with save_assembly"
+        ),
     )
     template: str | None = Field(
         default=None,
@@ -1808,6 +1993,13 @@ class AddMateInput(CompatInput):
             "you meant)"
         ),
     )
+    check_interference: bool = Field(
+        default=False,
+        description=(
+            "Then check interference as check_interference does; summary in "
+            "`interference`. Hidden components are left out"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if not self.component_a.strip() or not self.component_b.strip():
@@ -2210,6 +2402,7 @@ class MirrorFeatureInput(CompatInput):
         "built from a loft or sweep - a feature mirror only resolves when "
         "the feature's own sketch sits on the mirror plane",
     )
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         if not self.features:
@@ -2275,6 +2468,7 @@ class PatternCircularInput(CompatInput):
     reverse_direction: bool = Field(
         default=False, description="Pattern the other way round the axis"
     )
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         if not self.features:
@@ -2403,6 +2597,7 @@ class PatternLinearInput(CompatInput):
         default=False,
         description="Repeat whole solid bodies instead of features",
     )
+    expect: _Expect = _expect_field()
 
     def model_post_init(self, __context: Any) -> None:
         """Refuse a pattern SolidWorks couldn't make.
@@ -2493,16 +2688,17 @@ class CreateDrawingInput(CompatInput):
     """Input schema for creating a new drawing.
 
     Attributes:
-        name (str): The name value.
+        name (str | None): A label only; SolidWorks names the drawing.
         template (str | None): The template value.
     """
 
-    name: str = Field(
+    name: str | None = Field(
+        default=None,
         description=(
-            "A label for your own reference; SolidWorks names the new drawing "
-            "itself (Draw1, ...) and the file takes the name of the path "
+            "A label for your own reference, optional; SolidWorks names the new "
+            "drawing itself (Draw1, ...) and the file takes the name of the path "
             "you save it to with save_file"
-        )
+        ),
     )
     template: str | None = Field(
         default=None,
@@ -2545,6 +2741,22 @@ async def register_modeling_tools(
             picked = await adapter.select_edges({"edge_ids": list(edge_ids)})
             require_success(picked, context="Failed to select the edges by id")
 
+    async def _expected(
+        reply: dict[str, Any], expect: Any, measured: Any = None
+    ) -> dict[str, Any]:
+        """:func:`meet_expectations` with the part's summary after the feature.
+
+        ``measured`` is the summary the tool already read after the feature
+        (a result or its data), so checking costs no call; a tool that read
+        none reads it now, only when ``expect`` was given.
+        """
+        if expect is None:
+            return reply
+        summary = _summary_data(measured)
+        if summary is None:
+            summary = _summary_data(await _read_summary(adapter))
+        return meet_expectations(reply, expect, summary)
+
     @mcp.tool()
     async def open_model(input_data: OpenModelInput) -> dict[str, Any]:
         """Open a part, assembly or drawing from disk and make it the active document.
@@ -2555,9 +2767,11 @@ async def register_modeling_tools(
         (`get_feature_definition`, `get_sketch`). Needs: the file on disk (a vault
         file must be checked out). Changes: opens the document; nothing is written.
         Returns: `model` with `title`, `type`, `path`, `configuration` and
-        `read_only` (read back from SolidWorks), and a `warning` quoting a dialog
-        SolidWorks showed (and the server cancelled) when the file opened anyway, or
-        when a read-only open found the document already open for editing.
+        `read_only` (read back from SolidWorks); `summary` of its tree (`features`,
+        `by_type`, the `last` 5, a part's `bodies`); `open_documents` (those with a
+        window: `title`, `type`, `active`, `modified`); and a `warning` quoting a
+        dialog SolidWorks showed (and the server cancelled) when the file opened
+        anyway, or when a read-only open found it already open for editing.
 
         Args:
             input_data: The file. `file_path` (.sldprt, .sldasm or .slddrw) is
@@ -2574,9 +2788,13 @@ async def register_modeling_tools(
                 "The active adapter cannot open a file read-only; nothing was "
                 "opened. Open it without read_only, and don't save it.",
             )
-            result = await adapter.open_model_read_only(input_data.file_path)
+            result = await adapter.open_model_read_only(
+                input_data.file_path, list_documents=True, summarize=True
+            )
         else:
-            result = await adapter.open_model(input_data.file_path)
+            result = await adapter.open_model(
+                input_data.file_path, list_documents=True, summarize=True
+            )
 
         require_success(result, context="Failed to open model")
         model = result.data
@@ -2605,9 +2823,15 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        metadata = getattr(result, "metadata", None)
+        summary = model_summary(
+            metadata.get("contents") if isinstance(metadata, dict) else None
+        )
+        if summary is not None:
+            reply["summary"] = summary
+        with_open_documents(reply, result)
         warnings: list[str] = []
         # A dialog SolidWorks showed while opening, cancelled; the file opened.
-        metadata = getattr(result, "metadata", None)
         dialog_warning = metadata.get("warning") if isinstance(metadata, dict) else None
         if isinstance(dialog_warning, str) and dialog_warning:
             warnings.append(dialog_warning)
@@ -2629,25 +2853,27 @@ async def register_modeling_tools(
         given, and assigns `material` if given. The part is not saved until
         `save_part`. Needs: SolidWorks running. Changes: opens a new part document.
         Returns: `part` with `name`, `units`, `template` and `material` (the one
-        assigned, or null), plus a `warning` when the material couldn't be assigned;
-        the part is created either way.
+        assigned, or null), `open_documents` (`title`, `type`, `active`,
+        `modified`), and a `warning` when the material couldn't be assigned; the
+        part is created either way.
 
         Args:
-            input_data: The part. `name` is required but only a label: the reply
-                gives SolidWorks' own name (Part1, ...); `template`, `units` (mm, cm, m, in, ft) and
-                `material` (a name from `list_available_materials`) are optional.
+            input_data: The part. Nothing is required: `name` is only a label (the
+                reply gives SolidWorks' own name, Part1, ...); `template`, `units`
+                (mm, cm, m, in, ft) and `material` (a name from
+                `list_available_materials`) are optional.
 
         Returns:
             dict[str, Any]: The new part.
         """
         input_data = normalize_input(input_data, CreatePartInput)
         result = await adapter.create_part(
-            input_data.name, input_data.units, input_data.template
+            input_data.name, input_data.units, input_data.template, list_documents=True
         )
 
         require_success(result, context="Failed to create part")
         model = result.data
-        part_name = _result_value(model, "name", default=input_data.name)
+        part_name = _result_value(model, "name", default=input_data.name or "Part")
         units = _result_value(model, "units", default=input_data.units or "mm")
         material = None
         warning = None
@@ -2673,6 +2899,7 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        with_open_documents(reply, result)
         if warning:
             reply["warning"] = warning
         return reply
@@ -2683,32 +2910,40 @@ async def register_modeling_tools(
 
         Uses `template` (an .asmdot) or the default assembly template. It is not saved
         until `save_assembly`. Needs: SolidWorks running. Changes: opens a new assembly
-        document. Returns: `assembly` with `name` and `template`. Then call
+        document. Returns: `assembly` with `name` and `template`, and
+        `open_documents` (`title`, `type`, `active`, `modified`). Then call
         `insert_component` for each part.
 
         Args:
-            input_data: The assembly. `name` is required but only a label: the
-                reply gives SolidWorks' own name (Assem1, ...); `template` has a
-                default.
+            input_data: The assembly. Nothing is required: `name` is only a label
+                (the reply gives SolidWorks' own name, Assem1, ...); `template` has
+                a default.
 
         Returns:
             dict[str, Any]: The new assembly.
         """
         input_data = normalize_input(input_data, CreateAssemblyInput)
-        result = await adapter.create_assembly(input_data.name, input_data.template)
+        result = await adapter.create_assembly(
+            input_data.name, input_data.template, list_documents=True
+        )
 
         require_success(result, context="Failed to create assembly")
         model = result.data
-        assembly_name = _result_value(model, "name", default=input_data.name)
-        return {
-            "status": "success",
-            "message": f"Created new assembly: {assembly_name}",
-            "assembly": {
-                "name": assembly_name,
-                "template": input_data.template,
+        assembly_name = _result_value(
+            model, "name", default=input_data.name or "Assembly"
+        )
+        return with_open_documents(
+            {
+                "status": "success",
+                "message": f"Created new assembly: {assembly_name}",
+                "assembly": {
+                    "name": assembly_name,
+                    "template": input_data.template,
+                },
+                "execution_time": result.execution_time,
             },
-            "execution_time": result.execution_time,
-        }
+            result,
+        )
 
     @mcp.tool()
     async def create_drawing(input_data: CreateDrawingInput) -> dict[str, Any]:
@@ -2720,9 +2955,9 @@ async def register_modeling_tools(
         new drawing document. Returns: `drawing` with `name` and `template`.
 
         Args:
-            input_data: The drawing. `name` is required but only a label: the
-                reply gives SolidWorks' own name (Draw1, ...); `template` has a
-                default.
+            input_data: The drawing. Nothing is required: `name` is only a label
+                (the reply gives SolidWorks' own name, Draw1, ...); `template` has
+                a default.
 
         Returns:
             dict[str, Any]: The new drawing.
@@ -2732,7 +2967,9 @@ async def register_modeling_tools(
 
         require_success(result, context="Failed to create drawing")
         model = result.data
-        drawing_name = _result_value(model, "name", default=input_data.name)
+        drawing_name = _result_value(
+            model, "name", default=input_data.name or "Drawing"
+        )
         return {
             "status": "success",
             "message": f"Created new drawing: {drawing_name}",
@@ -2755,7 +2992,8 @@ async def register_modeling_tools(
         active document, unless `keep_active`. Changes: closes the document, and with
         `save` writes it first, without SolidWorks dialogs; a save that fails, or that
         would overwrite the user's own modified part files (`confirmation_required`),
-        leaves the document open. Returns: `saved`, whether a save was asked for, and
+        leaves the document open. Returns: `saved`, whether a save was asked for,
+        `open_documents` (those left: `title`, `type`, `active`, `modified`), and
         with `close_leftovers` `leftovers` (`closed`, `still_loaded`,
         `kept_modified`).
 
@@ -2770,9 +3008,12 @@ async def register_modeling_tools(
         input_data = normalize_input(input_data, CloseModelInput)
         execution_time = 0.0
         closed_active = False
+        result = None
         if not input_data.keep_active:
             result = await adapter.close_model(
-                input_data.save, input_data.overwrite_modified_references
+                input_data.save,
+                input_data.overwrite_modified_references,
+                list_documents=True,
             )
             nothing_open = (
                 input_data.close_leftovers
@@ -2788,6 +3029,7 @@ async def register_modeling_tools(
             "saved": input_data.save and closed_active,
             "execution_time": execution_time,
         }
+        with_open_documents(reply, result)
         if not input_data.close_leftovers:
             return reply
         require_capability(
@@ -2849,7 +3091,8 @@ async def register_modeling_tools(
             input_data: The extrusion. `depth` (mm) is required; `sketch_name`,
                 `end_condition`, `both_directions`, `reverse_direction`,
                 `start_offset_mm`, `draft_angle`/`draft_outward`,
-                `thin_feature`/`thin_thickness` and `merge_result` have defaults.
+                `thin_feature`/`thin_thickness` and `merge_result` have defaults;
+                `expect` is optional.
 
         Returns:
             dict[str, Any]: The created feature.
@@ -2903,7 +3146,8 @@ async def register_modeling_tools(
             "extrusion": extrusion,
             "execution_time": result.execution_time,
         }
-        return _add_warnings(_attach_measured_change(reply, before, after), notes)
+        reply = _add_warnings(_attach_measured_change(reply, before, after), notes)
+        return await _expected(reply, input_data.expect, after)
 
     @mcp.tool()
     async def create_revolve(input_data: CreateRevolveInput) -> dict[str, Any]:
@@ -2922,7 +3166,8 @@ async def register_modeling_tools(
         Args:
             input_data: The revolve. `angle` (degrees, 360 for a full turn) is
                 required; `sketch_name`, `axis_entity`, `both_directions`,
-                `reverse_direction`, `thin_feature` and `merge_result` have defaults.
+                `reverse_direction`, `thin_feature` and `merge_result` have defaults;
+                `expect` is optional.
 
         Returns:
             dict[str, Any]: The created feature.
@@ -2959,7 +3204,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
-        return _attach_measured_change(reply, before, after)
+        reply = _attach_measured_change(reply, before, after)
+        return await _expected(reply, input_data.expect, after)
 
     @mcp.tool()
     async def create_cut_revolve(input_data: CreateCutRevolveInput) -> dict[str, Any]:
@@ -2980,7 +3226,8 @@ async def register_modeling_tools(
         Args:
             input_data: The cut. Everything has a default: `angle` 360,
                 `sketch_name` and `axis_entity` from the sketch closed last and
-                its centreline, `reverse_direction` and `both_directions` off.
+                its centreline, `reverse_direction` and `both_directions` off,
+                no `expect`.
 
         Returns:
             dict[str, Any]: The cut made.
@@ -3012,7 +3259,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
-        return _attach_measured_change(reply, before, after)
+        reply = _attach_measured_change(reply, before, after)
+        return await _expected(reply, input_data.expect, after)
 
     @mcp.tool()
     async def get_dimension(input_data: GetDimensionInput) -> dict[str, Any]:
@@ -3140,18 +3388,17 @@ async def register_modeling_tools(
         tried only when that one has no material. `direction_flipped` says the cut
         went the other way. For a sketch inside the body, use MidPlane (blind) or
         ThroughAllBoth. `start_offset_mm` starts the cut off the sketch plane; a
-        `draft_angle` narrows it with depth unless `draft_outward`. For contours that
-        cross, `regions: "all"` cuts their union. Needs: an open part with a solid body.
-        Changes: adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`,
-        `sketch_name`, `direction_flipped`, `cut_toward` (e.g. "-Y") and the
-        options set) and `measured_change` (volume, box and body count before and
-        after).
+        `draft_angle` narrows it with depth unless `draft_outward`. Contours that
+        cross: `regions: "all"`. Needs: an open part with a solid body. Changes:
+        adds a Cut-Extrude feature. Returns: `cut_extrude` (`name`, `sketch_name`,
+        `direction_flipped`, `cut_toward` and the options set) and
+        `measured_change` (volume, box, body count before and after).
 
         Args:
             input_data: The cut. `depth` (mm) is required; `sketch_name`,
                 `end_condition` (Blind, MidPlane, ThroughAll, ThroughAllBoth),
                 `both_directions`, `reverse_direction`, `start_offset_mm` and
-                `draft_angle`/`draft_outward` have defaults.
+                `draft_angle`/`draft_outward` have defaults; `expect` is optional.
 
         Returns:
             dict[str, Any]: The created cut.
@@ -3215,9 +3462,10 @@ async def register_modeling_tools(
         reply["cut_extrude"].update(_offset_and_draft(input_data))
         notes = _regions_reply(reply["cut_extrude"], feature_params)
         reply = _attach_measured_change(reply, before, after)
-        return _add_warnings(
+        reply = _add_warnings(
             _flag_a_shallow_cut(reply, feature_params, input_data), notes
         )
+        return await _expected(reply, input_data.expect, after)
 
     async def _text_sketch(
         input_data: EmbossTextInput,
@@ -3383,7 +3631,7 @@ async def register_modeling_tools(
 
         Args:
             input_data: The fillet. `radius` (mm) is required; `edge_names`
-                defaults to the current selection.
+                defaults to the current selection; `expect` is optional.
 
         Returns:
             dict[str, Any]: The created fillet.
@@ -3405,7 +3653,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
-        return _edge_feature_reply("fillet", reply, feature)
+        reply = _edge_feature_reply("fillet", reply, feature)
+        return await _expected(reply, input_data.expect, _geometry_after(feature))
 
     @mcp.tool()
     async def add_chamfer(input_data: AddChamferInput) -> dict[str, Any]:
@@ -3424,7 +3673,7 @@ async def register_modeling_tools(
 
         Args:
             input_data: The chamfer. `distance` (mm) is required; `edge_names`
-                defaults to the current selection.
+                defaults to the current selection; `expect` is optional.
 
         Returns:
             dict[str, Any]: The created chamfer.
@@ -3453,7 +3702,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
-        return _edge_feature_reply("chamfer", reply, feature)
+        reply = _edge_feature_reply("chamfer", reply, feature)
+        return await _expected(reply, input_data.expect, _geometry_after(feature))
 
     @mcp.tool()
     async def create_sweep(input_data: CreateSweepInput) -> dict[str, Any]:
@@ -3467,7 +3717,7 @@ async def register_modeling_tools(
         Args:
             input_data: The sweep. `path` (the path sketch's name) is required;
                 `twist_along_path`, `twist_angle` (degrees) and `merge_result` have
-                defaults.
+                defaults; `expect` is optional.
 
         Returns:
             dict[str, Any]: The created sweep.
@@ -3482,7 +3732,7 @@ async def register_modeling_tools(
         result = await adapter.create_sweep(params)
         require_success(result, context="Failed to create sweep")
         feature = result.data
-        return {
+        reply = {
             "status": "success",
             "message": f"Created sweep: {_result_value(feature, 'feature_name', 'name', default='Sweep')}",
             "sweep": {
@@ -3493,6 +3743,7 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        return await _expected(reply, input_data.expect)
 
     @mcp.tool()
     async def create_loft(input_data: CreateLoftInput) -> dict[str, Any]:
@@ -3506,7 +3757,7 @@ async def register_modeling_tools(
         Args:
             input_data: The loft. `profiles` (sketch names, in order) is required;
                 `guide_curves`, `start_tangent`, `end_tangent` and `merge_result`
-                have defaults.
+                have defaults; `expect` is optional.
 
         Returns:
             dict[str, Any]: The created loft.
@@ -3522,7 +3773,7 @@ async def register_modeling_tools(
         result = await adapter.create_loft(params)
         require_success(result, context="Failed to create loft")
         feature = result.data
-        return {
+        reply = {
             "status": "success",
             "message": f"Created loft: {_result_value(feature, 'feature_name', 'name', default='Loft')}",
             "loft": {
@@ -3532,6 +3783,7 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
+        return await _expected(reply, input_data.expect)
 
     @mcp.tool()
     async def insert_component(input_data: InsertComponentInput) -> dict[str, Any]:
@@ -3594,14 +3846,15 @@ async def register_modeling_tools(
         didn't mean: `flip: true` puts it on the other. Needs: an open assembly with
         both components. Changes: adds a mate and may move components. Returns: `mate`
         with `mate_type`, `components`, `entities`, `flipped` (distance and angle
-        mates), `geometry_moved` and `moved_components`; a `warning` when a flip
-        didn't take.
+        mates), `geometry_moved` and `moved_components`; with `check_interference`,
+        `interference` (check_interference's counts and `top_pairs`); a `warning`
+        when a flip didn't take or the check failed.
 
         Args:
             input_data: The mate. `component_a` and `component_b` are required;
                 each side takes `entity_*` or `face_*` (default "Front Plane");
-                `mate_type` (coincident), `alignment`, `distance` (mm) and `angle`
-                (degrees) have defaults.
+                `mate_type` (coincident), `alignment`, `distance` (mm), `angle`
+                (degrees) and `check_interference` (off) have defaults.
 
         Returns:
             dict[str, Any]: The mate added.
@@ -3643,7 +3896,36 @@ async def register_modeling_tools(
                 "is on the side SolidWorks chose. Check its position, then delete the "
                 "mate and add it again, or flip it in SolidWorks."
             )
+        if input_data.check_interference:
+            await _interference_after_mate(reply)
         return reply
+
+    async def _interference_after_mate(reply: dict[str, Any]) -> None:
+        """Check the assembly for interference and put the summary in ``reply``.
+
+        As ``check_interference`` checks by default (hidden components left
+        out). The mate stays whatever the check gives: a failed check is a
+        ``warning``, not an error.
+        """
+        checker = getattr(adapter, "check_interference", None)
+        checked = await checker({"ignore_hidden": True}) if callable(checker) else None
+        if checked is None or not checked.is_success:
+            error = (
+                checked.error if checked is not None else None
+            ) or "the adapter can't check interference"
+            reply["interference"] = {"error": error}
+            _add_warnings(
+                reply,
+                [
+                    f"The mate was added, but the interference check failed: "
+                    f"{error}. Run check_interference."
+                ],
+            )
+            return
+        summary = interference_summary(dict(checked.data or {}))
+        reply["interference"] = summary
+        said = interference_message(summary)
+        reply["message"] += f"; {said[:1].lower()}{said[1:]}"
 
     @mcp.tool()
     async def set_component_state(input_data: SetComponentStateInput) -> dict[str, Any]:
@@ -4570,7 +4852,7 @@ async def register_modeling_tools(
         Args:
             input_data: The mirror. `features` (at least one name) and
                 `mirror_plane` (e.g. "Right Plane") are required; `merge` and
-                `mirror_bodies` are on.
+                `mirror_bodies` are on; `expect` is optional.
 
         Returns:
             dict[str, Any]: The mirror created.
@@ -4584,13 +4866,14 @@ async def register_modeling_tools(
         )
         require_success(result, context="Failed to mirror feature")
         data = result.data if isinstance(result.data, dict) else {}
-        return {
+        reply = {
             "status": "success",
             "message": f"Mirrored {', '.join(input_data.features)} "
             f"about {input_data.mirror_plane}",
             "mirror": data,
             "execution_time": result.execution_time,
         }
+        return await _expected(reply, input_data.expect)
 
     @mcp.tool()
     async def pattern_circular(input_data: PatternCircularInput) -> dict[str, Any]:
@@ -4611,7 +4894,7 @@ async def register_modeling_tools(
         Args:
             input_data: The pattern. `features` (at least one), `axis` and `count`
                 (2 or more, the original included) are required; then `angle` or
-                `step_angle`, and `reverse_direction` (off).
+                `step_angle`, `reverse_direction` (off) and `expect` (optional).
 
         Returns:
             dict[str, Any]: The pattern created.
@@ -4647,7 +4930,7 @@ async def register_modeling_tools(
         data["step_angle"] = round(spacing["step_angle"], 9)
         data["total_angle"] = round(spacing["total_angle"], 9)
         data.setdefault("reverse_direction", input_data.reverse_direction)
-        return {
+        reply = {
             "status": "success",
             "message": (
                 f"Patterned {', '.join(input_data.features)} around "
@@ -4657,6 +4940,7 @@ async def register_modeling_tools(
             "pattern": data,
             "execution_time": result.execution_time,
         }
+        return await _expected(reply, input_data.expect)
 
     @mcp.tool()
     async def pattern_linear(input_data: PatternLinearInput) -> dict[str, Any]:
@@ -4680,7 +4964,8 @@ async def register_modeling_tools(
             input_data: The pattern. `features`, `direction`, `count` (2 or
                 more, the original included) and `spacing` (mm) are required;
                 `direction2` with `count2` and `spacing2` adds rows, and
-                `reverse_direction`, `reverse_direction2` and `bodies` are off.
+                `reverse_direction`, `reverse_direction2` and `bodies` are off;
+                `expect` is optional.
 
         Returns:
             dict[str, Any]: The pattern created.
@@ -4729,7 +5014,7 @@ async def register_modeling_tools(
                 "the instances land on the part.",
                 execution_time=result.execution_time,
             )
-        return reply
+        return await _expected(reply, input_data.expect, after)
 
     @mcp.tool()
     async def measure_clearance(input_data: MeasureClearanceInput) -> dict[str, Any]:

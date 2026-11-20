@@ -70,6 +70,7 @@ OPERATION_STOPPED = "operation_stopped"
 API_SNIPPET_FAILED = "api_snippet_failed"
 EXPORT_INVALID = "export_invalid"
 EDGE_SCAN_TOO_LARGE = "edge_scan_too_large"
+EXPECTATION_FAILED = "expectation_failed"
 
 DEFAULT_RULES: tuple[ErrorRule, ...] = (
     # First: a dialog's own text can contain anything ("file not found",
@@ -96,6 +97,20 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "again with `overwrite_modified_references: true`."
         ),
         patterns=(r"would overwrite \d+ modified file",),
+    ),
+    # Early: the message quotes the feature tool's own message, which can
+    # name anything a later rule matches.
+    ErrorRule(
+        error_type=EXPECTATION_FAILED,
+        hint=(
+            "The feature was made and is in the model, but the part doesn't "
+            "measure what `expect` said; `data.verification.checks` has each "
+            "value expected and measured. Don't call the tool again, which adds "
+            "a second feature: change the feature (edit_feature) or remove it "
+            "(undo, or delete_feature), and check again with verify_model. If "
+            "the expectation was wrong, carry on."
+        ),
+        patterns=(r"but the part does not meet `expect`",),
     ),
     # Before the COM rules: a snippet's own exception text can name any
     # COM error, and the snippet, not the server, is what to fix.
@@ -387,6 +402,7 @@ NOT_BREAKER_FAILURES = frozenset(
         INVALID_INPUT,
         "not_found",
         EDGE_SCAN_TOO_LARGE,
+        EXPECTATION_FAILED,
     }
 )
 

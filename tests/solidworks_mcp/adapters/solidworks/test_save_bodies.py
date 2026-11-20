@@ -250,6 +250,45 @@ async def test_a_dialog_stays_an_error_when_nothing_was_written(tmp_path: Path) 
     assert app.active is master
 
 
+async def test_the_documents_left_open_are_listed_in_the_same_operation(
+    tmp_path: Path,
+) -> None:
+    app, master, _manager = _master(tmp_path)
+    adapter = _Adapter(app, master)
+
+    result = await adapter.save_body_as_part(
+        "Comb", str(tmp_path / "comb.sldprt"), list_documents=True
+    )
+
+    assert result.is_success, result.error
+    assert adapter.operations == ["save_body_as_part"]
+    # The derived part and the untitled assembly were closed first.
+    assert result.metadata["open_documents"] == [
+        {
+            "title": "TheDipper.SLDPRT",
+            "type": "Part",
+            "active": True,
+            "modified": False,
+        }
+    ]
+
+
+async def test_a_cancelled_dialog_keeps_the_list(tmp_path: Path) -> None:
+    app, master, _manager = _master(tmp_path)
+    adapter = _Adapter(app, master)
+    adapter.dialog = DIALOG
+
+    result = await adapter.save_body_as_part(
+        "Comb", str(tmp_path / "comb.sldprt"), list_documents=True
+    )
+
+    assert result.is_success
+    assert "holds the body" in result.metadata["warning"]
+    assert [d["title"] for d in result.metadata["open_documents"]] == [
+        "TheDipper.SLDPRT"
+    ]
+
+
 async def test_failures(tmp_path: Path) -> None:
     app, master, manager = _master(tmp_path)
     target = str(tmp_path / "comb.sldprt")

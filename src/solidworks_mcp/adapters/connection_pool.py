@@ -509,26 +509,55 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
 
     # Model operations
 
-    async def open_model(self, file_path: str) -> AdapterResult[SolidWorksModel]:
+    async def open_model(
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
+    ) -> AdapterResult[SolidWorksModel]:
         """Open model using pool.
 
         Args:
             file_path (str): Path to the target file.
+            list_documents (bool): See ``SolidWorksAdapter.open_model``;
+                passed on only when set.
+            summarize (bool): The same.
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
         """
+        extras = {
+            name: True
+            for name, on in (
+                ("list_documents", list_documents),
+                ("summarize", summarize),
+            )
+            if on
+        }
         return await self._execute_with_pool(
-            "open_model", lambda adapter: adapter.open_model(file_path)
+            "open_model", lambda adapter: adapter.open_model(file_path, **extras)
         )
 
     async def open_model_read_only(
-        self, file_path: str
+        self,
+        file_path: str,
+        *,
+        list_documents: bool = False,
+        summarize: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Open a model read-only using pool."""
+        extras = {
+            name: True
+            for name, on in (
+                ("list_documents", list_documents),
+                ("summarize", summarize),
+            )
+            if on
+        }
         return await self._execute_with_pool(
             "open_model_read_only",
-            lambda adapter: adapter.open_model_read_only(file_path),
+            lambda adapter: adapter.open_model_read_only(file_path, **extras),
         )
 
     async def get_feature_definition(self, name: str) -> AdapterResult[dict[str, Any]]:
@@ -572,39 +601,55 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         )
 
     async def close_model(
-        self, save: bool = False, overwrite_modified_references: bool = False
+        self,
+        save: bool = False,
+        overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Close model using pool.
 
         Args:
             save (bool): The save value. Defaults to False.
             overwrite_modified_references (bool): See ``SolidWorksAdapter.close_model``.
+            list_documents (bool): See ``SolidWorksAdapter.close_model``;
+                passed on only when set.
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
         """
+        extras = {"list_documents": True} if list_documents else {}
         return await self._execute_with_pool(
             "close_model",
-            lambda adapter: adapter.close_model(save, overwrite_modified_references),
+            lambda adapter: adapter.close_model(
+                save, overwrite_modified_references, **extras
+            ),
         )
 
     async def save_file(
         self,
         file_path: str | None = None,
         overwrite_modified_references: bool = False,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[Any]:
         """Save model using pool.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
             overwrite_modified_references (bool): See ``SolidWorksAdapter.save_file``.
+            list_documents (bool): See ``SolidWorksAdapter.save_file``; passed
+                on only when set.
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
         """
+        extras = {"list_documents": True} if list_documents else {}
         return await self._execute_with_pool(
             "save_file",
-            lambda adapter: adapter.save_file(file_path, overwrite_modified_references),
+            lambda adapter: adapter.save_file(
+                file_path, overwrite_modified_references, **extras
+            ),
         )
 
     async def create_part(
@@ -612,6 +657,8 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         name: str | None = None,
         units: str | None = None,
         template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Create part using pool.
 
@@ -619,6 +666,8 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             name (str | None): The name value. Defaults to None.
             units (str | None): The units value. Defaults to None.
             template (str | None): Template file path. Defaults to None.
+            list_documents (bool): See ``SolidWorksAdapter.create_part``;
+                passed on only when set.
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -633,6 +682,11 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             Returns:
                 AdapterResult[SolidWorksModel]: The result produced by the operation.
             """
+            if list_documents:
+                # An adapter that lists documents takes every argument.
+                return await adapter.create_part(
+                    name, units, template, list_documents=True
+                )
             if template is not None:
                 # No zero-arg retry: dropping the template would silently
                 # build the document from a different one.
@@ -647,13 +701,19 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         return await self._execute_with_pool("create_part", _op)
 
     async def create_assembly(
-        self, name: str | None = None, template: str | None = None
+        self,
+        name: str | None = None,
+        template: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[SolidWorksModel]:
         """Create assembly using pool.
 
         Args:
             name (str | None): The name value. Defaults to None.
             template (str | None): Template file path. Defaults to None.
+            list_documents (bool): See ``SolidWorksAdapter.create_assembly``;
+                passed on only when set.
 
         Returns:
             AdapterResult[SolidWorksModel]: The result produced by the operation.
@@ -668,6 +728,10 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             Returns:
                 AdapterResult[SolidWorksModel]: The result produced by the operation.
             """
+            if list_documents:
+                return await adapter.create_assembly(
+                    name, template, list_documents=True
+                )
             if template is not None:
                 return await adapter.create_assembly(name, template)
             if name is None:
@@ -1649,20 +1713,23 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         )
 
     async def activate_document(
-        self, title_or_path: str
+        self, title_or_path: str, *, list_documents: bool = False
     ) -> AdapterResult[dict[str, Any]]:
         """Activate an open document using pool.
 
         Args:
             title_or_path (str): Title, full path, or file name of an open
                 document.
+            list_documents (bool): See ``SolidWorksAdapter.activate_document``;
+                passed on only when set.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
+        extras = {"list_documents": True} if list_documents else {}
         return await self._execute_with_pool(
             "activate_document",
-            lambda adapter: adapter.activate_document(title_or_path),
+            lambda adapter: adapter.activate_document(title_or_path, **extras),
         )
 
     async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
@@ -1857,13 +1924,19 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         )
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str, assembly_path: str | None = None
+        self,
+        body_name: str,
+        file_path: str,
+        assembly_path: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Save a body to a new part using pool."""
+        extras = {"list_documents": True} if list_documents else {}
         return await self._execute_with_pool(
             "save_body_as_part",
             lambda adapter: adapter.save_body_as_part(
-                body_name, file_path, assembly_path
+                body_name, file_path, assembly_path, **extras
             ),
         )
 

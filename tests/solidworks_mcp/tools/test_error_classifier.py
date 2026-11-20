@@ -343,3 +343,24 @@ def test_a_refused_edge_scan_says_how_to_scope_it_and_spares_the_breaker(
     assert "`feature`" in found.hint and "`scan_whole_part: true`" in found.hint
     # Nothing ran by design: five of them must not lock select_edges out.
     assert counts_toward_breaker(message) is False
+
+
+def test_a_missed_expect_is_its_own_category_whatever_the_feature_said(
+    classifier: ErrorClassifier,
+) -> None:
+    from solidworks_mcp.tools.error_classifier import counts_toward_breaker
+
+    # The feature's own message comes first, and can hold anything.
+    message = (
+        "Created cut-extrude: Cut-Extrude1 (the requested direction found no "
+        "material, so it cut the other way), but the part does not meet `expect`: "
+        "volume_mm3 measured 900.0 mm³, expected 1000.0. The feature is in the "
+        "model: change it (edit_feature) or remove it (undo, delete_feature); "
+        "calling again adds another."
+    )
+
+    found = classifier.classify(message)
+
+    assert found.error_type == "expectation_failed"
+    assert "Don't call the tool again" in found.hint
+    assert counts_toward_breaker(message) is False

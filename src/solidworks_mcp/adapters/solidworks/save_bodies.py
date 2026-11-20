@@ -610,6 +610,7 @@ class SolidWorksSaveBodiesMixin:
         what: str,
         close_strays: bool = True,
         written: tuple[str, ...] = (),
+        list_documents: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Run ``work(model, holder)`` on the active part as one operation.
 
@@ -617,8 +618,12 @@ class SolidWorksSaveBodiesMixin:
         assembly was asked for: ``close_strays`` False), and so are the
         ``written`` part files SolidWorks opened, and the part is made active
         again, whether it worked or not. A dialog the watchdog cancelled
-        leaves a checked result standing, with a warning.
+        leaves a checked result standing, with a warning. With
+        ``list_documents``, the documents open at the end
+        (``io.open_documents``) go in the metadata, read in the same operation.
         """
+        from .io import open_documents, with_metadata
+
         adapter = self._adapter(self)
         holder: dict[str, Any] = {}
 
@@ -637,15 +642,23 @@ class SolidWorksSaveBodiesMixin:
                 reactivate(adapter, model, title)
             data["closed_documents"] = closed
             holder["data"] = data
+            if list_documents:
+                holder["open_documents"] = open_documents(adapter)
             return data
 
-        result = adapter._handle_com_operation(operation, _operation)
-        return cast(
-            AdapterResult[dict[str, Any]], _tolerate_dialog(result, holder, what)
+        result = _tolerate_dialog(
+            adapter._handle_com_operation(operation, _operation), holder, what
         )
+        extra = {k: v for k, v in holder.items() if k == "open_documents"}
+        return cast(AdapterResult[dict[str, Any]], with_metadata(result, extra))
 
     async def save_body_as_part(
-        self, body_name: str, file_path: str, assembly_path: str | None = None
+        self,
+        body_name: str,
+        file_path: str,
+        assembly_path: str | None = None,
+        *,
+        list_documents: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Save one solid body of the active part as a new part file (Save Bodies).
 
@@ -657,6 +670,8 @@ class SolidWorksSaveBodiesMixin:
             assembly_path: Also make an assembly of the body at this
                 ``.sldasm`` path; ``None`` makes none (an untitled assembly
                 SolidWorks makes anyway is closed).
+            list_documents: Also put the documents open afterwards in the
+                metadata (``open_documents``).
 
         Returns:
             AdapterResult[dict[str, Any]]: ``body``, ``file_path``,
@@ -756,6 +771,7 @@ class SolidWorksSaveBodiesMixin:
             "The file was written and holds the body, so the save worked.",
             close_strays=assembly is None,
             written=(target,),
+            list_documents=list_documents,
         )
 
     async def get_save_bodies(

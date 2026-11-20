@@ -2299,7 +2299,9 @@ async def test_save_as_keeps_an_existing_file_unless_overwrite(
     assert "left untouched" in kept["message"] and "overwrite" in kept["message"]
     assert target.read_bytes() == b"original"
     assert replaced["status"] == "success"
-    mock_adapter.save_file.assert_awaited_once_with(str(target), False)
+    mock_adapter.save_file.assert_awaited_once_with(
+        str(target), False, list_documents=True
+    )
 
 
 @pytest.mark.asyncio
