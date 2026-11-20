@@ -22,9 +22,14 @@ What the API and the gen_py wrapper say:
   ``DISPATCH_PROPERTYGET`` (``ref_plane_edit.get_indexed``); gen_py's
   ``SetEquation`` is ``Equation``'s property put (DISPID 8), written through
   ``put_indexed``. Probe 1.1 settles which call works.
-- ``Add3(index, text, solve, swAllConfiguration, names)`` returns the new
-  index or -1; ``Add2(index, text, solve)`` is the fallback where ``Add3``
-  is missing. Both apply to every configuration (D5).
+- ``Add2(-1, text, solve)`` appends and returns the new index, or -1 for a
+  refusal (a missing dimension, a left side that already has an equation).
+  Measured on SOLIDWORKS 2026 SP4.1 (pitfall #60): ``Add3`` returns -1 for
+  every equation on a part with one configuration, as its Remarks say ("only
+  works for parts having multiple configurations"), and on a part with two it
+  put each equation at index 0 and lost one. So ``Add2`` is the add, and
+  ``Add3`` with ``swAllConfiguration`` only where ``Add2`` is missing. An
+  equation added without a configuration option applies to all of them (D5).
 - A refused ``SetEquation`` keeps the old text without an error, so every
   replace is read back.
 
@@ -324,13 +329,17 @@ def failing_features(adapter: Any, model: Any) -> list[dict[str, Any]]:
     return [e for e in entries if e.get("severity") == "error"]
 
 
-def _add(adapter: Any, mgr: Any, index: int, text: str) -> int:
-    """``Add3`` at ``index`` without solving, ``Add2`` where ``Add3`` is missing."""
-    added, error = adapter._attempt_with_error(
-        lambda: mgr.Add3(index, text, False, ALL_CONFIGURATIONS, None)
-    )
+def _add(adapter: Any, mgr: Any, text: str) -> int:
+    """``Add2(-1, text, False)``: append without solving; ``Add3`` where ``Add2`` is missing.
+
+    Returns:
+        int: The new equation's index, or -1 when SolidWorks refused it.
+    """
+    added, error = adapter._attempt_with_error(lambda: mgr.Add2(-1, text, False))
     if error is not None:
-        added = adapter._attempt(lambda: mgr.Add2(index, text, False), default=-1)
+        added = adapter._attempt(
+            lambda: mgr.Add3(-1, text, False, ALL_CONFIGURATIONS, None), default=-1
+        )
     return int(added) if isinstance(added, int | float) else -1
 
 
@@ -422,13 +431,12 @@ def set_equations(adapter: Any, equations: list[str]) -> dict[str, Any]:
                 raise _refused(text, f"equation {index} reads back as {now}")
             applied.append({"equation": text, "index": index, "replaced": True})
             continue
-        index = _add(adapter, mgr, count, text)
+        index = _add(adapter, mgr, text)
         if index < 0:
             status = adapter._attempt(lambda: mgr.Status)
             _undo(adapter, model, mgr, journal, solve_order_was)
             raise _refused(text, f"adding it returned {index}, Status {status}")
         journal.append(("add", index, None))
-        count += 1
         applied.append({"equation": text, "index": index, "replaced": False})
     rebuild(adapter, model)
     return {

@@ -174,10 +174,11 @@ async def test_a_variable_and_the_dimension_it_drives_are_added() -> None:
     assert result.data["failing_features"] == []
     assert result.data["document_units"] == "mm"
     assert model.mgr.AutomaticSolveOrder is True
-    assert [c[0] for c in model.mgr.add3_calls] == [0, 1]
-    assert all(
-        c[2] is False and c[3] == eq.ALL_CONFIGURATIONS for c in model.mgr.add3_calls
-    )
+    assert model.mgr.add2_calls == [
+        (-1, '"W" = 45', False),
+        (-1, '"D1@Sketch1" = "W"', False),
+    ]
+    assert model.mgr.add3_calls == []
     assert model.rebuilds == [False]
 
 
@@ -190,7 +191,7 @@ async def test_replacing_keeps_the_index() -> None:
         {"equation": '"w" = 50', "index": 1, "replaced": True}
     ]
     assert model.mgr.texts == ['"H" = 5', '"w" = 50']
-    assert model.mgr.add3_calls == []
+    assert model.mgr.add2_calls == []
 
 
 async def test_a_bare_string_is_a_list_of_one() -> None:
@@ -202,14 +203,32 @@ async def test_a_bare_string_is_a_list_of_one() -> None:
     assert model.mgr.texts == ['"W" = 45']
 
 
-async def test_add2_where_add3_is_missing() -> None:
-    model = FakeModel()
-    model.mgr.add3_missing = True
+async def test_add2_appends_on_a_single_configuration_part() -> None:
+    """Live, ``Add3`` returned -1 on a one-configuration part (pitfall #60)."""
+    model = FakeModel(['"H" = 5'])
 
     result = await _Harness(model).set_equations(['"W" = 45'])
 
     assert result.is_success, result.error
-    assert model.mgr.add2_calls == [(0, '"W" = 45', False)]
+    assert result.data["equations"] == [
+        {"equation": '"W" = 45', "index": 1, "replaced": False}
+    ]
+    assert model.mgr.texts == ['"H" = 5', '"W" = 45']
+    assert model.mgr.add3_calls == []
+
+
+async def test_add3_only_where_add2_is_missing() -> None:
+    model = FakeModel()
+    model.mgr.add2_missing = True
+    model.mgr.configurations = 2
+
+    result = await _Harness(model).set_equations(['"W" = 45'])
+
+    assert result.is_success, result.error
+    assert model.mgr.add3_calls == [
+        (-1, '"W" = 45', False, eq.ALL_CONFIGURATIONS, None)
+    ]
+    assert model.mgr.texts == ['"W" = 45']
 
 
 @pytest.mark.parametrize("refused", [0, 1, 2])

@@ -5,6 +5,8 @@ only through ``IDispatch.Invoke``, as late binding reaches them; ``Equation``'s
 put is gen_py's ``SetEquation``. The manager refuses what tests tell it to:
 ``Add3``/``Add2`` return -1 for a text in ``refuse_add``, and a put of a text
 in ``keep_old`` keeps the old text without an error (hjbaard's finding).
+As on SOLIDWORKS 2026 SP4.1, ``Add3`` returns -1 on a part with one
+configuration (pitfall #60), and ``Add2(-1, ...)`` appends.
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ class FakeManager:
         self.refuse_add: set[str] = set()
         self.keep_old: set[str] = set()
         self.add3_missing = False
+        self.add2_missing = False
+        self.configurations = 1
         self.add3_calls: list[tuple[Any, ...]] = []
         self.add2_calls: list[tuple[Any, ...]] = []
         self.counts = 0
@@ -72,6 +76,8 @@ class FakeManager:
         if text in self.refuse_add:
             self.Status = -1
             return -1
+        if index < 0:
+            index = len(self.texts)
         self.texts.insert(index, text)
         return index
 
@@ -79,9 +85,14 @@ class FakeManager:
         if self.add3_missing:
             raise AttributeError("Add3")
         self.add3_calls.append((index, text, solve, which, names))
+        if self.configurations < 2:
+            self.Status = -1
+            return -1
         return self._add(index, text)
 
     def Add2(self, index: int, text: str, solve: bool) -> int:  # noqa: N802
+        if self.add2_missing:
+            raise AttributeError("Add2")
         self.add2_calls.append((index, text, solve))
         return self._add(index, text)
 
