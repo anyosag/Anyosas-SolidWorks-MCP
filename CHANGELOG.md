@@ -38,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`export_image` returns the picture** in its reply (`inline`, on by
   default), as well as writing the file; `execute_workflow` returns the last
   one. Agents had been spending a turn reading each image back.
+- **Replies carry what the next call would have read.** Document operations
+  (`open_model`, `create_part`, `create_assembly`, `close_model`,
+  `activate_document`, `save_as`, `save_body_as_part`) return
+  `open_documents`, read in the same operation; `open_model` returns a
+  `summary` of the feature tree; `add_mate` takes `check_interference`.
+  The sampled sessions spent 153 turns on such follow-up reads.
+- **`expect` on feature tools**: the checks `verify_model` takes, applied
+  right after the feature. A miss is the new `expectation_failed` error,
+  which stops a workflow at that step.
+- **Calls without the `input_data` wrapper are accepted**, as are common
+  alternative field names (`sketch_name` for `get_sketch`, `tool_names` for
+  `describe_tool_inputs`); conflicting ones are refused. Each such slip had
+  cost a retry turn.
 
 - **`add_outlines`** draws whole outlines in the open sketch in one call:
   polygons from `points`, or chains of lines and arcs from `start` and

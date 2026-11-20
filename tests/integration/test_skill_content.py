@@ -50,6 +50,7 @@ _RESPONSE_KEYS = {
     "length_mm",
     "measured_change",
     "next_offset",
+    "open_documents",
     "full_count",
     "normal_distance_m",
     "rotate_to_z",

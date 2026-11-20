@@ -398,7 +398,8 @@ involved must be closed).
    The first part inserted is fixed. To let mates move it, or to hold a part
    still, use `set_component_state` (`fixed`); to let a sub-assembly's own
    mates move in the main assembly (a crank that turns), `flexible: true`.
-5. `check_interference`, then `verify_model` with `component_count`,
+5. `check_interference` (or `check_interference: true` on the last
+   `add_mate`, which adds the overlaps to its reply), then `verify_model` with `component_count`,
    `mate_count` and `no_interference: true`. `check_interference` lists the
    `top_pairs` that overlap most (components, count and volume); fix the
    largest first. For a gap that must stay open

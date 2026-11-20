@@ -14,7 +14,10 @@ checking the result, and what doesn't work yet.
 
 - Call `get_model_info` first. It says which document is active (it follows
   a switch the user made in the SolidWorks window). `list_open_documents`
-  lists every open document; `activate_document` switches.
+  lists every open document; `activate_document` switches. Opening,
+  creating, closing, activating and saving-as return `open_documents`
+  themselves, and `open_model` a `summary` of the feature tree, so you
+  needn't list them afterwards.
 - Every tool that works on a document takes `document`: the title, file name
   or path of an open one. Give it when more than one document is open, or
   when someone else may be using SolidWorks; the server activates it first.
@@ -154,6 +157,11 @@ that the geometry is what you meant. After a feature:
   `measured_change` (volume and bounding box before and after). A cut whose
   volume didn't drop, or an extrusion whose box didn't grow as planned, is
   wrong even though it succeeded.
+- Feature tools take `expect`: the checks `verify_model` takes (volume,
+  box, body count), applied right after the feature. A miss fails the call
+  with `expectation_failed`, which stops a workflow there; the feature is
+  in the model, so change it (`edit_feature`) or remove it (`undo`) rather
+  than calling again.
 - At the end, call `verify_model` with what you expect: `bounding_box_mm`,
   `volume_mm3`, `mass_kg`, `feature_count`, `solid_body_count`, and for an
   assembly `component_count`, `mate_count`, `no_interference`. Work out the
