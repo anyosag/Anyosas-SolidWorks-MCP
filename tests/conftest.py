@@ -40,6 +40,9 @@ if not _REAL_INTEGRATION:
     # Unit tests fake the gen_py wrapper; a method table cached in %TEMP% by a
     # real server run must not stand in for the fakes.
     os.environ.setdefault("SOLIDWORKS_MCP_TYPEINFO_CACHE", "0")
+    # Fake-COM tests mustn't create the real Stage Manager event on this PC;
+    # test_automation_signal turns it on with fakes.
+    os.environ.setdefault("SOLIDWORKS_MCP_AUTOMATION_SIGNAL", "0")
 
 # A non-live run must never start SolidWorks. Creating SldWorks.Application
 # from a process outside the desktop session (an SSH shell, CI) starts a hidden

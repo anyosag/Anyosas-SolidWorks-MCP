@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A signal for the user's Stage Manager while a tool drives SolidWorks.**
+  Each outermost SolidWorks operation holds the named event
+  `Local\StageManager.Automation.<SolidWorks process id>` (a manual-reset
+  event, `CreateEventW`) and lets it go 2 s after the operation ends. While
+  it exists, Stage Manager keeps SolidWorks in its strip unless the user
+  brings it up (its card, its taskbar button, Alt+Tab), even with Explorer,
+  Start or the desktop in front. Every MCP server on one SolidWorks opens
+  the same name. No SolidWorks window is touched: Stage Manager releases a
+  parked window whose styles or visibility change.
+  `SOLIDWORKS_MCP_AUTOMATION_SIGNAL=0` turns it off. Agreed with Stage
+  Manager's H71 (`adapters/solidworks/automation_signal.py`).
 - **Hot reload.** `solidworks-mcp --hot-reload`, or
   `SOLIDWORKS_MCP_HOT_RELOAD=1` in the server's environment, runs a small
   relay that keeps the client connected while the server restarts: when the

@@ -46,6 +46,7 @@ from .solidworks import (
     visibility,
     zoom_box,
 )
+from .solidworks.automation_signal import AutomationSignal
 from .solidworks.com_utils import clear_selection
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.equations import SolidWorksEquationsMixin
@@ -1164,6 +1165,9 @@ class _ComSessionCoordinator:
             self._adapter.currentSketchManager = None
             self._adapter._reset_sketch_entity_registry()
             self._adapter.swApp = None
+            signal = getattr(self._adapter, "_automation_signal", None)
+            if signal is not None:
+                signal.close()
             self._adapter._sw_process_id = 0
             self._adapter._solidworks_lost = False
             self._adapter._last_active_document = None
@@ -2605,6 +2609,9 @@ class PyWin32Adapter(
         # Remembers that the user wants that window minimized, across
         # operations and adapters (see MinimizeKeeper).
         self._keeper: MinimizeKeeper | None = None
+        # Held through each outermost operation so the user's Stage Manager
+        # keeps SolidWorks in its strip (automation_signal).
+        self._automation_signal = AutomationSignal()
         # The connected SolidWorks' process (read from its window), and
         # whether it has exited with no SolidWorks to reconnect to yet.
         self._sw_process_id = 0
@@ -2927,6 +2934,11 @@ class PyWin32Adapter(
             was_minimized or (keeper is not None and keeper.wanted)
         )
         watchdog = self._arm_dialog_watchdog() if outermost else None
+        # The user's Stage Manager keeps SolidWorks in its strip while this is
+        # held (automation_signal); it touches no window.
+        signal = getattr(self, "_automation_signal", None) if outermost else None
+        if signal is not None:
+            signal.begin(self._sw_process_id)
         self._operation_depth += 1
         clock.enter("closure")
         try:
@@ -2962,6 +2974,8 @@ class PyWin32Adapter(
                 self._window.allow_activation()
             if keeper is not None:
                 keeper.end()
+            if signal is not None:
+                signal.end()
         if dialogs:
             return self._dialog_result(operation_name, dialogs, result)
         if outermost and result.is_error and self._solidworks_exited(probe=True):
