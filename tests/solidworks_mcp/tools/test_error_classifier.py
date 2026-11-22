@@ -378,3 +378,17 @@ def test_a_refused_pattern_with_a_pattern_listed_hints_at_its_seeds(
 
     assert found.error_type == OPERATION_FAILED
     assert "carries its own seeds" in found.hint
+
+
+def test_a_refused_pattern_of_a_thread_hints_at_one_thread_each(
+    classifier: ErrorClassifier,
+) -> None:
+    found = classifier.classify(
+        "Failed to make the circular pattern: FeatureCircularPattern5 returned "
+        "nothing (features=['Post_Thread_M5'], axis=Tray_Axis). Post_Thread_M5 is "
+        "a Thread feature, which SolidWorks made no pattern of: cut each thread "
+        "with its own create_thread call."
+    )
+
+    assert found.error_type == OPERATION_FAILED
+    assert "its own create_thread call" in found.hint

@@ -270,10 +270,18 @@ its hole keeps both: only a pattern or mirror carries other features.
    from the edge into the material, and its groove reaches about one
    profile width past `length_mm` (0.875 P outside, 0.75 P inside): check
    `data.extent.range_mm` next to a shoulder or floor. `start_offset_mm`
-   starts it before the edge, through a chamfer or lead-in beside it.
+   starts it before the edge, through a chamfer or lead-in beside it. A
+   thread that starts at the edge (or 0.2 mm past a chamfer) has a partial
+   first turn there, as at its far end, and a mating nut binds on it at
+   every angle: start it at least a pitch outside the part (`start_offset_mm`
+   1.0 for M5x0.8) and add that to `length_mm`.
 7. Mating threads touch where each one's last turn ends. Keep the other
    part's teeth a pitch clear of each thread's end (a thread relief below a
-   shoulder, a longer chamfer on a rod's tip), then `check_interference`.
+   shoulder, a longer chamfer on a rod's tip), then `check_interference`
+   with the two `components`.
+8. Threading several posts or holes: cut each with its own `create_thread`
+   (they come out in the same phase). SolidWorks made no pattern of a Thread
+   feature.
 
 ## Labels: raised or engraved text
 

@@ -295,6 +295,18 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
         patterns=(r"built no feature",),
     ),
+    # A pattern SolidWorks made nothing of, with a Thread feature listed
+    # (``pattern_seeds.SeedPlan.refusal``). Before the pattern rule below: with
+    # both named, the thread is the likelier cause, the seeds being left out.
+    ErrorRule(
+        error_type=OPERATION_FAILED,
+        hint=(
+            "SolidWorks made no pattern of a Thread feature. Pattern the rod or "
+            "hole without its thread, then cut each thread with its own "
+            "create_thread call; they come out in the same phase."
+        ),
+        patterns=(r"which SolidWorks made no pattern of",),
+    ),
     # A pattern or mirror SolidWorks made nothing of, with a pattern or mirror
     # among the features listed (``pattern_seeds.SeedPlan.refusal``).
     ErrorRule(

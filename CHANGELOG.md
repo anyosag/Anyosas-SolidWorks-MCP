@@ -260,6 +260,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`check_interference` with two or more `components` reports only the
+  interferences between them.** It kept every interference of any listed
+  component, so a nut and its tray listed gave back the tray's overlaps with
+  all the other nuts (Aggrewell enclosure v2). One component still gives
+  every interference it is in; two or more give those among them, as
+  SolidWorks' Interference Detection checks among the components selected.
+- **A pattern of a Thread feature that SolidWorks refuses says so.** A
+  `pattern_circular` of an M5 post's thread made nothing
+  ("FeatureCircularPattern5 returned nothing"), and one `create_thread` per
+  post worked. The message now names a listed Thread feature (`SweepThread`)
+  and the `hint` says to thread each post or hole with its own
+  `create_thread`. The mock's thread features have SolidWorks' type name.
+- **The docs say how to start a thread that mates.** A thread starting at
+  its edge, or just past a chamfer, has a partial first turn, and a printed
+  M5 nut and post never cleared at any angle; started 1 mm outside the part
+  with the length extended, they had a 100 degree zero-interference window.
+  `create_thread`'s description and the thread workflow now say to start a
+  pitch outside (`start_offset_mm` at least P, added to `length_mm`), and
+  the skill notes that a `$steps` path follows the tool's reply
+  (`create_thread`'s feature is `data.feature`).
 - **A pattern listed beside its own seeds is made without them.** On the
   Aggrewell enclosure lid, a `pattern_linear` of the vents that listed each
   ring's hole, chamfer and circular pattern failed ("FeatureLinearPattern5

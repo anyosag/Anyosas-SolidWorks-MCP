@@ -235,6 +235,37 @@ def test_the_refusal_names_the_patterns_still_listed(
     assert SeedPlan(used, patterns=patterns).refusal(used) == expected
 
 
+def test_a_listed_thread_feature_is_named_in_the_refusal() -> None:
+    # A circular pattern of Post_Thread_M5 made nothing on the Aggrewell tray.
+    kind_of, parents_of = _tree(
+        Post_Thread_M5=("SweepThread", (), None),
+        Boss=("Extrusion", (), None),
+        Ring=("CirPattern", ("Hole",), 1),
+        Hole=("Cut", (), None),
+    )
+
+    one = plan(["Post_Thread_M5"], kind_of, parents_of)
+    both = plan(["Boss", "Ring", "Post_Thread_M5"], kind_of, parents_of)
+
+    assert one.threads == ["Post_Thread_M5"]
+    assert one.refusal(["Post_Thread_M5"]) == (
+        " Post_Thread_M5 is a Thread feature, which SolidWorks made no pattern "
+        "of: cut each thread with its own create_thread call."
+    )
+    assert one.refusal([]) == ""
+    assert both.refusal(["Ring", "Post_Thread_M5"]).startswith(
+        " Ring is a pattern or mirror"
+    )
+    assert "Post_Thread_M5 is a Thread feature" in both.refusal(
+        ["Ring", "Post_Thread_M5"]
+    )
+    assert (
+        SeedPlan(["A", "B"], threads=["A", "B"])
+        .refusal(["A", "B"])
+        .startswith(" A, B are Thread features")
+    )
+
+
 def test_the_type_lists_are_the_helps() -> None:
     assert {"LPattern", "CirPattern", "MirrorPattern"} <= PATTERN_TYPES
     assert "MirrorSolid" not in PATTERN_TYPES

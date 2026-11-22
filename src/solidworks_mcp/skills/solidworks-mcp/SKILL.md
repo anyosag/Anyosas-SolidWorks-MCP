@@ -95,7 +95,9 @@ its own call's replies). An argument that is exactly
 feature's name. Give a step an `"id"` (`"plane_x"`) and write
 `"$steps.plane_x.plane.name"` instead of counting steps. After an entity's
 `id`, `.center`, `.start` or `.end` names that point, for a dimension or a
-relation: `"$steps.c.circle.id.center"` gives `"Circle_1.center"`.
+relation: `"$steps.c.circle.id.center"` gives `"Circle_1.center"`. The
+path follows the tool's own reply: `create_thread` puts its feature under
+`data`, so `"$steps.t.data.feature"`.
 Consecutive sketch-entity steps (`add_line`, `add_circle`, `add_rectangle`,
 `add_arc`, `add_centerline`) are drawn in one SolidWorks operation. It stops at the first failed step and reports that step's
 `error_type` and `hint`; the error's `data.steps` shows what ran. With

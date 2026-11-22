@@ -1766,6 +1766,24 @@ class TestCheckInterferenceMoreErrors:
         assert result.data["scope"] == ["part-1"]
 
 
+def test_two_or_more_components_keep_only_the_interferences_between_them() -> None:
+    from solidworks_mcp.adapters.solidworks.io import interferences_among
+
+    details = [
+        {"components": ["nut-1", "tray-1"], "volume_mm3": 1.0},
+        {"components": ["nut-2", "tray-1"], "volume_mm3": 2.0},
+        {"components": ["nut-1", "nut-2"], "volume_mm3": 3.0},
+        {"components": [], "volume_mm3": 4.0},
+    ]
+
+    between = interferences_among(details, {"nut-1", "tray-1"})
+    involving = interferences_among(details, {"tray-1"})
+
+    assert [item["volume_mm3"] for item in between] == [1.0]
+    assert [item["volume_mm3"] for item in involving] == [1.0, 2.0]
+    assert interferences_among(details, {"nut-1", "nut-2", "tray-1"}) == details[:3]
+
+
 @pytest.mark.asyncio
 async def test_pywin32_adapter_many_guard_paths(monkeypatch):
     """Test pywin32 adapter many guard paths."""

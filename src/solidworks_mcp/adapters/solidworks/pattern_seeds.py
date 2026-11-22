@@ -64,6 +64,11 @@ PATTERN_TYPES = frozenset(
 #: as seeds; listed, it can still be why SolidWorks refuses (:func:`refusal`).
 BODY_MIRROR = "MirrorSolid"
 
+#: SolidWorks' Thread feature (``create_thread``; ``IThreadFeatureData``). A
+#: circular pattern of one made nothing on the Aggrewell tray's M5 posts, and
+#: one ``create_thread`` per post worked, so a refusal names it.
+THREAD = "SweepThread"
+
 #: Parents that place a pattern and are never its seeds: the help's Reference
 #: Geometry and Sketch groups (planes, axes, points, coordinate systems,
 #: sketches and curves), the origin, a helix and a curve through points.
@@ -125,12 +130,14 @@ class SeedPlan:
         unsure: Each feature that may be a listed pattern's seed; left out
             only if SolidWorks refuses the call with it.
         patterns: The listed features that are patterns or mirrors.
+        threads: The listed features that are Thread features (:data:`THREAD`).
     """
 
     listed: list[str]
     sure: dict[str, str] = field(default_factory=dict)
     unsure: dict[str, str] = field(default_factory=dict)
     patterns: list[str] = field(default_factory=list)
+    threads: list[str] = field(default_factory=list)
 
     def attempts(self) -> list[list[str]]:
         """The feature lists to try in turn: without the sure seeds, then without the unsure."""
@@ -154,19 +161,28 @@ class SeedPlan:
         return {"left_out": left} if left else {}
 
     def refusal(self, used: list[str]) -> str:
-        """For SolidWorks making nothing: a sentence naming the listed patterns, or ``""``."""
+        """For SolidWorks making nothing: sentences naming the listed patterns
+        and Thread features, or ``""``."""
+        said = ""
         patterns = [name for name in self.patterns if name in used]
-        if not patterns:
-            return ""
-        what = (
-            "is a pattern or mirror"
-            if len(patterns) == 1
-            else "are patterns or mirrors"
-        )
-        return (
-            f" {', '.join(patterns)} {what}, and SolidWorks refuses one listed "
-            "with features it already repeats."
-        )
+        if patterns:
+            what = (
+                "is a pattern or mirror"
+                if len(patterns) == 1
+                else "are patterns or mirrors"
+            )
+            said += (
+                f" {', '.join(patterns)} {what}, and SolidWorks refuses one listed "
+                "with features it already repeats."
+            )
+        threads = [name for name in self.threads if name in used]
+        if threads:
+            what = "is a Thread feature" if len(threads) == 1 else "are Thread features"
+            said += (
+                f" {', '.join(threads)} {what}, which SolidWorks made no pattern "
+                "of: cut each thread with its own create_thread call."
+            )
+        return said
 
 
 def plan(
@@ -188,7 +204,9 @@ def plan(
     """
     repeating = PATTERN_TYPES | {BODY_MIRROR}
     result = SeedPlan(
-        list(listed), patterns=[n for n in listed if kind_of(n) in repeating]
+        list(listed),
+        patterns=[n for n in listed if kind_of(n) in repeating],
+        threads=[n for n in listed if kind_of(n) == THREAD],
     )
     by_bare = {name.split("@", 1)[0]: name for name in listed}
     for pattern in listed:

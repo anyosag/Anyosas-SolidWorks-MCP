@@ -727,6 +727,26 @@ def _payload_dict(data: Any) -> dict[str, Any]:
     return {key: value for key, value in vars(data).items() if not key.startswith("_")}
 
 
+def interferences_among(
+    details: list[dict[str, Any]], wanted: set[str]
+) -> list[dict[str, Any]]:
+    """The interferences a ``components`` list asks for.
+
+    One component: every interference it is in. Two or more: only those
+    between them, each of the interference's components listed, as SolidWorks'
+    Interference Detection checks among the components selected. Keeping every
+    interference of any listed component, a nut and its tray listed gave back
+    the tray's overlaps with all the other nuts (Aggrewell enclosure v2).
+    """
+    if len(wanted) == 1:
+        return [item for item in details if wanted & set(item.get("components", []))]
+    return [
+        item
+        for item in details
+        if item.get("components") and set(item["components"]) <= wanted
+    ]
+
+
 def _interference_details(adapter: Any, interferences: Any) -> list[dict[str, Any]]:
     """Describe each interference: the components involved and the overlap.
 
@@ -4554,7 +4574,8 @@ class SolidWorksIOMixin:
                 ``False``) treats touching faces as interference;
                 ``include_multibody`` (bool, default ``True``);
                 ``ignore_hidden`` (bool, default ``False``). A ``components``
-                list filters which interferences are reported. ``tolerance``
+                list filters which interferences are reported
+                (:func:`interferences_among`). ``tolerance``
                 is accepted and ignored - SolidWorks' interference detection
                 has no tolerance setting - and the payload says so.
 
@@ -4634,11 +4655,7 @@ class SolidWorksIOMixin:
                 adapter._attempt(lambda: manager.Done(), default=None)
 
             if wanted_names:
-                details = [
-                    item
-                    for item in details
-                    if wanted_names & set(item.get("components", []))
-                ]
+                details = interferences_among(details, wanted_names)
 
             return {
                 "interference_found": bool(details) if wanted_names else count > 0,

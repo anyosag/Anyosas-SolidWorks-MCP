@@ -7817,9 +7817,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
             edge = {"center_mm": list(edge_point), "diameter_mm": needed}
         threads.check_diameter(diameter, pitch, internal, edge["diameter_mm"], offset)
-        count = sum(1 for f in self._features.values() if f.type == "Thread") + 1
+        from .solidworks.pattern_seeds import THREAD
+
+        # SolidWorks' GetTypeName2 for a Thread feature, as the live tree reads.
+        count = sum(1 for f in self._features.values() if f.type == THREAD) + 1
         name = self._mock_add_named_feature(
-            f"Thread{count}", "Thread", size=size, length_mm=length_mm
+            f"Thread{count}", THREAD, size=size, length_mm=length_mm
         )
         reply: dict[str, Any] = {
             "feature": name,

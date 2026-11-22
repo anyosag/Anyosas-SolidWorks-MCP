@@ -75,7 +75,10 @@ class InterferenceCheckInput(CompatInput):
     )
     components: list[str] = Field(
         default_factory=list,
-        description="List of component names to check for interference",
+        description=(
+            "Components to report: one gives its interferences, two or more "
+            "those between them"
+        ),
     )
 
 
@@ -1100,9 +1103,10 @@ async def register_analysis_tools(
         largest.
 
         Args:
-            input_data: Nothing is required. `components` limits the report to
-                interferences involving those components; `include_hidden` also
-                checks hidden components, which are left out by default.
+            input_data: Nothing is required. `components` limits the report:
+                one component to its interferences, two or more to those between
+                them; `include_hidden` also checks hidden components, which are
+                left out by default.
 
         Returns:
             dict[str, Any]: The interferences found.
