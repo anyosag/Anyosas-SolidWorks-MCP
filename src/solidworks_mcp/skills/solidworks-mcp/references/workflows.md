@@ -419,7 +419,11 @@ involved must be closed).
    `add_mate`, which adds the overlaps to its reply), then `verify_model` with `component_count`,
    `mate_count` and `no_interference: true`. `check_interference` lists the
    `top_pairs` that overlap most (components, count and volume); fix the
-   largest first. For a gap that must stay open
+   largest first. It intersects the components' bodies in the background,
+   so it can run many times in a row (a sweep of thread phases). A
+   lightweight component makes it use SolidWorks' Interference Detection,
+   which can show for a moment: `method` is then `"interference_detection"`
+   and `note` says why. For a gap that must stay open
    (a latch's 0.25 mm play), `measure_clearance` with the two components
    gives the smallest gap and where it is, measured between the whole
    components in one call; `faces: true` also names the two nearest faces

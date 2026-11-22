@@ -1091,16 +1091,19 @@ async def register_analysis_tools(
 
     @mcp.tool()
     async def check_interference(input_data: InterferenceCheckInput) -> dict[str, Any]:
-        """Find where the components of the active assembly overlap (Tools > Interference Detection).
+        """Find where the components of the active assembly overlap, without SolidWorks' Interference Detection on screen.
 
-        Use it after inserting and mating components. A count of 0 is a real
-        measurement. To fail a build on interference, use `verify_model` with
-        `no_interference`. Needs: an open, active assembly. Read-only. Returns: `data`
-        with `interference_found`, `interference_count`, `top_pairs` (the 10 pairs
-        of components that overlap most: `components`, `count`, `volume_mm3` and
-        `largest_mm3`), `pair_count`, `total_volume_mm3`, `interferences` (each
-        overlap's components and volume in mm³) and `scope`; the message names the
-        largest.
+        It intersects the components' solid bodies in the background. A
+        lightweight component, or a body it can't read, makes it run Interference
+        Detection instead, which may show briefly (`method` says which ran; `note`
+        says why). Use it after inserting and mating components. A count of 0 is
+        a real measurement. To fail a build on interference, use `verify_model`
+        with `no_interference`. Needs: an open, active assembly. Read-only.
+        Returns: `data` with `interference_found`, `interference_count`,
+        `top_pairs` (the 10 pairs of components that overlap most: `components`,
+        `count`, `volume_mm3` and `largest_mm3`), `pair_count`,
+        `total_volume_mm3`, `interferences` (each overlap's components and volume
+        in mm³) and `scope`; the message names the largest.
 
         Args:
             input_data: Nothing is required. `components` limits the report:

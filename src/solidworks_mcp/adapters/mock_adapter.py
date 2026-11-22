@@ -5837,12 +5837,27 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     ) -> AdapterResult[dict[str, Any]]:
         """Mock checking the active assembly for interfering components.
 
+        Each component stands in for its box, ``component_boxes_mm`` (its own
+        coordinates, mm; a 10 mm cube from its origin when a test set none;
+        None: no solid body), placed where ``insert_component`` or
+        ``set_component_transform`` put it, as for ``measure_clearance``:
+        each pair of boxes sharing a volume is one interference of that
+        volume (``interference.box_interferences``). Hidden components are
+        left out with ``ignore_hidden``; ``components`` limits the pairs as
+        the real adapter does. With ``coincident``, boxes that only touch
+        count too, and the reply is SolidWorks' detection's, as the real
+        adapter's is then. Mates don't move the mock's components.
+
         Args:
-            params (Any): Optional settings; ``coincident``, ``components``.
+            params (Any): Optional settings; ``coincident``, ``components``,
+                ``ignore_hidden``.
 
         Returns:
-            AdapterResult[dict[str, Any]]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
         """
+        from .solidworks import interference
+        from .solidworks.clearance import transform_box
+
         await asyncio.sleep(self._delays["model_operation"])
         options = params if isinstance(params, dict) else {}
 
@@ -5855,24 +5870,25 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 ),
             )
 
+        coincident = bool(options.get("coincident", False))
+        hidden_out = bool(options.get("ignore_hidden", False))
+        wanted = {str(name) for name in options.get("components") or []}
+        boxes: dict[str, list[float]] = {}
+        for name in self._components:
+            box = self.component_boxes_mm.get(name, self._DEFAULT_COMPONENT_BOX_MM)
+            shown = self._component_visibility.get(name, True)
+            if box is not None and (shown or not hidden_out):
+                boxes[name] = transform_box(box, *self._mock_placement(name))
+        details = interference.box_interferences(boxes, wanted, touching=coincident)
+        data = interference.found_reply(details, wanted, coincident)
+        if coincident:
+            data["method"] = interference.INTERFERENCE_DETECTION
+            data["note"] = interference.fallback_note(interference.COINCIDENT_REASON)
+
         self._operation_count += 1
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={
-                # The real adapter gets this from SolidWorks' interference
-                # engine. The mock has no geometry, so it cannot know whether
-                # anything overlaps and says so rather than reporting a clean
-                # assembly it never checked - a mock that always answered
-                # False would make this tool useless wherever mock mode runs.
-                "interference_found": None,
-                "interference_count": None,
-                "interferences": [],
-                "coincident_treated_as_interference": bool(
-                    options.get("coincident", False)
-                ),
-                "scope": "whole assembly",
-                "tolerance_applied": None,
-            },
+            data=data,
             execution_time=self._delays["model_operation"],
         )
 

@@ -376,6 +376,33 @@ interference-display mode.
 Found 2026-08-14 while implementing `check_interference` against a live SolidWorks 2025
 session (gen_py wrapper `83A33D31-…x0x33x0`).
 
+**The manager shows on screen.** Until `Done()` the manager keeps the assembly in
+SolidWorks' interference display, and a user saw Interference Detection come up at
+every call, many in a row in a thread-phase sweep (2026-11-22). So `check_interference`
+now finds the overlaps in the geometry kernel (`adapters/solidworks/interference.py`):
+
+- each part component's solid bodies, `IComponent2.GetBodies2(0)`, which come in the
+  part's coordinates;
+- a temporary copy of each (`IBody2.Copy`), placed by the component's `Transform2`
+  (`IMathUtility.CreateTransform`, `ApplyTransform`), as `rotation_clearance` places
+  its copies;
+- `Operations2(SWBODYINTERSECT)` on fresh copies of two placed bodies, since it
+  consumes both. Each piece above 1e-6 mm³ is one interference, with its volume;
+  `swBodyOperationSameToolAndTarget` (545) means two identical bodies, which share the
+  whole body.
+
+Boxes (`GetBodyBox`, placed) are compared first, so components apart cost no boolean.
+The manager still runs, as above, for `coincident` (only it counts touching faces) and
+when the kernel can't answer: a lightweight component, or an intersection that raises
+or gives an error code other than no error, no intersection (1067), disjoint (5) or
+empty (6). The reply's `method` says which ran, and its `note` why.
+
+Boxes that only touch aren't intersected. To confirm live
+(`tests/scripts/probe_interference.py` runs both on scratch assemblies): the counts
+and volumes match the manager's; SolidWorks stays minimized with no PropertyManager;
+and which code faces touching inside overlapping boxes give (a pin line to line in its
+hole). If it is partial coincidence (1040), such assemblies fall back to the manager.
+
 ---
 
 ## 14. `IInterference.Components` is a property, not a method

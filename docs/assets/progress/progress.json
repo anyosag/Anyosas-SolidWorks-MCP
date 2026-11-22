@@ -321,7 +321,7 @@
     "family": "analysis",
     "level": "stable",
     "reason": "",
-    "summary": "Find where the components of the active assembly overlap (Tools > Interference Detection)."
+    "summary": "Find where the components of the active assembly overlap, without SolidWorks' Interference Detection on screen."
    },
    {
     "name": "check_printability",

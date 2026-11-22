@@ -260,6 +260,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`check_interference` runs in the background.** It used SolidWorks'
+  `InterferenceDetectionManager`, which keeps the assembly in the
+  Interference Detection display until it is done, and a user saw it come
+  up on screen at every call, many in a row in a thread-phase sweep. It now
+  intersects the components' solid bodies in the geometry kernel: each part
+  component's bodies, copied into place by its `Transform2` and intersected
+  with `IBody2.Operations2`, with nothing shown. Each overlapping piece is
+  one interference with its volume, as before, and components whose boxes
+  don't overlap cost no intersection. SolidWorks' detection still runs,
+  unchanged, for `coincident` and when the kernel can't answer (a
+  lightweight component, a body that doesn't read, an intersection that
+  fails); the reply's `method` says which ran (`body_intersection` or
+  `interference_detection`) and a `note` says why. `verify_model`'s
+  `no_interference` and `add_mate`'s `check_interference` use the same
+  check. The mock adapter answers from its components' boxes instead of
+  `None`. Not yet run live.
 - **`check_interference` with two or more `components` reports only the
   interferences between them.** It kept every interference of any listed
   component, so a nut and its tray listed gave back the tray's overlaps with

@@ -808,6 +808,84 @@ def _interference_details(adapter: Any, interferences: Any) -> list[dict[str, An
     return details
 
 
+def _manager_interferences(
+    adapter: Any,
+    assembly: Any,
+    coincident: bool,
+    include_multibody: bool,
+    ignore_hidden: bool,
+    wanted_names: set[str],
+) -> dict[str, Any]:
+    """SolidWorks' own interference detection: ``InterferenceDetectionManager``.
+
+    ``GetInterferenceCount`` is an ordinary return value, so ``0`` is a real
+    measurement rather than a swallowed failure, and each ``IInterference``
+    carries the overlap ``Volume``. The manager puts the assembly into
+    SolidWorks' interference display until ``Done()``, so it may show on
+    screen; ``check_interference`` runs it only when the kernel can't answer.
+
+    Args:
+        adapter: A connected ``PyWin32Adapter``, on the COM thread.
+        assembly: The assembly, flagged for ``IAssemblyDoc``.
+        coincident: Treat touching faces as interference.
+        include_multibody: Include interferences between a part's bodies.
+        ignore_hidden: Leave hidden bodies and components out.
+        wanted_names: The ``components`` list (:func:`interferences_among`).
+
+    Returns:
+        dict[str, Any]: ``check_interference``'s data, without ``method``.
+
+    Raises:
+        Exception: The manager is unavailable, or its count fails.
+    """
+    manager = adapter._attempt(
+        lambda: assembly.InterferenceDetectionManager, default=None
+    )
+    if manager is None:
+        raise Exception(
+            "InterferenceDetectionManager is unavailable on this "
+            "assembly, so no interference check was performed."
+        )
+    manager = _sw_type_info.flagged(manager, "IInterferenceDetectionMgr")
+
+    for name, value in (
+        ("TreatCoincidenceAsInterference", coincident),
+        ("IncludeMultibodyPartInterferences", include_multibody),
+        ("IgnoreHiddenBodies", ignore_hidden),
+        ("MakeInterferingPartsTransparent", False),
+    ):
+        adapter._attempt(lambda n=name, v=value: setattr(manager, n, v), default=None)
+
+    try:
+        # A real return value: 0 means SolidWorks found nothing, and a COM
+        # failure raises instead of flattening into a false clean result.
+        count = int(manager.GetInterferenceCount() or 0)
+        interferences = (
+            adapter._attempt(lambda: manager.GetInterferences(), default=None)
+            if count
+            else None
+        )
+        details = _interference_details(adapter, interferences)
+    finally:
+        # Leaves the assembly out of interference-display mode even when the
+        # read above fails.
+        adapter._attempt(lambda: manager.Done(), default=None)
+
+    if wanted_names:
+        details = interferences_among(details, wanted_names)
+
+    return {
+        "interference_found": bool(details) if wanted_names else count > 0,
+        "interference_count": len(details) if wanted_names else count,
+        "interferences": details,
+        "coincident_treated_as_interference": coincident,
+        "scope": sorted(wanted_names) if wanted_names else "whole assembly",
+        # Said plainly rather than silently dropped: a caller passing a
+        # tolerance would otherwise assume it was applied.
+        "tolerance_applied": None,
+    }
+
+
 def _component_pairs(adapter: Any, assembly: Any) -> list[tuple[str, Any]]:
     """Return an assembly's top-level components as ``(name, dispatch)``.
 
@@ -4553,39 +4631,46 @@ class SolidWorksIOMixin:
     async def check_interference(
         self, params: Any = None
     ) -> AdapterResult[dict[str, Any]]:
-        """Run SolidWorks' interference detection on the active assembly.
+        """Find the active assembly's interferences, without SolidWorks' UI where it can.
 
-        Uses ``IAssemblyDoc::InterferenceDetectionManager``
-        (``IInterferenceDetectionMgr``), **not** the older
-        ``ToolsCheckInterference2``. That call is declared ``Sub`` with two
-        ``ByRef`` out-parameters, and on SW 2025 through pywin32 late binding
-        it could not be made to report anything: ``pythoncom.Missing`` raises
-        ``PyOleMissing can not be converted to a COM VARIANT``, a plain
-        ``None`` or a typed array VARIANT raises ``Type mismatch``, passing a
-        component array throws server-side, and a byref ``VT_VARIANT`` pair is
-        accepted but leaves both out-parameters ``None`` for an assembly that
-        demonstrably interferes. An inspection tool that always answers "no
-        interference" is worse than one that refuses.
+        The components' solid bodies are intersected in the geometry kernel
+        (:mod:`.interference`, ``method: body_intersection``), and nothing
+        shows on screen. SolidWorks' own detection,
+        ``IAssemblyDoc::InterferenceDetectionManager``
+        (:func:`_manager_interferences`), runs instead when ``coincident``
+        asks for touching faces, which only it counts, or when the kernel
+        can't answer for certain (a lightweight component, a body that
+        doesn't read): ``method: interference_detection``, and a ``note``
+        says why. It puts the assembly into the interference display until
+        ``Done()``, so it may show briefly.
 
-        ``GetInterferenceCount`` is an ordinary return value, so ``0`` is a
-        real measurement rather than a swallowed failure, and each
-        ``IInterference`` carries the overlap ``Volume``.
+        Neither uses the older ``ToolsCheckInterference2``. That call is
+        declared ``Sub`` with two ``ByRef`` out-parameters, and on SW 2025
+        through pywin32 late binding it could not be made to report anything:
+        ``pythoncom.Missing`` raises ``PyOleMissing can not be converted to a
+        COM VARIANT``, a plain ``None`` or a typed array VARIANT raises ``Type
+        mismatch``, passing a component array throws server-side, and a byref
+        ``VT_VARIANT`` pair is accepted but leaves both out-parameters
+        ``None`` for an assembly that demonstrably interferes. An inspection
+        tool that always answers "no interference" is worse than one that
+        refuses.
 
         Args:
             params (Any): Optional settings. ``coincident`` (bool, default
                 ``False``) treats touching faces as interference;
                 ``include_multibody`` (bool, default ``True``);
                 ``ignore_hidden`` (bool, default ``False``). A ``components``
-                list filters which interferences are reported
-                (:func:`interferences_among`). ``tolerance``
-                is accepted and ignored - SolidWorks' interference detection
-                has no tolerance setting - and the payload says so.
+                list limits the interferences to those
+                :func:`interferences_among` keeps. ``tolerance`` is accepted
+                and ignored - SolidWorks' interference detection has no
+                tolerance setting - and the payload says so.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``interference_found``,
-            ``interference_count``, and per-interference component pairs with
-            overlap volumes in mm^3. ``ERROR`` when there is no active model
-            or the active document is not an assembly.
+            ``interference_count``, per-interference component pairs with
+            overlap volumes in mm^3, ``scope`` and ``method``; ``note`` when
+            SolidWorks' detection ran. ``ERROR`` when there is no active
+            model or the active document is not an assembly.
 
         Raises:
             Exception: Propagated through ``_handle_com_operation``.
@@ -4619,55 +4704,34 @@ class SolidWorksIOMixin:
         wanted_names = {str(name) for name in wanted} if wanted else set()
 
         def _check() -> dict[str, Any]:
+            from . import interference
+
             assembly = _sw_type_info.flagged(adapter.currentModel, "IAssemblyDoc")
-            manager = adapter._attempt(
-                lambda: assembly.InterferenceDetectionManager, default=None
-            )
-            if manager is None:
-                raise Exception(
-                    "InterferenceDetectionManager is unavailable on this "
-                    "assembly, so no interference check was performed."
-                )
-            manager = _sw_type_info.flagged(manager, "IInterferenceDetectionMgr")
-
-            for name, value in (
-                ("TreatCoincidenceAsInterference", coincident),
-                ("IncludeMultibodyPartInterferences", include_multibody),
-                ("IgnoreHiddenBodies", ignore_hidden),
-                ("MakeInterferingPartsTransparent", False),
-            ):
-                adapter._attempt(
-                    lambda n=name, v=value: setattr(manager, n, v), default=None
-                )
-
-            try:
-                # A real return value: 0 means SolidWorks found nothing, and a
-                # COM failure raises instead of flattening into a false clean
-                # result.
-                count = int(manager.GetInterferenceCount() or 0)
-                interferences = (
-                    adapter._attempt(lambda: manager.GetInterferences(), default=None)
-                    if count
-                    else None
-                )
-                details = _interference_details(adapter, interferences)
-            finally:
-                # Leaves the assembly out of interference-display mode even
-                # when the read above fails.
-                adapter._attempt(lambda: manager.Done(), default=None)
-
-            if wanted_names:
-                details = interferences_among(details, wanted_names)
-
+            reason = interference.COINCIDENT_REASON if coincident else None
+            if reason is None:
+                try:
+                    details = interference.body_interferences(
+                        adapter,
+                        assembly,
+                        include_multibody=include_multibody,
+                        ignore_hidden=ignore_hidden,
+                        asked=wanted_names,
+                    )
+                except interference.Unreadable as exc:
+                    reason = str(exc)
+                else:
+                    return interference.found_reply(details, wanted_names)
             return {
-                "interference_found": bool(details) if wanted_names else count > 0,
-                "interference_count": len(details) if wanted_names else count,
-                "interferences": details,
-                "coincident_treated_as_interference": coincident,
-                "scope": sorted(wanted_names) if wanted_names else "whole assembly",
-                # Said plainly rather than silently dropped: a caller passing a
-                # tolerance would otherwise assume it was applied.
-                "tolerance_applied": None,
+                **_manager_interferences(
+                    adapter,
+                    assembly,
+                    coincident,
+                    include_multibody,
+                    ignore_hidden,
+                    wanted_names,
+                ),
+                "method": interference.INTERFERENCE_DETECTION,
+                "note": interference.fallback_note(reason),
             }
 
         return cast(

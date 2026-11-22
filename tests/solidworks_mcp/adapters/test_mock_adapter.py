@@ -1430,27 +1430,6 @@ async def test_mock_undo_removes_the_last_feature() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_does_not_claim_a_clean_assembly() -> None:
-    """The mock must not answer a question it cannot answer.
-
-    ``interference_found: False`` from a mock would read as "checked and
-    clean". The mock has no geometry, so the only honest answer is "not
-    determinable".
-    """
-    adapter = MockSolidWorksAdapter({})
-    await adapter.connect()
-    await adapter.insert_component("C:/parts/a.sldprt")
-    await adapter.insert_component("C:/parts/b.sldprt")
-
-    result = await adapter.check_interference({})
-    assert result.is_success
-    assert result.data["interference_found"] is None, (
-        "the mock reported an interference verdict it never computed"
-    )
-    assert result.data["interference_count"] is None
-
-
-@pytest.mark.asyncio
 async def test_mock_refuses_with_fewer_than_two_components() -> None:
     """One component cannot interfere with anything."""
     adapter = MockSolidWorksAdapter({})
