@@ -117,6 +117,11 @@ every check against ``MockSolidWorksAdapter`` with the raw COM parts skipped
 (the mock's numbers are made up, so only an ``error`` there means something).
 A full live run takes about 15 to 25 minutes; ``--pacing live`` uses the live
 suite's slower settle gaps instead of the server's.
+
+The machinery is shared: a sibling probe (``probe_aggrewell_fixes.py``) loads
+this file and runs its own checks through :func:`main` with a
+:class:`ProbeKind`, which names its checks, its scratch prefix, its log tag and
+its output folder. :data:`SPEED` is this probe's.
 """
 
 from __future__ import annotations
@@ -170,6 +175,8 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO / "tests" / ".generated" / "speed_probe"
 #: Every scratch file the probe writes starts with this.
 PREFIX = "SpeedProbe_"
+#: What the probe's lines start with (``[speed-probe]``), and its FastMCP's name.
+TAG = "speed-probe"
 #: The SolidWorks files deleted at the end (unless ``--keep-scratch``).
 SOLIDWORKS_SUFFIXES = (".sldprt", ".sldasm")
 
@@ -241,6 +248,7 @@ class Outcome:
     error: str | None = None
     duration_s: float = 0.0
     closed: list[str] = field(default_factory=list)
+    tag: str = TAG
 
     def expect(
         self, what: str, ok: bool | None, got: Any = None, want: Any = None
@@ -253,7 +261,7 @@ class Outcome:
         if not self.quiet:
             mark = {True: "ok ", False: "BAD", None: " ? "}[ok]
             wanted = f" (want {want!r})" if want is not None else ""
-            print(f"[speed-probe]   {mark} {what}: {_short(got)}{wanted}", flush=True)
+            print(f"[{self.tag}]   {mark} {what}: {_short(got)}{wanted}", flush=True)
         return bool(ok)
 
     def measure(self, key: str, value: Any) -> Any:
@@ -267,7 +275,7 @@ class Outcome:
     def note(self, text: str) -> None:
         self.notes.append(text)
         if not self.quiet:
-            print(f"[speed-probe]   note: {text}", flush=True)
+            print(f"[{self.tag}]   note: {text}", flush=True)
 
     def settle(self) -> None:
         """The status from what happened: error, skip, fail or pass."""
@@ -520,7 +528,7 @@ def _env_seconds(name: str, default: float) -> float:
         return float(default)
 
 
-def warm_up(pid: int) -> dict[str, Any]:
+def warm_up(pid: int, tag: str = TAG) -> dict[str, Any]:
     """Wait for a freshly started SolidWorks, as ``conftest._warm_up`` does."""
     readiness = load_readiness()
     warmup = _env_seconds("SW_TEST_WARMUP_SECONDS", DEFAULT_WARMUP_SECONDS)
@@ -533,7 +541,7 @@ def warm_up(pid: int) -> dict[str, Any]:
         settle=_env_seconds(
             "SW_TEST_WARMUP_SETTLE_SECONDS", readiness.DEFAULT_SETTLE_SECONDS
         ),
-        log=lambda line: print(line.replace("[live]", "[speed-probe]"), flush=True),
+        log=lambda line: print(line.replace("[live]", f"[{tag}]"), flush=True),
     )
     return {
         "age_s": None if age is None else round(age),
@@ -558,7 +566,8 @@ class Probe:
     """The adapter, the tools and the probe's own documents.
 
     ``live`` False is the dry run on ``MockSolidWorksAdapter``: raw COM work
-    is skipped and nothing is closed.
+    is skipped and nothing is closed. ``prefix`` starts every scratch file's
+    name and ``tag`` every line printed (:class:`ProbeKind`).
     """
 
     def __init__(
@@ -569,6 +578,8 @@ class Probe:
         run_dir: Path,
         log: LogCapture,
         live: bool,
+        prefix: str = PREFIX,
+        tag: str = TAG,
     ) -> None:
         self.adapter = adapter
         self.mcp = mcp
@@ -576,6 +587,8 @@ class Probe:
         self.run_dir = run_dir
         self.log = log
         self.live = live
+        self.prefix = prefix
+        self.tag = tag
         self.outcome: Outcome | None = None
         self.calls: list[dict[str, Any]] = []
         self.baseline: set[str] = set()
@@ -588,15 +601,23 @@ class Probe:
     # -- tools
 
     async def call(
-        self, tool: str, args: dict[str, Any] | None = None
+        self,
+        tool: str,
+        args: dict[str, Any] | None = None,
+        document: str | None = None,
     ) -> dict[str, Any]:
-        """Call a tool as a script does (a dict for its input); its reply."""
+        """Call a tool as a script does (a dict for its input); its reply.
+
+        ``document`` is the tool's own ``document`` argument (the tool
+        boundary makes it the active document first).
+        """
         fn = self.tools[tool]
+        chosen = {"document": document} if document else {}
         started = time.perf_counter()
         if takes_input(fn):
-            reply = await fn(dict(args or {}))
+            reply = await fn(dict(args or {}), **chosen)
         else:
-            reply = await fn()
+            reply = await fn(**chosen)
         self.last_wall = time.perf_counter() - started
         if isinstance(reply, ToolResult):  # content beside the reply
             reply = dict(reply.structured_content or {})
@@ -613,9 +634,14 @@ class Probe:
         )
         return reply
 
-    async def ok(self, tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def ok(
+        self,
+        tool: str,
+        args: dict[str, Any] | None = None,
+        document: str | None = None,
+    ) -> dict[str, Any]:
         """:meth:`call`, which must succeed."""
-        reply = await self.call(tool, args)
+        reply = await self.call(tool, args, document)
         if reply.get("status") != "success":
             raise CheckFailed(
                 f"{tool} failed ({reply.get('error_type')}): {reply.get('message')}"
@@ -676,10 +702,10 @@ class Probe:
 
     def file(self, label: str, suffix: str) -> Path:
         """A path in the run folder that isn't taken yet."""
-        path = self.run_dir / f"{PREFIX}{label}{suffix}"
+        path = self.run_dir / f"{self.prefix}{label}{suffix}"
         number = 2
         while path.exists():
-            path = self.run_dir / f"{PREFIX}{label}_{number}{suffix}"
+            path = self.run_dir / f"{self.prefix}{label}_{number}{suffix}"
             number += 1
         return path
 
@@ -729,13 +755,13 @@ class Probe:
         return path
 
     async def new_part(self, label: str) -> Path:
-        """A new part, saved at once as ``SpeedProbe_<label>`` in the run folder."""
+        """A new part, saved at once as ``<prefix><label>`` in the run folder."""
         made = await self.ok("create_part", {})
         await self._own_new_document(made, (made.get("part") or {}).get("name"))
         return await self._save_new(label, ".SLDPRT")
 
     async def new_assembly(self, label: str) -> Path:
-        """A new assembly, saved at once as ``SpeedProbe_<label>`` in the run folder."""
+        """A new assembly, saved at once as ``<prefix><label>`` in the run folder."""
         made = await self.ok("create_assembly", {})
         await self._own_new_document(made, (made.get("assembly") or {}).get("name"))
         return await self._save_new(label, ".SLDASM")
@@ -809,9 +835,11 @@ class Probe:
         return closed
 
 
-async def register_tools(adapter: Any) -> tuple[FastMCP, dict[str, Any]]:
+async def register_tools(
+    adapter: Any, name: str = TAG
+) -> tuple[FastMCP, dict[str, Any]]:
     """Register the tool groups the checks use on one FastMCP, as the server does."""
-    mcp = FastMCP("speed-probe")
+    mcp = FastMCP(name)
     for register in (
         register_sketching_tools,
         register_modeling_tools,
@@ -2925,16 +2953,16 @@ CHECKS: dict[str, Check] = {
 }
 
 
-def build_plan(only: str | None) -> list[Check]:
+def build_plan(only: str | None, checks: dict[str, Check] = CHECKS) -> list[Check]:
     if not only:
-        return list(CHECKS.values())
+        return list(checks.values())
     names = [name.strip() for name in only.split(",") if name.strip()]
-    unknown = [name for name in names if name not in CHECKS]
+    unknown = [name for name in names if name not in checks]
     if unknown:
         raise SystemExit(
-            f"Unknown check(s): {', '.join(unknown)}. The checks: {', '.join(CHECKS)}"
+            f"Unknown check(s): {', '.join(unknown)}. The checks: {', '.join(checks)}"
         )
-    return [CHECKS[name] for name in CHECKS if name in names]
+    return [checks[name] for name in checks if name in names]
 
 
 #: The adapter and module members the checks reach past the tools.
@@ -3011,22 +3039,28 @@ def fill_mock_gaps(adapter: Any) -> list[str]:
     return filled
 
 
-def static_problems(plan: list[Check], tools: dict[str, Any]) -> list[str]:
+def static_problems(
+    plan: list[Check],
+    tools: dict[str, Any],
+    members: tuple[tuple[Any, str], ...] = MEMBERS,
+) -> list[str]:
     problems = []
     for check in plan:
         missing = sorted(set(check.tools) - set(tools))
         if missing:
             problems.append(f"{check.name}: tools not registered: {', '.join(missing)}")
-    for owner, name in MEMBERS:
+    for owner, name in members:
         if not hasattr(owner, name):
             problems.append(f"{getattr(owner, '__name__', owner)} has no {name}")
     return problems
 
 
-def com_member_report() -> dict[str, Any]:
+def com_member_report(
+    com_members: dict[str, tuple[str, ...]] = COM_MEMBERS,
+) -> dict[str, Any]:
     """The raw parts' COM methods in the gen_py wrapper (none needed to run, only read)."""
     found: dict[str, Any] = {}
-    for interface, names in COM_MEMBERS.items():
+    for interface, names in com_members.items():
         try:
             known = sw_type_info.interface_method_names(interface)
         except Exception as exc:  # noqa: BLE001 - no wrapper here: reported
@@ -3035,6 +3069,56 @@ def com_member_report() -> dict[str, Any]:
             {name: name in known for name in names} if known else "not in wrapper"
         )
     return found
+
+
+async def _find_summary_reuse(p: Probe, report: dict[str, Any]) -> None:
+    """Whether summaries are reused, found once on the mock, for ``summary_reuse``."""
+    if p.live:
+        if "summary_reuse" in report["plan"]:
+            p.cache["summary_reuse"] = await detect_summary_reuse()
+        return
+    report["summary_reuse"] = await detect_summary_reuse()
+    print(f"[{p.tag}] summary reuse on this branch: {report['summary_reuse']}")
+    p.cache["summary_reuse"] = report["summary_reuse"]
+
+
+@dataclass(frozen=True)
+class ProbeKind:
+    """A probe script: its checks and what it calls its things.
+
+    Attributes:
+        tag: What its printed lines start with (``[speed-probe]``).
+        prefix: What every scratch file's name starts with.
+        default_out: The folder its run folders go in.
+        about: What it checks, for ``--help`` ("the speed plan's changes").
+        checks: Its checks by name, in order.
+        members: The adapter and module members it reaches past the tools.
+        com_members: The COM methods its raw parts call, by interface.
+        fill_mock: The dry run's stand-ins for what the mock doesn't do.
+        prepare: Run once before the checks, with the probe and the report.
+    """
+
+    tag: str
+    prefix: str
+    default_out: Path
+    about: str
+    checks: dict[str, Check]
+    members: tuple[tuple[Any, str], ...] = ()
+    com_members: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    fill_mock: Callable[[Any], list[str]] = fill_mock_gaps
+    prepare: Callable[[Probe, dict[str, Any]], Awaitable[None]] | None = None
+
+
+SPEED = ProbeKind(
+    tag=TAG,
+    prefix=PREFIX,
+    default_out=DEFAULT_OUT,
+    about="the speed plan's changes",
+    checks=CHECKS,
+    members=MEMBERS,
+    com_members=COM_MEMBERS,
+    prepare=_find_summary_reuse,
+)
 
 
 # ---- running ---------------------------------------------------------------------------------
@@ -3061,14 +3145,14 @@ async def run_checks(
     p: Probe, plan: list[Check], report: dict[str, Any], path: Path
 ) -> None:
     for check in plan:
-        outcome = Outcome(check.name, quiet=not p.live)
+        outcome = Outcome(check.name, quiet=not p.live, tag=p.tag)
         if p.live and solidworks_pid() is None:
             outcome.error = "SolidWorks is not running (crashed?); the run stopped here"
             outcome.settle()
             report["checks"][check.name] = outcome.as_dict()
             continue
         p.outcome = outcome
-        print(f"[speed-probe] {check.name}: {check.settles}", flush=True)
+        print(f"[{p.tag}] {check.name}: {check.settles}", flush=True)
         keep = set(await p.documents()) if p.live else set()
         started = time.perf_counter()
         try:
@@ -3093,7 +3177,7 @@ async def run_checks(
             report["checks"][check.name] = outcome.as_dict()
             report["calls"] = p.calls
             write_report(path, report)
-            print(f"[speed-probe] {check.name}: {outcome.status}", flush=True)
+            print(f"[{p.tag}] {check.name}: {outcome.status}", flush=True)
         p.outcome = None
 
 
@@ -3137,10 +3221,10 @@ def _run_dir(out: Path, prefix: str) -> Path:
     return run
 
 
-def _delete_scratch(run_dir: Path) -> list[str]:
+def _delete_scratch(run_dir: Path, prefix: str = PREFIX) -> list[str]:
     """The probe's SolidWorks files in the run folder, deleted; those that wouldn't go."""
     left = []
-    for path in run_dir.glob(f"{PREFIX}*"):
+    for path in run_dir.glob(f"{prefix}*"):
         if path.suffix.lower() in SOLIDWORKS_SUFFIXES:
             try:
                 path.unlink()
@@ -3149,12 +3233,12 @@ def _delete_scratch(run_dir: Path) -> list[str]:
     return left
 
 
-async def live_run(args: argparse.Namespace) -> int:
-    plan = build_plan(args.only)
+async def live_run(args: argparse.Namespace, kind: ProbeKind = SPEED) -> int:
+    plan = build_plan(args.only, kind.checks)
     pid = solidworks_pid()
     if pid is None:
         print(
-            "[speed-probe] SolidWorks is not running. Start it (the probe never "
+            f"[{kind.tag}] SolidWorks is not running. Start it (the probe never "
             "launches it), let it finish starting, and run again.",
             flush=True,
         )
@@ -3163,7 +3247,7 @@ async def live_run(args: argparse.Namespace) -> int:
         for name, value in LIVE_PACING.items():
             os.environ.setdefault(name, value)
     os.environ["SOLIDWORKS_MCP_TIMING"] = "1"
-    waited = warm_up(pid)
+    waited = warm_up(pid, kind.tag)
     run_dir = _run_dir(Path(args.out), "")
     log = LogCapture()
     log.start(run_dir / "server.log")
@@ -3179,7 +3263,7 @@ async def live_run(args: argparse.Namespace) -> int:
         "probe_log_path": str(log.path),
         "checks": {},
     }
-    print(f"[speed-probe] run folder: {run_dir}", flush=True)
+    print(f"[{kind.tag}] run folder: {run_dir}", flush=True)
     adapter = PyWin32Adapter({})
     p: Probe | None = None
     try:
@@ -3192,16 +3276,18 @@ async def live_run(args: argparse.Namespace) -> int:
         report["solidworks"]["application"] = (
             info.data if info.is_success else info.error
         )
-        mcp, tools = await register_tools(adapter)
-        problems = static_problems(plan, tools)
+        mcp, tools = await register_tools(adapter, kind.tag)
+        problems = static_problems(plan, tools, kind.members)
         if problems:
             report["problems"] = problems
             raise SystemExit("Plan problems: " + "; ".join(problems))
-        p = Probe(adapter, mcp, tools, run_dir, log, live=True)
+        p = Probe(
+            adapter, mcp, tools, run_dir, log, True, prefix=kind.prefix, tag=kind.tag
+        )
         p.baseline = set(await p.documents())
         report["solidworks"]["documents_open_before"] = len(p.baseline)
-        if "summary_reuse" in report["plan"]:
-            p.cache["summary_reuse"] = await detect_summary_reuse()
+        if kind.prepare is not None:
+            await kind.prepare(p, report)
         await run_checks(p, plan, report, path)
     finally:
         if p is not None:
@@ -3215,26 +3301,26 @@ async def live_run(args: argparse.Namespace) -> int:
                 report["closed_at_end"] = f"failed: {exc}"
         await adapter.disconnect()
         if not args.keep_scratch:
-            report["scratch_not_deleted"] = _delete_scratch(run_dir)
+            report["scratch_not_deleted"] = _delete_scratch(run_dir, kind.prefix)
         report["finished"] = datetime.now().isoformat(timespec="seconds")
         write_report(path, report)
         log.stop()
         print_table(report)
-        print(f"[speed-probe] report: {path}", flush=True)
+        print(f"[{kind.tag}] report: {path}", flush=True)
     failed = [
         n for n, c in report["checks"].items() if c["status"] in ("fail", "error")
     ]
     return 1 if failed else 0
 
 
-async def dry_run(args: argparse.Namespace) -> int:
+async def dry_run(args: argparse.Namespace, kind: ProbeKind = SPEED) -> int:
     """The plan, the imports and every check on the mock adapter; no SolidWorks."""
-    plan = build_plan(args.only)
+    plan = build_plan(args.only, kind.checks)
     os.environ["SOLIDWORKS_MCP_TIMING"] = "1"
     run_dir = _run_dir(Path(args.out), "dryrun-")
     log = LogCapture()
     log.start(run_dir / "server.log")
-    print(f"[speed-probe] dry run, no SolidWorks; folder: {run_dir}")
+    print(f"[{kind.tag}] dry run, no SolidWorks; folder: {run_dir}")
     total = 0.0
     for check in plan:
         total += check.minutes
@@ -3260,20 +3346,21 @@ async def dry_run(args: argparse.Namespace) -> int:
         "plan": [check.name for check in plan],
         "settings": _settings(),
         "server_log_path": str(server_log_path()),
-        "mock_stand_ins": fill_mock_gaps(adapter),
+        "mock_stand_ins": kind.fill_mock(adapter),
         "checks": {},
     }
     try:
-        mcp, tools = await register_tools(adapter)
-        report["problems"] = static_problems(plan, tools)
-        report["com_members"] = com_member_report()
-        report["summary_reuse"] = await detect_summary_reuse()
+        mcp, tools = await register_tools(adapter, kind.tag)
+        report["problems"] = static_problems(plan, tools, kind.members)
+        report["com_members"] = com_member_report(kind.com_members)
         for problem in report["problems"]:
-            print(f"[speed-probe] PROBLEM: {problem}")
-        print(f"[speed-probe] COM members in the type library: {report['com_members']}")
-        print(f"[speed-probe] summary reuse on this branch: {report['summary_reuse']}")
-        p = Probe(adapter, mcp, tools, run_dir, log, live=False)
-        p.cache["summary_reuse"] = report["summary_reuse"]
+            print(f"[{kind.tag}] PROBLEM: {problem}")
+        print(f"[{kind.tag}] COM members in the type library: {report['com_members']}")
+        p = Probe(
+            adapter, mcp, tools, run_dir, log, False, prefix=kind.prefix, tag=kind.tag
+        )
+        if kind.prepare is not None:
+            await kind.prepare(p, report)
         await run_checks(p, plan, report, path)
     finally:
         await adapter.disconnect()
@@ -3281,30 +3368,36 @@ async def dry_run(args: argparse.Namespace) -> int:
         log.stop()
     print_table(report)
     print(
-        "[speed-probe] on the mock only 'error' means a fault in the probe; fail is the mock's numbers"
+        f"[{kind.tag}] on the mock only 'error' means a fault in the probe; fail is the mock's numbers"
     )
-    print(f"[speed-probe] report: {path}")
+    print(f"[{kind.tag}] report: {path}")
     errors = [n for n, c in report["checks"].items() if c["status"] == "error"]
     return 1 if errors or report["problems"] else 0
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(
+    argv: list[str] | None = None, kind: ProbeKind = SPEED
+) -> argparse.Namespace:
+    try:
+        shown = f"{kind.default_out.relative_to(REPO).as_posix()}/"
+    except ValueError:
+        shown = str(kind.default_out)
     parser = argparse.ArgumentParser(
         description=(
-            "Check the speed plan's changes against the running SolidWorks, on "
+            f"Check {kind.about} against the running SolidWorks, on "
             "scratch documents only. Needs the user's OK and nothing else "
             "driving SolidWorks; --dry-run touches no SolidWorks."
         )
     )
     parser.add_argument(
         "--out",
-        default=str(DEFAULT_OUT),
-        help="Folder for the run's folder (default tests/.generated/speed_probe/)",
+        default=str(kind.default_out),
+        help=f"Folder for the run's folder (default {shown})",
     )
     parser.add_argument(
         "--only",
         default=None,
-        help=f"Comma-separated checks to run: {', '.join(CHECKS)}",
+        help=f"Comma-separated checks to run: {', '.join(kind.checks)}",
     )
     parser.add_argument(
         "--dry-run",
@@ -3320,14 +3413,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--keep-scratch",
         action="store_true",
-        help="Keep the SpeedProbe_ parts and assemblies after the run",
+        help=f"Keep the {kind.prefix} parts and assemblies after the run",
     )
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    return asyncio.run(dry_run(args) if args.dry_run else live_run(args))
+def main(argv: list[str] | None = None, kind: ProbeKind = SPEED) -> int:
+    args = parse_args(argv, kind)
+    return asyncio.run(dry_run(args, kind) if args.dry_run else live_run(args, kind))
 
 
 if __name__ == "__main__":
