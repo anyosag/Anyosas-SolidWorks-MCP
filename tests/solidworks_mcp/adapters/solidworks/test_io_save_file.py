@@ -151,9 +151,10 @@ async def test_saving_to_a_new_path_still_uses_save_as(tmp_path: Path) -> None:
     assert target.exists()
     assert model.save_as3_calls == [str(target)]
     assert model.save3_calls == 0
-    # The source document is left alone; only the name occupying the target
-    # path is closed.
-    assert app.closed == [target.name]
+    # The source document is left alone, and with no other document open at
+    # the target path nothing is closed: a file name alone no longer closes
+    # one (it closed a same-titled part, saving.close_holder).
+    assert app.closed == []
     assert part.read_bytes() == b"original geometry"
 
 
