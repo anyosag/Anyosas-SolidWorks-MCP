@@ -1189,11 +1189,13 @@ def _describe_open_document(
     type_name = _DOC_TYPE_NAMES.get(
         int(type_raw) if isinstance(type_raw, (int, float)) else -1, "Unknown"
     )
+    # By path when both are known: a part and an assembly of one name are both
+    # titled ``Tray`` when Windows hides extensions, and both read active.
     is_active = False
-    if title and active_title:
-        is_active = str(title) == str(active_title)
-    elif path and active_path:
+    if path and active_path:
         is_active = str(path).lower() == str(active_path).lower()
+    elif title and active_title:
+        is_active = str(title) == str(active_title)
     return {
         "title": str(title) if title else None,
         "path": str(path) if path else "",

@@ -326,8 +326,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so. Its reply's `closed` lists the documents the close took, read before
   and after, with a `warning` when there was more than the one, or none.
   Closing leftovers and the Save Bodies clean-up close by path the same way
-  when a title is shared. Whether `CloseDoc` and `ActivateDoc3` take a path
-  is not yet checked live.
+  when a title is shared, and `list_open_documents` marks the active
+  document by its path (by title it marked both active). Whether `CloseDoc`
+  and `ActivateDoc3` take a path is not yet checked live.
 - **STL export no longer fails before it works.** `Extension.SaveAs2` was
   called with six arguments and Python `None` where it takes an interface
   pointer, so every export logged a type mismatch and fell back to

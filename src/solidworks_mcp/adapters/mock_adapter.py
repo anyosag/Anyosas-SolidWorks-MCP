@@ -4496,7 +4496,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             in {
                 model.name.lower(),
                 model.path.lower(),
-                model.path.rsplit("/", 1)[-1].lower(),
+                model.path.replace("\\", "/").rsplit("/", 1)[-1].lower(),
             }
         ]
         if not matches:

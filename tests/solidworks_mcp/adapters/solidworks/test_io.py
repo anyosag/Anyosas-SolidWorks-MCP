@@ -3660,6 +3660,16 @@ def test_describe_open_document_falls_back_to_path_for_active_match() -> None:
     assert out["type"] == "Assembly"
 
 
+def test_describe_open_document_tells_two_documents_of_one_title_apart() -> None:
+    """A part and an assembly both titled Tray: only the active path is active."""
+    part = _FakeDoc("Tray", r"C:\p\Tray.SLDPRT", 1)
+    assembly = _FakeDoc("Tray", r"C:\p\Tray.SLDASM", 2)
+    active = ("Tray", r"C:\p\Tray.SLDASM")
+
+    assert _describe_open_document(_FakeAdapter(), part, *active)["is_active"] is False
+    assert _describe_open_document(_FakeAdapter(), assembly, *active)["is_active"]
+
+
 class _FakeExt:
     """Minimal ``IModelDocExtension`` stand-in recording preference writes."""
 
