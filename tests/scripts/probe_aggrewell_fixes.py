@@ -862,16 +862,34 @@ async def check_pattern_seeds(p: Any, r: Any) -> None:
             "edge_row: success", reply.get("status") == "success", reply.get("message")
         )
         row = reply.get("pattern") or {}
-        r.expect(
-            f"edge_row: left_out [Vent_Hole], patterned_by {name}",
-            _left_out(row) == {("Vent_Hole", name)},
-            row.get("left_out"),
-        )
-        r.expect(
-            f"edge_row: patterned is [{name}]",
-            row.get("patterned") == [name],
-            row.get("patterned"),
-        )
+        # A sure seed is left out at once (the mock reads every pattern so);
+        # an unsure one stays in unless SolidWorks refuses the call with it.
+        # Live (SOLIDWORKS 2026, 2026-11-22) the hole was unsure, and
+        # SolidWorks took Vent_Hole and its own edge pattern at once.
+        sure = "Vent_Hole" in ((plan or {}).get("sure") or {})
+        if sure or refused:
+            r.expect(
+                f"edge_row: {'a sure seed' if sure else 'refused once'}, so "
+                f"left_out [Vent_Hole], patterned_by {name}",
+                _left_out(row) == {("Vent_Hole", name)},
+                row.get("left_out"),
+            )
+            r.expect(
+                f"edge_row: patterned is [{name}]",
+                row.get("patterned") == [name],
+                row.get("patterned"),
+            )
+        else:
+            r.expect(
+                "edge_row: accepted at once, so nothing left out",
+                not row.get("left_out"),
+                row.get("left_out"),
+            )
+            r.expect(
+                f"edge_row: patterned is [Vent_Hole, {name}]",
+                row.get("patterned") == ["Vent_Hole", name],
+                row.get("patterned"),
+            )
         want = -_cuts("edge_row", state["vent"], state["hole"])
         r.expect(
             "edge_row: two holes",

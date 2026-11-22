@@ -2,7 +2,9 @@
 
 Written without SolidWorks; run it on scratch documents, with the user's OK.
 It builds a 40 x 10 x 10 mm bar (x 0 to 40, y -5 to 5, z 0 to 10) and four
-assemblies of it, with SolidWorks minimized first:
+assemblies of it. The window is left as the user has it: the user's Stage
+Manager parks SolidWorks without minimizing it, and a minimized frame would
+fight it.
 
 1. ``pair``: two bars 30 mm apart along x, sharing 10 x 10 x 10 = 1000 mm3;
 2. ``turned``: the second one turned 90 degrees about z at x = 30
@@ -14,9 +16,9 @@ assemblies of it, with SolidWorks minimized first:
 For each, it records:
 
 * the tool's ``check_interference`` (the kernel): ``method``, the count, the
-  volumes and the time, and after it the window state (still ``minimized``)
-  and whether SolidWorks has the foreground (it shouldn't). Whether a
-  PropertyManager showed can only be seen: watch the screen;
+  volumes and the time, and the window state and whether SolidWorks has the
+  foreground before and after it (unchanged, and not brought to the front).
+  Whether a PropertyManager showed can only be seen: watch the screen;
 * SolidWorks' own detection on the same assembly, as the fallback runs it
   (``io._manager_interferences``): the count, the volumes and the time;
 * that the two agree: the same count, volumes within 0.1 %.
@@ -24,9 +26,8 @@ For each, it records:
 Then ``check_interference`` with ``coincident`` on the touching pair:
 ``method: interference_detection`` and a ``note``.
 
-It only touches the documents it creates, closes them without saving,
-deletes its files, and puts the window back as it found it. The report is
-under ``tests/.generated/probe_interference/``.
+It only touches the documents it creates, closes them without saving, and
+deletes its files. The report is under ``tests/.generated/probe_interference/``.
 
 Usage (SolidWorks running, nothing else driving it, the user's OK)::
 
@@ -134,6 +135,7 @@ def _close(found: list[float], expected: list[float]) -> bool:
 
 
 async def _kernel(adapter: Any, tools: dict[str, Any]) -> dict[str, Any]:
+    window_before = _window(adapter)
     started = time.perf_counter()
     reply = await tools["check_interference"]({})
     seconds = time.perf_counter() - started
@@ -147,6 +149,7 @@ async def _kernel(adapter: Any, tools: dict[str, Any]) -> dict[str, Any]:
         "volumes": _volumes(data) if "interferences" in data else None,
         "seconds": round(seconds, 3),
         "execution_time": reply.get("execution_time"),
+        "window_before": window_before,
         "window_after": _window(adapter),
     }
 
@@ -186,14 +189,18 @@ async def case(
             ),
         )
     kernel = await _kernel(adapter, tools)
-    hidden = {"state": "minimized", "solidworks_in_front": False}
+    was, now = kernel["window_before"], kernel["window_after"]
+    unmoved = now["state"] == was["state"] and (
+        was["solidworks_in_front"] or not now["solidworks_in_front"]
+    )
     report.record(
         f"{name}.kernel",
-        f"method body_intersection, volumes {expected}, still minimized, not in front",
+        f"method body_intersection, volumes {expected}, the window as it was, "
+        "not brought to the front",
         kernel,
         ok=kernel["method"] == "body_intersection"
         and _close(kernel["volumes"] or [], expected)
-        and kernel["window_after"] == hidden,
+        and unmoved,
     )
     manager = _manager(adapter)
     report.record(
@@ -235,7 +242,6 @@ async def run() -> int:
     report.record("0.window", "the window as the user had it", window_before)
     try:
         tools = await _tools(adapter)
-        await adapter.set_window_state("minimize")
         bar = await _bar(adapter, tools, folder)
         for name in CASES:
             try:
@@ -248,8 +254,7 @@ async def run() -> int:
             for d in adapter.swApp.GetDocuments() or []
         } - before:
             adapter._attempt(lambda t=title: adapter.swApp.CloseDoc(t))
-        if window_before != "minimized":
-            await adapter.set_window_state("restore")
+        report.record("9.window", "the window at the end", adapter._window_state())
         await adapter.disconnect()
         shutil.rmtree(folder, ignore_errors=True)
         path = out / "report.json"
