@@ -1894,6 +1894,35 @@ inside the server (an `await`) that the cancel released. An earlier
 
 ---
 
+## 65. `CloseDoc` and `ActivateDoc3` take a name, and titles may lack the extension
+
+**Symptom:** with a part and an assembly of one name open (`Tray.SLDPRT` and
+`Tray.SLDASM`), a call closes or activates the wrong one, or both. Closing the
+assembly took the part too, and saving the assembly as `Tray.SLDASM` closed
+the open part `Tray` without saving it.
+
+**Root cause:** when Windows hides file extensions, `GetTitle` gives both
+`Tray`, and `CloseDoc` / `ActivateDoc3` match the name they are given:
+- `CloseDoc("Tray")` closed every document titled `Tray`;
+- `CloseDoc("Tray.SLDASM")`, sent before the assembly had that file (to free
+  the target of a save), closed the part `Tray`;
+- `ActivateDoc3` with a name lacking its extension may activate either one
+  (its API help, Remarks: `12345.sldprt` and `12345.sldasm`).
+
+**Fix:** name the document by its full path when another loaded document
+shares its title (`loaded_documents.title_shared`, `close_name`). Measured on
+SOLIDWORKS 2026 (`tests/scripts/probe_aggrewell_fixes.py`, `same_title`,
+2026-11-22), with extensionless titles:
+- `ActivateDoc3(<full path>)` activates that document;
+- `CloseDoc(<full path>)` closes that document alone;
+- `CloseDoc("Tray.SLDPRT")` closes only the open part `Tray.SLDPRT`.
+
+Free a save's target only by closing a document whose `GetPathName` *is* the
+target (`saving.close_holder`). Compare documents by path, not title, when
+reading back an activation or marking the active one in a list.
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests

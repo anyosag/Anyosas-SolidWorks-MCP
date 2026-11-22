@@ -275,7 +275,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `interference_detection`) and a `note` says why. `verify_model`'s
   `no_interference` and `add_mate`'s `check_interference` use the same
   check. The mock adapter answers from its components' boxes instead of
-  `None`. Not yet run live.
+  `None`. Checked live on SOLIDWORKS 2026 (`tests/scripts/probe_interference.py`,
+  2026-11-22): the same counts and volumes as SolidWorks' detection for a
+  pair, a turned copy, touching bars and a row of ten, in 0.26 to 0.32 s
+  against its 1.1 to 2.0 s, with the window left as it was.
+- **A save to a new path no longer closes another document of that name.**
+  Before writing to a path, the save closed any document of the target's
+  file name, `CloseDoc("X.SLDASM")`, to free the file. With Windows hiding
+  extensions a part and an assembly of one name are both titled `X`, so
+  saving the assembly as `X.SLDASM` closed the open part `X` without saving
+  it (found by the Aggrewell probe on SOLIDWORKS 2026). Now only a document
+  whose file is the target itself is closed, by its path when its title is
+  shared.
 - **`check_interference` with two or more `components` reports only the
   interferences between them.** It kept every interference of any listed
   component, so a nut and its tray listed gave back the tray's overlaps with
@@ -313,7 +324,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a pattern has more parents than seeds (the feature a direction edge
   belongs to is one too), those listed stay in, and are left out only if
   SolidWorks refuses the call with them. If SolidWorks still makes nothing
-  while a pattern is listed, the `hint` says so. Not yet run live.
+  while a pattern is listed, the `hint` says so. Checked live on SOLIDWORKS
+  2026 (`tests/scripts/probe_aggrewell_fixes.py`, 2026-11-22): a circular
+  pattern's parents are its seeds and its axis, its seed count is 2, and a
+  linear pattern, a mirror and a nested pattern each left the seeds out with
+  the volume exact. A linear pattern along a plate edge has the plate's
+  feature as a parent too, so its hole was unsure, and SolidWorks took the
+  hole and that pattern listed together.
 - **An assembly's bounding box is its solids'.** `verify_model` and the
   other readers of the geometry summary boxed an assembly with
   `IAssemblyDoc.GetBox(0)`, which can be loose and counts more than solids:
@@ -325,7 +342,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suppressed components are left out, with everything below them.
   `bounding_box_method` says `component_extreme_points`; a lightweight
   component, or anything else that can't be read, falls back to `GetBox(0)`
-  (`assembly_box`). Not yet run live.
+  (`assembly_box`). Checked live on SOLIDWORKS 2026 (2026-11-22): `GetBox(0)`
+  read a 7.2 mm block with a `create_axis` line as 10 mm tall; the new box
+  was exact for one block, a turned copy, and the copy hidden or suppressed.
 - **A part and an assembly of one name are no longer taken for each
   other.** With Windows hiding file extensions, the Aggrewell enclosure's
   `Enclosure_v2_Tray_with_Stamps.SLDPRT` and `.SLDASM` were both titled
@@ -343,8 +362,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and after, with a `warning` when there was more than the one, or none.
   Closing leftovers and the Save Bodies clean-up close by path the same way
   when a title is shared, and `list_open_documents` marks the active
-  document by its path (by title it marked both active). Whether `CloseDoc`
-  and `ActivateDoc3` take a path is not yet checked live.
+  document by its path (by title it marked both active). Checked live on
+  SOLIDWORKS 2026 (2026-11-22), with the titles indeed extensionless:
+  `ActivateDoc3` and `CloseDoc` each take a full path and act on that
+  document alone, and `CloseDoc("X.SLDPRT")` closes only the part.
 - **STL export no longer fails before it works.** `Extension.SaveAs2` was
   called with six arguments and Python `None` where it takes an interface
   pointer, so every export logged a type mismatch and fell back to

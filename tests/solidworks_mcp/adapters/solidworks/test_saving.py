@@ -272,9 +272,39 @@ def test_save_as_a_new_path_is_remembered(adapter: _Adapter, tmp_path: Path) -> 
     outcome = saving.save_document(adapter, part, str(target))
 
     assert part.save_as3_calls == [(str(target), SAVE_SILENT)]
-    assert adapter.swApp.closed == ["bracket.SLDPRT"]
+    assert adapter.swApp.closed == []  # no other document holds the target
     assert isinstance(outcome, dict) and outcome["file_path"] == str(target)
     assert saving.normalize(str(target)) in saving.session_paths(adapter)
+
+
+class _Open:
+    """An open document as ``GetDocuments`` lists it: a title and a path."""
+
+    def __init__(self, title: str, path: str) -> None:
+        self.title, self.path = title, path
+
+    def GetTitle(self) -> str:  # noqa: N802 - COM name
+        return self.title
+
+    def GetPathName(self) -> str:  # noqa: N802
+        return self.path
+
+
+def test_save_as_closes_only_the_document_at_the_target(
+    adapter: _Adapter, tmp_path: Path
+) -> None:
+    # Saving the assembly as Tray.SLDASM closed the open part Tray (Windows
+    # hiding extensions titles both "Tray"); only a document at the target goes.
+    target = tmp_path / "Tray.SLDASM"
+    part = _Open("Tray", str(tmp_path / "Tray.SLDPRT"))
+    holder = _Open("Tray", str(target))
+    adapter.swApp.GetDocuments = lambda: [part, holder]
+    assembly = _Doc("", doc_type=saving.DOC_ASSEMBLY)
+
+    saving.save_document(adapter, assembly, str(target))
+
+    assert adapter.swApp.closed == [str(target)]  # by path: the title is shared
+    assert saving.close_holder(adapter, str(tmp_path / "Other.SLDPRT")) == []
 
 
 def test_save_as_own_path_is_a_plain_save(adapter: _Adapter, tmp_path: Path) -> None:

@@ -296,6 +296,34 @@ def ledger_owns(adapter: Any, path: str, doc: Any) -> bool:
     return stamp is not None and stamp == entry.get("update_stamp")
 
 
+def close_holder(adapter: Any, target: str) -> list[str]:
+    """Close the open document whose file is ``target``; the names closed.
+
+    Before a save to ``target``, a document still holding that file open is
+    closed. Only one at that very path: ``CloseDoc`` takes a name, and with
+    Windows hiding extensions a part and an assembly of one name are both
+    titled ``X``, so ``CloseDoc("X.SLDASM")`` before saving an assembly as
+    ``X.SLDASM`` closed the open part ``X`` without saving it (Aggrewell
+    probe, SOLIDWORKS 2026). The name given is the one
+    :func:`loaded_documents.close_name` picks: the path when the title is
+    shared.
+    """
+    from .com_utils import as_list
+    from .loaded_documents import _text, close_name
+
+    key = normalize(target)
+    app = adapter.swApp
+    closed: list[str] = []
+    for document in as_list(adapter._attempt(lambda: app.GetDocuments())):
+        path = _text(adapter, document, "GetPathName")
+        if not path or normalize(path) != key:
+            continue
+        name = close_name(adapter, _text(adapter, document, "GetTitle"), path)
+        adapter._attempt(lambda n=name: app.CloseDoc(n))
+        closed.append(name)
+    return closed
+
+
 def saved_by_session(adapter: Any, path: str) -> bool:
     """Whether this session saved ``path`` and nobody has saved it since."""
     key = normalize(path)
@@ -466,10 +494,11 @@ def save_document(
         directory = os.path.dirname(target)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        # A *different* document may be holding the target path open. Close
-        # that one by name only - never the document being saved.
+        # A *different* document may be holding the target path open: close
+        # that one only, never the document being saved (its path isn't the
+        # target here) and never one that merely shares a name.
         if adapter.swApp:
-            adapter._attempt(lambda: adapter.swApp.CloseDoc(os.path.basename(target)))
+            close_holder(adapter, target)
         # SaveAs3 returns 0 on success, else swFileSaveError_e flags (fakes
         # may return a bool). Deliberately no os.remove before it: SaveAs3
         # overwrites, and deleting first meant a failed save lost the old file.
