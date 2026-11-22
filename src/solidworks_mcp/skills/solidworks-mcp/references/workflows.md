@@ -274,7 +274,10 @@ its hole keeps both: only a pattern or mirror carries other features.
    thread that starts at the edge (or 0.2 mm past a chamfer) has a partial
    first turn there, as at its far end, and a mating nut binds on it at
    every angle: start it at least a pitch outside the part (`start_offset_mm`
-   1.0 for M5x0.8) and add that to `length_mm`.
+   1.0 for M5x0.8) and add that to `length_mm`. `data.extent` is where the
+   thread's faces are, so it starts where the thread first cuts material,
+   not at a start offset in the air: started 1.3 mm above a chamfer's foot,
+   an M5 post's extent began at the chamfer, 0.73 mm below the start.
 7. Mating threads touch where each one's last turn ends. Keep the other
    part's teeth a pitch clear of each thread's end (a thread relief below a
    shoulder, a longer chamfer on a rod's tip), then `check_interference`

@@ -86,7 +86,8 @@ would. A step is `{"tool": "add_circle", "arguments": {...}}` or the short
 `{"add_circle": {...}}`; `arguments` are that tool's own fields, without an
 `input_data` wrapper. Every step is checked before any runs, and all the
 problems come back at once, each with its tool's fields. A step's
-`document` runs it on that open document. A sketch and its feature (steps
+`document` runs it on that open document; after `save_as` or
+`save_assembly` under a new name, pass the new name (`Assem1` is gone). A sketch and its feature (steps
 2-5) fit in one call; up to 200 steps per call (split a longer list into
 calls run in order: each numbers its steps from 0, and a step can use only
 its own call's replies). An argument that is exactly
