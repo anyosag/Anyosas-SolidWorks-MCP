@@ -30,11 +30,16 @@ under ``tests/.generated/probe_interference/``.
 
 Usage (SolidWorks running, nothing else driving it, the user's OK)::
 
-    .venv\\Scripts\\python.exe tests/scripts/probe_interference.py
+    .venv\\Scripts\\python.exe tests/scripts/probe_interference.py --live
+
+Without ``--live`` it only prints this and exits: once, ``--help`` ran it on
+SolidWorks without the user's OK, and the cut pipe killed it before its
+clean-up, leaving its documents open and SolidWorks minimized.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import shutil
@@ -255,5 +260,22 @@ async def run() -> int:
     return 0
 
 
+def main(argv: list[str] | None = None) -> int:
+    """Run on SolidWorks only with ``--live``; otherwise print the usage."""
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n\n", 1)[0],
+        epilog="Without --live nothing touches SolidWorks.",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="connect to the running SolidWorks and run the probe (the user's OK first)",
+    )
+    if not parser.parse_args(argv).live:
+        parser.print_help()
+        return 2
+    return asyncio.run(run())
+
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(run()))
+    sys.exit(main())

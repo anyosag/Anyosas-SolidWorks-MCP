@@ -1380,12 +1380,18 @@ async def check_interference_between(p: Any, r: Any) -> None:
             },
         )
         r.time(f"{label}.server_s", reply.get("server_time_s"))
+        r.expect(
+            f"{label}: measured in the kernel, without SolidWorks' UI",
+            data.get("method") == "body_intersection",
+            data.get("method"),
+            "body_intersection",
+        )
         if not p.live:
+            # The mock answers from its components' boxes, not the blocks'.
             r.expect(
-                f"{label}: the mock reports no counts",
-                data.get("interference_count") is None
-                and data.get("interference_found") is None,
-                (data.get("interference_found"), data.get("interference_count")),
+                f"{label}: the mock gives a count",
+                isinstance(data.get("interference_count"), int),
+                data.get("interference_count"),
             )
             continue
         r.expect(
@@ -1404,7 +1410,7 @@ async def check_interference_between(p: Any, r: Any) -> None:
             {" & ".join(sorted(pair)): want[pair] for pair in pairs},
         )
     if not p.live:
-        r.note("pairs and volumes: the mock's check_interference measures nothing")
+        r.note("pairs and volumes: live only; the mock's boxes aren't the blocks'")
 
 
 # ---- 5. thread_pattern -----------------------------------------------------------------
