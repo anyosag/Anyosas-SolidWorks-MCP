@@ -297,6 +297,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   truss build, 2026-11-23). Unknown fields are refused now, and `title`,
   `name`, `path` or `file_path` get an `invalid_input` saying to name the
   document with `document`; a workflow refuses the step before any step runs.
+  Checked live on SOLIDWORKS 2026 (`tests/scripts/probe_truss_fixes.py`,
+  2026-11-23): `title` and `path` were refused with both open parts left
+  open, a workflow with that step ran none of its steps, and `document`
+  closed that part alone.
 - **`create_reference_plane` with a point and a normal makes the plane
   through that point, or none.** The plane is built square to a 3D sketch
   line from the point and coincident with the line's start, and the start
@@ -308,7 +312,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at all. The start point is now selected as itself (`GetStartPoint2`,
   `Select4` with its mark), with the coordinates only as a fallback, and a
   plane that doesn't pass through its point is deleted with its sketch and
-  the call refused, naming the offset-and-flip way instead. Not yet run live.
+  the call refused, naming the offset-and-flip way instead. Checked live on
+  SOLIDWORKS 2026 (`tests/scripts/probe_truss_fixes.py`, 2026-11-23), seen
+  along X: the truss's three planes and four more went through their points
+  (0.0 mm off, read back with `plane_axes`), each start selected by
+  `Select4`. With the old pick by coordinates put back in the probe, both
+  planes asked through X = -28.4 were made 56.8 mm off, through +28.4, and
+  were deleted and refused, the tree as before; a plane made 10 mm off its
+  point was deleted with its 3D sketch.
 - **A save to a new path no longer closes another document of that name.**
   Before writing to a path, the save closed any document of the target's
   file name, `CloseDoc("X.SLDASM")`, to free the file. With Windows hiding
