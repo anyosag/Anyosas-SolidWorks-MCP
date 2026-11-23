@@ -315,8 +315,34 @@ def select_line(adapter: Any, line: Line3D, mark: int, append: bool) -> bool:
     return _select(adapter, "", "EXTSKETCHSEGMENT", line.midpoint_m(), append, mark)
 
 
+def _select_object(adapter: Any, entity: Any, mark: int, append: bool) -> bool:
+    """``entity.Select4(append, data)``, the select data carrying ``mark``."""
+    model = _model(adapter)
+    manager = _attempt(adapter, lambda: model.SelectionManager)
+    if manager is None:
+        return False
+    _flag(adapter, manager, "CreateSelectData")
+    data = _attempt(adapter, lambda: manager.CreateSelectData())
+    if data is None:
+        return False
+    _attempt(adapter, lambda: setattr(data, "Mark", mark))
+    _flag(adapter, entity, "Select4")
+    return bool(_attempt(adapter, lambda: entity.Select4(append, data), False))
+
+
 def select_line_start(adapter: Any, line: Line3D, mark: int, append: bool) -> bool:
-    """Select the 3D sketch line's start point, where it is."""
+    """Select the 3D sketch line's start point: the point itself, else where it is.
+
+    The point itself first (``ISketchSegment.GetStartPoint2``, then
+    ``Select4`` with the mark). A pick by coordinates (``SelectByID2``) takes
+    the first point along the view through them: on the Dish Rack truss
+    build, a pick at X = -28.4 took an earlier plane's line start at
+    X = +28.4, so the plane was made through +28.4 (SOLIDWORKS 2026).
+    """
+    _flag(adapter, line.segment, "GetStartPoint2")
+    point = _attempt(adapter, lambda: line.segment.GetStartPoint2())
+    if point is not None and _select_object(adapter, point, mark, append):
+        return True
     return _select(adapter, "", "EXTSKETCHPOINT", line.start_m(), append, mark)
 
 
@@ -450,8 +476,9 @@ def plane_through(adapter: Any, point_mm: Any, normal: Any) -> dict[str, Any]:
     Raises:
         ValueError: The point or normal isn't three numbers, or the normal
             has no length.
-        RuntimeError: A sketch is open, or no plane was made; the 3D sketch
-            of a failed plane is deleted.
+        RuntimeError: A sketch is open, no plane was made, or the plane made
+            doesn't pass through the point; the 3D sketch of a failed plane
+            is deleted with the plane.
     """
     point = vector(point_mm, "point")
     direction = unit(vector(normal, "normal"), "the normal")
@@ -483,6 +510,17 @@ def plane_through(adapter: Any, point_mm: Any, normal: Any) -> dict[str, Any]:
     name = _attempt(adapter, lambda: adapter._get_attr_or_call(plane, "Name"))
     name = str(name) if name else _newest_name(adapter)
     frame = frame_of_named_plane(adapter, name)
+    if frame is not None:
+        off = frame.to_sketch(point)[2]
+        if abs(off) > OFF_PLANE_TOLERANCE_MM:
+            # A plane made elsewhere was kept before, with only a warning.
+            remove_sketch(adapter, line)
+            raise RuntimeError(
+                f"SolidWorks made {name} {abs(off):g} mm from point "
+                f"{[round(c, 6) + 0.0 for c in point]}, not through it, so it was "
+                "deleted. Make the plane from a reference plane with offset (and "
+                "flip) instead."
+            )
     return {
         "name": name,
         "point_mm": list(point),

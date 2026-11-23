@@ -290,6 +290,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2026-11-22): the same counts and volumes as SolidWorks' detection for a
   pair, a turned copy, touching bars and a row of ten, in 0.26 to 0.32 s
   against its 1.1 to 2.0 s, with the window left as it was.
+- **`close_model` refuses a document named in its input instead of closing
+  the active one.** Its input model dropped unknown fields, so in a workflow
+  `close_model {"title": "DishRack_Base_TrussA"}` became `{}` and closed the
+  active document, `DishRack_Top_TrussC`, unsaved changes and all (Dish Rack
+  truss build, 2026-11-23). Unknown fields are refused now, and `title`,
+  `name`, `path` or `file_path` get an `invalid_input` saying to name the
+  document with `document`; a workflow refuses the step before any step runs.
+- **`create_reference_plane` with a point and a normal makes the plane
+  through that point, or none.** The plane is built square to a 3D sketch
+  line from the point and coincident with the line's start, and the start
+  was selected by its coordinates, which takes the first point along the
+  view through them. On the Dish Rack truss build, `{"point": [-28.4,0,0],
+  "normal": [-1,0,0]}` made a plane through X = +28.4, where an earlier
+  plane's line started; the reply said `through_point: false` but kept the
+  plane, and the same point with the normal `[1,0,0]` then failed to select
+  at all. The start point is now selected as itself (`GetStartPoint2`,
+  `Select4` with its mark), with the coordinates only as a fallback, and a
+  plane that doesn't pass through its point is deleted with its sketch and
+  the call refused, naming the offset-and-flip way instead. Not yet run live.
 - **A save to a new path no longer closes another document of that name.**
   Before writing to a path, the save closed any document of the target's
   file name, `CloseDoc("X.SLDASM")`, to free the file. With Windows hiding

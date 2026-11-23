@@ -239,6 +239,26 @@ async def test_a_removed_input_is_refused_before_any_step_runs(part: Any) -> Non
     assert adapter._current_sketch is None
 
 
+async def test_a_close_naming_its_document_in_the_input_is_refused_first(
+    part: Any,
+) -> None:
+    # Dish Rack truss build: {"title": X} was dropped, and the active
+    # document was closed instead of X.
+    adapter, run = part
+    steps = [
+        {"create_sketch": {"plane": "Top"}},
+        {"close_model": {"title": "DishRack_Base_TrussA"}},
+    ]
+
+    result = await run({"steps": steps})
+
+    assert result["error_type"] == "invalid_input"
+    assert "steps.1 (close_model)" in result["message"]
+    assert "`title` isn't an input of close_model" in result["message"]
+    assert adapter._current_sketch is None  # no step ran
+    assert adapter._current_model is not None  # nothing was closed
+
+
 async def test_bad_references_are_all_named(part: Any) -> None:
     _adapter, run = part
     steps = [

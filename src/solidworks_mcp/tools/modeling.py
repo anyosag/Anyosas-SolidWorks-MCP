@@ -8,7 +8,7 @@ from collections import Counter
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field, WithJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
 
 from ..adapters.base import (
     AdapterResult,
@@ -1021,12 +1021,23 @@ class SetUnitsInput(CompatInput):
             raise ValueError("unit_system is required")
 
 
+#: Names a client may give the document to close inside the input; it goes in
+#: ``document`` instead (:meth:`CloseModelInput._document_goes_in_document`).
+_DOCUMENT_NAMES = ("title", "name", "path", "file_path")
+
+
 class CloseModelInput(BaseModel):
     """Input schema for closing a model.
+
+    Unknown fields are refused, not dropped: ``close_model {"title": "X"}``
+    in a workflow closed the *active* document instead of ``X``, losing its
+    unsaved changes (Dish Rack truss build, 2026-11-23).
 
     Attributes:
         save (bool): The save value.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     save: bool = Field(default=False, description="Save the model before closing")
     overwrite_modified_references: bool = Field(
@@ -1049,6 +1060,20 @@ class CloseModelInput(BaseModel):
         default=False,
         description="With close_leftovers: leave the active document open",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _document_goes_in_document(cls, data: Any) -> Any:
+        """Refuse a document name inside the input, saying where it goes."""
+        if isinstance(data, dict):
+            named = next((key for key in _DOCUMENT_NAMES if key in data), None)
+            if named is not None:
+                raise ValueError(
+                    f"`{named}` isn't an input of close_model: name the document "
+                    "to close with `document` (beside the input, or a workflow "
+                    "step's `document`); nothing was closed"
+                )
+        return data
 
     def model_post_init(self, __context: Any) -> None:
         if self.keep_active and not self.close_leftovers:

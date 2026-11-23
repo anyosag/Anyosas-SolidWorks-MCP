@@ -454,14 +454,68 @@ async def test_a_plane_is_square_to_a_line_from_its_point() -> None:
     assert data["axes"]["origin_mm"] == [20.0, 0.0, 10.0]
 
 
-async def test_a_reversed_or_missed_plane_is_reported() -> None:
+async def test_a_reversed_plane_through_its_point_is_reported() -> None:
     part = _Part()
-    part.plane_transform = [1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0.05, 1, 0, 0, 0]
+    part.plane_transform = [1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, 1, 0, 0, 0]
 
     data = (await _Adapter(part).create_plane_through([0, 0, 0], [0, 0, 1])).data
 
     assert data["normal_matches"] is False
-    assert data["through_point"] is False
+    assert data["through_point"] is True
+
+
+async def test_a_plane_made_off_its_point_is_deleted_and_refused() -> None:
+    # Dish Rack truss build: asked through X = -28.4, made through X = +28.4.
+    part = _Part()
+    part.plane_transform = [1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0.05, 1, 0, 0, 0]
+
+    result = await _Adapter(part).create_plane_through([0, 0, 0], [0, 0, 1])
+
+    assert result.is_error
+    assert "Plane1 50 mm from point [0.0, 0.0, 0.0], not through it" in result.error
+    assert "deleted" in result.error
+    assert part.deleted == [1]  # the 3D sketch, with the plane below it
+
+
+class _StartPoint:
+    """A 3D sketch line's start point, selected as an object."""
+
+    def __init__(self) -> None:
+        self.selected: list[tuple[bool, Any]] = []
+
+    def Select4(self, append: bool, data: Any) -> bool:  # noqa: N802
+        self.selected.append((append, getattr(data, "Mark", None)))
+        return True
+
+
+async def test_the_line_start_is_selected_as_itself_not_by_where_it_is() -> None:
+    part = _Part()
+    part.plane_transform = _CAGE
+    point = _StartPoint()
+    part.segment.GetStartPoint2 = lambda: point
+    part.SelectionManager = SimpleNamespace(CreateSelectData=SimpleNamespace)
+
+    result = await _Adapter(part).create_plane_through([20, 0, 10], [_S, 0, _C])
+
+    assert result.is_success, result.error
+    assert point.selected == [(True, 1)]  # appended to the line, mark 1
+    assert not any(s[1:2] == ("EXTSKETCHPOINT",) for s in part.selections)
+
+
+async def test_a_start_point_that_wont_select_falls_back_to_where_it_is() -> None:
+    for selection_manager in (
+        None,  # no selection manager
+        SimpleNamespace(CreateSelectData=lambda: None),  # no select data
+    ):
+        part = _Part()
+        part.plane_transform = _CAGE
+        part.segment.GetStartPoint2 = _StartPoint
+        part.SelectionManager = selection_manager
+
+        result = await _Adapter(part).create_plane_through([20, 0, 10], [_S, 0, _C])
+
+        assert result.is_success, result.error
+        assert ("", "EXTSKETCHPOINT", 0.02, 0.0, 0.01, True, 1) in part.selections
 
 
 async def test_a_plane_whose_frame_does_not_read_has_no_axes() -> None:

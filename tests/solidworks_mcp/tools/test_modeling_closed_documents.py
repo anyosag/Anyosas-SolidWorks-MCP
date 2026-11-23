@@ -52,6 +52,32 @@ async def test_a_close_names_the_one_document_it_closed(tray) -> None:
     ]
 
 
+@pytest.mark.parametrize("key", ["title", "name", "path", "file_path"])
+async def test_a_document_named_in_the_input_is_refused_not_ignored(
+    tray, key: str
+) -> None:
+    # Dish Rack truss build: close_model {"title": X} closed the active one.
+    mock, tools = tray
+
+    reply = await tools["close_model"]({key: "Tray.SLDPRT"})
+
+    assert reply["status"] == "error"
+    assert reply["error_type"] == "invalid_input"
+    assert f"`{key}` isn't an input of close_model" in reply["message"]
+    assert "with `document`" in reply["message"]
+    assert len((await mock.list_open_documents()).data) == 2  # nothing closed
+
+
+async def test_an_unknown_close_input_is_refused(tray) -> None:
+    mock, tools = tray
+
+    reply = await tools["close_model"]({"sav": True})
+
+    assert reply["status"] == "error" and reply["error_type"] == "invalid_input"
+    assert "sav" in reply["message"]
+    assert len((await mock.list_open_documents()).data) == 2
+
+
 def _result(closed: Any) -> AdapterResult[Any]:
     metadata = None if closed is None else {"closed": closed}
     return AdapterResult(status=AdapterResultStatus.SUCCESS, metadata=metadata)
