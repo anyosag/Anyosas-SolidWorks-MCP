@@ -58,6 +58,11 @@ def classifier() -> ErrorClassifier:
             "feature_not_built",
         ),
         (
+            "Failed to create extrusion: Error in create_extrusion: Failed to "
+            "create extrusion feature",
+            "feature_not_built",
+        ),
+        (
             f"COM error in x: ({DISP_E_TYPEMISMATCH}, 'Type mismatch.', None, None)",
             "com_type_mismatch",
         ),
@@ -364,6 +369,34 @@ def test_a_missed_expect_is_its_own_category_whatever_the_feature_said(
     assert found.error_type == "expectation_failed"
     assert "Don't call the tool again" in found.hint
     assert counts_toward_breaker(message) is False
+
+
+def test_a_boss_that_built_nothing_hints_at_near_coincident_faces(
+    classifier: ErrorClassifier,
+) -> None:
+    # The TubeRack build: closed, apart loops ending on a wall plane whose
+    # opening edges sat 0.003 to 0.03 mm off it gave only this.
+    found = classifier.classify(
+        "Failed to create extrusion: Error in create_extrusion: Failed to "
+        "create extrusion feature"
+    )
+
+    assert found.error_type == "feature_not_built"
+    assert "near-coincident faces" in found.hint
+    assert "0.3 mm past that face into the solid" in found.hint
+    assert "exact coordinates" in found.hint
+
+
+def test_crossing_contours_keep_their_own_hint(classifier: ErrorClassifier) -> None:
+    from solidworks_mcp.adapters.solidworks import sketch_contours
+
+    found = classifier.classify(
+        "Error in create_extrusion: Failed to create extrusion feature. "
+        + sketch_contours.message("Sketch5", ["the circle at (0, 0) r 18"])
+    )
+
+    assert found.error_type == "sketch_contours_intersect"
+    assert "regions: 'all'" in found.hint
 
 
 def test_a_refused_pattern_with_a_pattern_listed_hints_at_its_seeds(

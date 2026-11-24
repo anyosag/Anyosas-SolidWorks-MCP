@@ -295,6 +295,30 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
         patterns=(r"built no feature",),
     ),
+    # A boss SolidWorks returned nothing for (``FeatureExtrusion`` null, in
+    # ``adapters/solidworks/features.py``). Crossing contours are matched
+    # above: ``_union_or_explained`` adds them to this message. The TubeRack
+    # build (2026-11-23): apart, closed loops ending on a wall plane whose
+    # opening edges sat 0.003 to 0.03 mm off it failed every time, and built
+    # once run 0.3 mm into the solid.
+    ErrorRule(
+        error_type="feature_not_built",
+        hint=(
+            "SolidWorks made no boss from the sketch. Contours that cross or "
+            "touch are named in this message when the server could read the "
+            "sketch. With none named, the usual cause is the body the boss "
+            "meets: a loop that ends on an existing face, or runs along its "
+            "edges, almost but not exactly (a few hundredths of a mm off, e.g. "
+            "coordinates rounded to 0.01 mm against edges made at more "
+            "decimals) leaves near-coincident faces that SolidWorks can't "
+            "merge. Run the boss about 0.3 mm past that face into the solid, or "
+            "keep the loop clear of it, and reuse the exact coordinates of the "
+            "features it meets. A draft angle that closes the profile before "
+            "the depth fails the same way. Change the sketch or the depth, then "
+            "extrude again."
+        ),
+        patterns=(r"\bfailed to create extrusion feature\b",),
+    ),
     # A pattern SolidWorks made nothing of, with a Thread feature listed
     # (``pattern_seeds.SeedPlan.refusal``). Before the pattern rule below: with
     # both named, the thread is the likelier cause, the seeds being left out.

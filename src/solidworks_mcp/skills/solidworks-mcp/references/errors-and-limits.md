@@ -12,7 +12,7 @@ and a `hint`; some carry `data` with details. Act on `error_type`:
 | `wrong_document_type` | The active document is the wrong kind (a drawing tool on a part); switch with `activate_document`. |
 | `invalid_input` | An argument is wrong, or is one a tool no longer takes; the message says what to send instead. Fix the call. |
 | `not_found` | A name or path is wrong. List what exists (`list_features`, `list_components`, `list_drawing_views`, `list_open_documents`) and retry with the exact name. |
-| `feature_not_built` | SolidWorks accepted the call but built nothing: the sketch isn't closed, the cut misses the body, the depth is wrong. Change the input, don't repeat the call. |
+| `feature_not_built` | SolidWorks accepted the call but built nothing: the sketch isn't closed, the cut misses the body, the depth is wrong. When a boss's loops are closed and apart, the usual cause is a loop that meets an existing face or edge a few hundredths of a mm off. Run it about 0.3 mm into the solid, or keep it clear, and reuse the exact coordinates of earlier features. Change the input, don't repeat the call. |
 | `sketch_contours_intersect` | An extrude or cut built nothing because closed contours in its sketch cross or touch (the message names them). Make the regions apart or nested, or draw one outline that is their union, then try again. |
 | `not_supported` | The tool can't run yet. Use the one its description names. |
 | `circuit_open` | Calls are paused after repeated failures. Fix the cause (for example, close and draw the sketch again), then call `reset_circuit_breaker` with the operation, or wait out the timeout, and retry. |

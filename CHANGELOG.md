@@ -268,6 +268,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tokens became 34k.
 - The API docs index is kept in the server's cache folder, not the folder
   the client happened to start the server in, and is parsed once.
+- **A boss SolidWorks built nothing from says why it usually happens.**
+  Before, "Failed to create extrusion feature" without crossing contours got
+  the generic `operation_failed` hint. On the TubeRack build (2026-11-23),
+  closed loops that didn't touch kept failing this way, and `regions: "all"`
+  didn't help. The loops ended exactly on a wall plane, but the opening
+  edges they met sat 0.003 to 0.03 mm off it. The faces were nearly
+  coincident, and SolidWorks can't merge them. Every boss built once it ran
+  0.3 mm into the solid. The failure is `feature_not_built` now, and its
+  hint names that cause and fix, says to reuse the exact coordinates of
+  earlier features, and adds a draft angle that closes the profile before
+  the depth. Contours that cross keep their own hint.
 
 ### Fixed
 
